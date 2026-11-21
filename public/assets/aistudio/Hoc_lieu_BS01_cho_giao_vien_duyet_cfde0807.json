@@ -1,0 +1,512 @@
+{
+  "schema_version": "1.0",
+  "mission_id": "BS01",
+  "language": "vi",
+  "review_status": "pending_teacher_review",
+  "not_research_results": true,
+  "math_unit": "degree",
+  "geometry": {
+    "plane": "XZ",
+    "unit": "m",
+    "A": [
+      0,
+      0,
+      0
+    ],
+    "B": [
+      60,
+      0,
+      0
+    ],
+    "C": [
+      35.543775927122866,
+      0,
+      42.35942265551226
+    ]
+  },
+  "items": [
+    {
+      "id": "P01",
+      "stage": "foundation",
+      "skill_ids": [
+        "angle_sum"
+      ],
+      "stem_vi": "Tam giác PQR có góc P bằng 45 độ và Q bằng 65 độ. Tìm góc R.",
+      "expected_answer": {
+        "value": 70,
+        "unit": "degree"
+      },
+      "solution_vi": "R = 180 - 45 - 65 = 70 độ.",
+      "anticipated_error_ids": [
+        "E02"
+      ],
+      "hints_vi": [
+        "Tổng ba góc trong tam giác bằng bao nhiêu?",
+        "Hoàn thành 180 - (45 + 65)."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B5_p33_37_and_prerequisites"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "P02",
+      "stage": "foundation",
+      "skill_ids": [
+        "opposite_pair"
+      ],
+      "stem_vi": "Góc nào đối diện cạnh MN trong tam giác MNP?",
+      "expected_answer": {
+        "vertex": "P"
+      },
+      "solution_vi": "P là đỉnh không thuộc cạnh MN.",
+      "anticipated_error_ids": [
+        "E01"
+      ],
+      "hints_vi": [
+        "Chạm hai đầu mút của MN.",
+        "Chọn đỉnh còn lại."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B5_p33_37_and_prerequisites"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "P03",
+      "stage": "foundation",
+      "skill_ids": [
+        "trig_values"
+      ],
+      "stem_vi": "Tính sin 60 độ trừ cos 30 độ.",
+      "expected_answer": {
+        "value": 0
+      },
+      "solution_vi": "Hai giá trị đều bằng căn 3 chia 2 nên hiệu bằng 0.",
+      "anticipated_error_ids": [
+        "E06"
+      ],
+      "hints_vi": [
+        "Hai góc này có quan hệ gì?",
+        "Đối chiếu bảng giá trị đã duyệt."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B5_p33_37_and_prerequisites"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "P04",
+      "stage": "foundation",
+      "skill_ids": [
+        "units"
+      ],
+      "stem_vi": "Đổi 0,75 km sang mét.",
+      "expected_answer": {
+        "value": 750,
+        "unit": "m"
+      },
+      "solution_vi": "0,75 nhân 1000 = 750 m.",
+      "anticipated_error_ids": [
+        "E07"
+      ],
+      "hints_vi": [
+        "Một kilômét bằng bao nhiêu mét?",
+        "Đổi sang đơn vị nhỏ hơn thì số đo tăng."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B5_p33_37_and_prerequisites"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M01",
+      "stage": "core",
+      "skill_ids": [
+        "survey_plan"
+      ],
+      "stem_vi": "A và B trên bờ tiếp cận được, C bên kia sông. Chọn dữ kiện có thể đo để tính AC.",
+      "expected_answer": {
+        "choice": "AB_and_angles_BAC_ABC"
+      },
+      "solution_vi": "Đo AB và hai góc ngắm để giải tam giác, không cần tiếp cận C.",
+      "anticipated_error_ids": [
+        "E03"
+      ],
+      "hints_vi": [
+        "Nhân vật có thể đi đến những điểm nào?",
+        "Chọn đường đáy trên bờ và các góc ngắm tại hai đầu."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M02",
+      "stage": "core",
+      "skill_ids": [
+        "measurement"
+      ],
+      "stem_vi": "Dùng thước và thiết bị ngắm để ghi độ dài AB và hai góc BAC, ABC.",
+      "expected_answer": {
+        "AB_m": 60,
+        "BAC_degree": 50,
+        "ABC_degree": 60
+      },
+      "solution_vi": "Đo lần lượt đường đáy và góc giữa hai tia tại từng điểm.",
+      "anticipated_error_ids": [
+        "E01",
+        "E07"
+      ],
+      "hints_vi": [
+        "Tô hai tia tạo góc đang đo.",
+        "Phân biệt góc trong tam giác với góc ngoài."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M03",
+      "stage": "core",
+      "skill_ids": [
+        "angle_sum"
+      ],
+      "stem_vi": "Biết góc A bằng 50 độ, B bằng 60 độ. Tìm góc C.",
+      "expected_answer": {
+        "value": 70,
+        "unit": "degree"
+      },
+      "solution_vi": "C = 180 - 50 - 60 = 70 độ.",
+      "anticipated_error_ids": [
+        "E02"
+      ],
+      "hints_vi": [
+        "Chỉ ra hai góc đã biết.",
+        "Có thể quay lại bài tổng góc đơn giản hơn."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M04",
+      "stage": "core",
+      "skill_ids": [
+        "opposite_pair",
+        "sine_law"
+      ],
+      "stem_vi": "Hoàn thành AC/sin(?) = AB/sin(?) trong cấu hình chuẩn.",
+      "expected_answer": {
+        "left_angle_degree": 60,
+        "right_angle_degree": 70
+      },
+      "solution_vi": "AC đối diện góc B 60 độ; AB đối diện góc C 70 độ.",
+      "anticipated_error_ids": [
+        "E01",
+        "E04"
+      ],
+      "hints_vi": [
+        "AC đối diện đỉnh nào?",
+        "Ghép cạnh với góc đối diện trước khi lập tỉ số."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M05",
+      "stage": "core",
+      "skill_ids": [
+        "sine_law",
+        "calculation",
+        "rounding"
+      ],
+      "stem_vi": "Tính AC từ AB = 60 m, A = 50 độ, B = 60 độ. Làm tròn đến 0,1 m.",
+      "expected_answer": {
+        "exact_numeric": 55.296299106412576,
+        "rounded": 55.3,
+        "decimal_places": 1,
+        "unit": "m"
+      },
+      "solution_vi": "C = 70 độ; AC = 60 sin60/sin70, làm tròn được 55,3 m.",
+      "anticipated_error_ids": [
+        "E05",
+        "E06",
+        "E07"
+      ],
+      "hints_vi": [
+        "Lưu biểu thức trước khi tính.",
+        "Kiểm tra chế độ độ, không làm tròn sớm."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "M06",
+      "stage": "core",
+      "skill_ids": [
+        "interpretation"
+      ],
+      "stem_vi": "55,3 m là khoảng cách AC hay luôn là bề rộng vuông góc của sông?",
+      "expected_answer": {
+        "meaning": "distance_A_to_C",
+        "not_necessarily_perpendicular_width": true
+      },
+      "solution_vi": "AC là đường ngắm xiên; chưa đủ để gọi là bề rộng vuông góc.",
+      "anticipated_error_ids": [
+        "E08"
+      ],
+      "hints_vi": [
+        "So sánh AC với đường CH vuông góc đường bờ.",
+        "Nêu đúng hai đầu mút của đoạn vừa tính."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "R01",
+      "stage": "remediation",
+      "skill_ids": [
+        "opposite_pair"
+      ],
+      "stem_vi": "Ghép các cạnh XY, YZ, ZX với góc đối diện trong tam giác XYZ.",
+      "expected_answer": {
+        "XY": "Z",
+        "YZ": "X",
+        "ZX": "Y"
+      },
+      "solution_vi": "Mỗi cạnh đối diện đỉnh không thuộc cạnh đó.",
+      "anticipated_error_ids": [
+        "E01"
+      ],
+      "hints_vi": [
+        "Làm mẫu một cặp rồi tự làm hai cặp còn lại."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "R02",
+      "stage": "remediation",
+      "skill_ids": [
+        "sine_law"
+      ],
+      "stem_vi": "Tam giác ABC có A = 30 độ, B = 60 độ, C = 90 độ và AB = 10 m. Lập hệ thức tính AC.",
+      "expected_answer": {
+        "relation": "AC/sin60 = 10/sin90",
+        "optional_value": 8.660254037844386,
+        "unit": "m"
+      },
+      "solution_vi": "AC đối diện B, AB đối diện C; AC = 5 căn 3 m.",
+      "anticipated_error_ids": [
+        "E04"
+      ],
+      "hints_vi": [
+        "AB đối diện góc nào?",
+        "Ghép AB với C trước."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "R03",
+      "stage": "remediation",
+      "skill_ids": [
+        "ratio_algebra"
+      ],
+      "stem_vi": "Tìm x biết x/sin30 = 12/sin90, các góc tính bằng độ.",
+      "expected_answer": {
+        "value": 6
+      },
+      "solution_vi": "Nhân hai vế với sin30, x = 12 nhân 0,5 chia 1 = 6.",
+      "anticipated_error_ids": [
+        "E05"
+      ],
+      "hints_vi": [
+        "Nhân hai vế với sin30.",
+        "Thay giá trị hai hàm sin rồi tính."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "R04",
+      "stage": "remediation",
+      "skill_ids": [
+        "rounding",
+        "units"
+      ],
+      "stem_vi": "Làm tròn khoảng cách 6,49 m đến 0,1 m.",
+      "expected_answer": {
+        "rounded": 6.5,
+        "decimal_places": 1,
+        "unit": "m"
+      },
+      "solution_vi": "Chữ số hàng phần trăm là 9 nên tăng hàng phần mười.",
+      "anticipated_error_ids": [
+        "E07"
+      ],
+      "hints_vi": [
+        "Xác định hàng phần mười.",
+        "Quan sát chữ số ngay bên phải."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "T01",
+      "stage": "independent",
+      "skill_ids": [
+        "survey_plan",
+        "angle_sum",
+        "sine_law",
+        "rounding"
+      ],
+      "stem_vi": "AB = 40 m, A = 45 độ, B = 60 độ. Tính AC đến 0,1 m và giải thích.",
+      "expected_answer": {
+        "C_degree": 75,
+        "exact_numeric": 35.86301888672214,
+        "rounded": 35.9,
+        "decimal_places": 1,
+        "unit": "m"
+      },
+      "solution_vi": "C = 75 độ; AC = 40 sin60/sin75, làm tròn 35,9 m.",
+      "anticipated_error_ids": [
+        "E02",
+        "E04",
+        "E05",
+        "E07"
+      ],
+      "hints_vi": [
+        "Tìm góc còn lại.",
+        "Ghép AC với B rồi áp dụng định lý sin."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    },
+    {
+      "id": "T02",
+      "stage": "independent",
+      "skill_ids": [
+        "angle_sum",
+        "interpretation"
+      ],
+      "stem_vi": "AB = 80 m, A = 40 độ, B = 70 độ. Một bạn kết luận AC = 80 m do hai góc đối diện bằng nhau. Em có đồng ý không?",
+      "expected_answer": {
+        "agree": true,
+        "C_degree": 70,
+        "AC_m": 80
+      },
+      "solution_vi": "C = B = 70 độ, suy ra AC = AB = 80 m.",
+      "anticipated_error_ids": [
+        "E02",
+        "E08"
+      ],
+      "hints_vi": [
+        "So sánh góc B và C."
+      ],
+      "review_status": "pending_teacher_review",
+      "source_refs": [
+        "SGK_KNTT_B6_p39_40"
+      ],
+      "is_adapted": true,
+      "hints_available_in_independent_mode": false,
+      "on_hint_request_during_independent": "ask_confirmation_then_change_to_practice",
+      "scoring_requires_teacher_approved_version": true
+    }
+  ],
+  "remediation_paths": {
+    "pairing": [
+      "R01",
+      "R02"
+    ],
+    "calculation_units": [
+      "R03",
+      "R04"
+    ]
+  },
+  "grading_policy": {
+    "numeric_answers": "Use approved exact result and specified final rounding; normalize decimal comma and dot.",
+    "open_explanations": "AI may assist; uncertain results require teacher review.",
+    "skill_confirmation": "Independent item success records current evidence, not full chapter mastery."
+  }
+}
