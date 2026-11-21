@@ -401,8 +401,7 @@ begin
 end;
 $$;
 
-drop trigger if exists trg_guard_user_update on public.users;
-create trigger trg_guard_user_update
+create or replace trigger trg_guard_user_update
   before update on public.users
   for each row
   execute function private.guard_user_update();
