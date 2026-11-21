@@ -19,6 +19,7 @@ import {
 } from '../journey.ts';
 import {ALL_INITIAL_QUESTIONS} from '../math/seedBank.ts';
 import {
+  createEphemeralSupabaseClient,
   defaultSupabaseConfig,
   initSupabaseClient,
   isSupabaseConfigValid,
@@ -2582,6 +2583,65 @@ export class DataService {
     return [...this.db.classes];
   }
 
+  private isManagedByTeacher(teacher: UserAccount, classId?: string, teacherUid?: string): boolean {
+    if (teacher.role === 'admin') return true;
+    if (teacher.role !== 'teacher') return false;
+    if (teacherUid === teacher.uid) return true;
+    if (classId && (teacher.assignedClassIds ?? []).includes(classId)) return true;
+    return this.db.classes.some((c) => c.id === classId && c.teacherUid === teacher.uid);
+  }
+
+  /**
+   * Role-scoped classes: Admin sees all; Teacher sees ONLY their own/assigned classes.
+   */
+  getScopedClasses(actor: UserAccount): ClassRoom[] {
+    if (actor.role === 'admin') return [...this.db.classes];
+    if (actor.role === 'teacher') {
+      return this.db.classes.filter((c) => this.isManagedByTeacher(actor, c.id, c.teacherUid));
+    }
+    return this.db.classes.filter((c) => c.id === actor.classId);
+  }
+
+  /**
+   * Role-scoped users: Admin sees all; Teacher sees ONLY students in their own classes
+   * (never other teachers or admins).
+   */
+  getScopedUsers(actor: UserAccount): UserAccount[] {
+    if (actor.role === 'admin') return [...this.db.users];
+    if (actor.role === 'teacher') {
+      return this.db.users.filter(
+        (u) => u.role === 'student' && this.isManagedByTeacher(actor, u.classId, u.teacherUid),
+      );
+    }
+    return this.db.users.filter((u) => u.uid === actor.uid);
+  }
+
+  getScopedAttempts(actor: UserAccount, includeTest = false): AttemptRecord[] {
+    const base = this.getAttempts(includeTest);
+    if (actor.role === 'admin') return base;
+    if (actor.role === 'teacher') {
+      return base.filter((a) => this.isManagedByTeacher(actor, a.classId, a.teacherUid));
+    }
+    return base.filter((a) => a.userId === actor.uid);
+  }
+
+  getScopedEvents(actor: UserAccount, includeTest = false): LearningEvent[] {
+    const base = this.getEvents(includeTest);
+    if (actor.role === 'admin') return base;
+    if (actor.role === 'teacher') {
+      return base.filter((e) => this.isManagedByTeacher(actor, e.classId, e.teacherUid));
+    }
+    return base.filter((e) => e.userId === actor.uid);
+  }
+
+  getScopedRebuttals(actor: UserAccount): RebuttalRecord[] {
+    if (actor.role === 'admin') return [...this.db.rebuttals];
+    if (actor.role === 'teacher') {
+      return this.db.rebuttals.filter((r) => this.isManagedByTeacher(actor, r.classId, r.teacherUid));
+    }
+    return this.db.rebuttals.filter((r) => r.userId === actor.uid);
+  }
+
   createClass(actor: UserAccount, name: string, code: string, expiresAt?: string): ClassRoom | null {
     if (!canAccessAdmin(actor)) return null;
     const upperCode = code.trim().toUpperCase();
@@ -2618,6 +2678,11 @@ export class DataService {
 
   regenerateClassCode(actor: UserAccount, classId: string): string | null {
     if (!canAccessAdmin(actor)) return null;
+    const targetCls = this.db.classes.find((c) => c.id === classId);
+    if (!targetCls) return null;
+    if (actor.role === 'teacher' && !this.isManagedByTeacher(actor, targetCls.id, targetCls.teacherUid)) {
+      return null;
+    }
     const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
     let oldCode = '';
     let nextCode = '';
@@ -2650,6 +2715,135 @@ export class DataService {
       );
     }
     return nextCode || null;
+  }
+
+  async adminCreateTeacher(
+    actor: UserAccount,
+    params: {username: string; password: string; displayName: string},
+  ): Promise<{ok: boolean; user?: UserAccount; error?: string}> {
+    if (!canEditSettingsOrUsers(actor)) {
+      return {ok: false, error: 'Chỉ quản trị viên mới có quyền tạo tài khoản giáo viên.'};
+    }
+    const uCheck = validateUsername(params.username);
+    if (!uCheck.ok) return {ok: false, error: uCheck.message};
+    const pCheck = validatePassword(params.password);
+    if (!pCheck.ok) return {ok: false, error: pCheck.message};
+
+    const normalized = params.username.trim().toLowerCase();
+    const displayName = params.displayName.trim() || 'Giáo viên Toán';
+    const now = new Date().toISOString();
+
+    const initialProfile = {
+      avatar: {...DEFAULT_AVATAR, outfitId: 'ao_cham_kham_pha'},
+      skills: createInitialSkills(),
+      inventory: {
+        outfits: ['hoc_vien', 'ao_xanh_ngoc', 'ao_cham_kham_pha'],
+        tools: ['tool_ruler', 'tool_protractor'],
+        heroCards: [],
+        landmarkCards: [],
+        skillCards: [],
+        upgradeShards: 0,
+        openedChests: [],
+      },
+      stations: createInitialStations(),
+      journey: createInitialJourneyProgress(),
+      preferences: {audioEnabled: false, reduceMotion: false, easyMove: false},
+    };
+
+    // 1. Supabase mode: create auth user on ephemeral client so Admin stays logged in
+    if (this.isSupabaseConfigured() && this.supabase && this.isOnline) {
+      try {
+        const ephemeral = createEphemeralSupabaseClient(this.resolveSupabaseConfig());
+        if (!ephemeral) {
+          return {ok: false, error: 'Không khởi tạo được kết nối Supabase.'};
+        }
+        const {data: authData, error: signUpErr} = await ephemeral.auth.signUp({
+          email: toAuthEmail(normalized),
+          password: params.password,
+        });
+        if (signUpErr || !authData.user) {
+          return {ok: false, error: mapSupabaseAuthError(signUpErr).message};
+        }
+
+        const {data: createdRow, error: rpcErr} = await this.supabase.rpc(
+          'admin_create_teacher_profile',
+          {
+            p_target_uid: authData.user.id,
+            p_username: normalized,
+            p_display_name: displayName,
+            p_initial_profile: initialProfile,
+          },
+        );
+        if (rpcErr || !createdRow) {
+          return {
+            ok: false,
+            error: rpcErr?.message || 'Không thể lưu hồ sơ giáo viên trên Supabase.',
+          };
+        }
+
+        const salt = generateSalt();
+        const hash = await hashPassword(params.password, salt);
+        const teacherUser: UserAccount = {
+          ...rowToUser(createdRow as Record<string, unknown>),
+          passwordHash: hash,
+          passwordSalt: salt,
+        };
+        this.save({
+          ...this.db,
+          users: [...this.db.users.filter((u) => u.uid !== teacherUser.uid), teacherUser],
+        });
+        return {ok: true, user: teacherUser};
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : 'Lỗi tạo tài khoản giáo viên trên Supabase.',
+        };
+      }
+    }
+
+    // 2. LocalAdapter fallback
+    if (this.db.users.some((u) => u.username === normalized)) {
+      return {ok: false, error: 'Tên đăng nhập này đã tồn tại.'};
+    }
+    const salt = generateSalt();
+    const hash = await hashPassword(params.password, salt);
+    const uid = generateId('gv');
+    const teacherCount = this.db.users.filter((u) => u.role === 'teacher').length + 1;
+    const teacherUser: UserAccount = {
+      uid,
+      username: normalized,
+      passwordHash: hash,
+      passwordSalt: salt,
+      role: 'teacher',
+      status: 'active',
+      displayName,
+      studentCode: `GV-${String(teacherCount).padStart(2, '0')}`,
+      classId: 'cls_teacher',
+      classCode: 'GIAO-VIEN',
+      teacherUid: uid,
+      assignedClassIds: [],
+      researchConsent: false,
+      isTestAccount: false,
+      locked: false,
+      createdAt: now,
+      avatarCreated: true,
+      avatar: initialProfile.avatar,
+      xp: 0,
+      awardedKeys: [],
+      skills: initialProfile.skills,
+      inventory: initialProfile.inventory,
+      stations: initialProfile.stations,
+      journey: initialProfile.journey,
+      pausedSession: null,
+      recentQuestionSessions: [],
+      leaderboardOptIn: false,
+      preferences: initialProfile.preferences,
+    };
+    this.save({
+      ...this.db,
+      users: [...this.db.users, teacherUser],
+    });
+    return {ok: true, user: teacherUser};
   }
 
   adminSetUserRole(actor: UserAccount, targetUid: string, role: UserRole): boolean {

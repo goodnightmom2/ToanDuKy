@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
   BookMarked,
@@ -20,14 +21,20 @@ import {
   ShieldCheck,
   Sparkles,
   Unlock,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import {BankDistributionTab} from '../components/BankDistributionTab.tsx';
 import {MaterialImporter} from '../components/MaterialImporter.tsx';
 import {MathText} from '../components/MathText.tsx';
-import {SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
-import {normalizeJourneyProgress} from '../journey.ts';
+import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
+import {
+  ALL_MOC_IDS,
+  computeJourneyPercent,
+  JOURNEY_MILESTONES_BY_ID,
+  normalizeJourneyProgress,
+} from '../journey.ts';
 import {
   canEditSettingsOrUsers,
   dataService,
@@ -77,15 +84,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onRefreshApp();
   };
 
-  // Derived data
-  const users = React.useMemo(() => dataService.getAllUsers(), [tick]);
-  const classes = React.useMemo(() => dataService.getClasses(), [tick]);
+  // Derived role-scoped data (Admin sees all; Teacher sees ONLY own classes & students)
+  const users = React.useMemo(() => dataService.getScopedUsers(user), [tick, user]);
+  const classes = React.useMemo(() => dataService.getScopedClasses(user), [tick, user]);
   const questions = React.useMemo(() => dataService.getQuestions(), [tick]);
-  const rebuttals = React.useMemo(() => dataService.getRebuttals(), [tick]);
+  const rebuttals = React.useMemo(() => dataService.getScopedRebuttals(user), [tick, user]);
   const settings = React.useMemo(() => dataService.getSettings(), [tick]);
 
   // Users tab states
   const [userSearch, setUserSearch] = React.useState('');
+  const [userClassFilter, setUserClassFilter] = React.useState<string>('ALL');
+  const [userRoleFilter, setUserRoleFilter] = React.useState<'ALL' | UserRole>('ALL');
+  const [inspectStudentUid, setInspectStudentUid] = React.useState<string | null>(null);
+  const [showCreateTeacher, setShowCreateTeacher] = React.useState(false);
+  const [teacherDisplayName, setTeacherDisplayName] = React.useState('');
+  const [teacherUsername, setTeacherUsername] = React.useState('');
+  const [teacherPassword, setTeacherPassword] = React.useState('');
+  const [creatingTeacher, setCreatingTeacher] = React.useState(false);
   const [testAccMsg, setTestAccMsg] = React.useState('');
   const [resetTargetUid, setResetTargetUid] = React.useState<string | null>(null);
   const [resetNewPass, setResetNewPass] = React.useState('');
@@ -108,13 +123,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Reports tab states
   const [includeTestInReport, setIncludeTestInReport] = React.useState(false);
-  const attempts = React.useMemo(
-    () => dataService.getAttempts(includeTestInReport),
-    [tick, includeTestInReport],
+  const [reportClassFilter, setReportClassFilter] = React.useState<string>('ALL');
+  const allScopedAttempts = React.useMemo(
+    () => dataService.getScopedAttempts(user, true),
+    [tick, user],
   );
+  const attempts = React.useMemo(() => {
+    const base = dataService.getScopedAttempts(user, includeTestInReport);
+    if (reportClassFilter === 'ALL') return base;
+    return base.filter((a) => a.classId === reportClassFilter);
+  }, [tick, user, includeTestInReport, reportClassFilter]);
   const events = React.useMemo(
-    () => dataService.getEvents(includeTestInReport),
-    [tick, includeTestInReport],
+    () => dataService.getScopedEvents(user, includeTestInReport),
+    [tick, user, includeTestInReport],
   );
 
   // Rebuttals reply map
@@ -197,20 +218,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const realStudents = users.filter((u) => u.role === 'student' && !u.isTestAccount);
+  const teachersList = users.filter((u) => u.role === 'teacher');
   const pendingQuestionsCount = questions.filter((q) => q.review_status === 'pending_teacher_review').length;
   const pendingRebuttalsCount = rebuttals.filter((r) => r.status === 'pending').length;
+  const inspectedStudent = React.useMemo(
+    () => (inspectStudentUid ? users.find((u) => u.uid === inspectStudentUid) ?? null : null),
+    [inspectStudentUid, users],
+  );
+  const questionById = React.useMemo(() => {
+    const map = new Map<string, QuestionItem>();
+    for (const q of questions) map.set(q.id, q);
+    return map;
+  }, [questions]);
+  const classNameById = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of classes) map.set(c.id, c.name);
+    return map;
+  }, [classes]);
 
   const tabs: Array<{id: AdminTab; label: string; icon: React.ComponentType<{className?: string}>}> = [
     {id: 'overview', label: '1. Tổng quan', icon: ShieldCheck},
-    {id: 'users', label: '2. Người dùng', icon: Users},
-    {id: 'classes', label: '3. Lớp & mã', icon: BookMarked},
+    {id: 'users', label: isAdmin ? '2. Người dùng & GV' : '2. Học sinh của tôi', icon: Users},
+    {id: 'classes', label: isAdmin ? '3. Lớp & mã' : `3. Lớp của tôi (${classes.length})`, icon: BookMarked},
     {id: 'bank', label: `4. Ngân hàng (${questions.length})`, icon: Sparkles},
     {id: 'distribution', label: '5. Phân bố ngân hàng', icon: LayoutGrid},
     {id: 'import', label: '6. Nhập học liệu', icon: FileUp},
-    {id: 'reports', label: '7. Báo cáo lớp', icon: BarChart3},
+    {id: 'reports', label: '7. Báo cáo & Lỗi sai', icon: BarChart3},
     {id: 'rebuttals', label: `8. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
-    {id: 'settings', label: '9. Cài đặt', icon: Settings},
-    {id: 'selftest', label: '10. Tự kiểm tra', icon: Check},
+    ...(isAdmin
+      ? [
+          {id: 'settings' as const, label: '9. Cài đặt', icon: Settings},
+          {id: 'selftest' as const, label: '10. Tự kiểm tra', icon: Check},
+        ]
+      : []),
   ];
 
   return (
@@ -263,9 +303,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <div className="space-y-4">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="notebook-card p-4">
-              <p className="text-xs font-bold text-[#5B6B82]">Học viên thật (trừ TEST)</p>
+              <p className="text-xs font-bold text-[#5B6B82]">
+                {isAdmin ? 'Học viên thật (toàn hệ thống)' : 'Học sinh thuộc các lớp của tôi'}
+              </p>
               <p className="font-display text-3xl font-extrabold text-[#14284A] tabular-nums mt-1">
                 {realStudents.length}
+              </p>
+              <p className="text-[11px] text-[#5B6B82] mt-1">
+                {isAdmin ? `${teachersList.length} giáo viên · ${classes.length} lớp` : `${classes.length} lớp đang phụ trách`}
               </p>
             </div>
             <div className="notebook-card p-4">
@@ -277,7 +322,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div className="notebook-card p-4">
               <p className="text-xs font-bold text-[#5B6B82]">Lượt làm bài thật</p>
               <p className="font-display text-3xl font-extrabold text-[#1F7A6B] tabular-nums mt-1">
-                {dataService.getAttempts(false).length}
+                {dataService.getScopedAttempts(user, false).length}
               </p>
             </div>
             <div className="notebook-card p-4">
@@ -290,14 +335,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
           <div className="notebook-card p-5 space-y-2 text-sm text-[#1B2A41]">
             <h2 className="font-display text-lg font-extrabold text-[#14284A]">
-              Lưu ý quy trình duyệt học liệu
+              {isAdmin ? 'Phân quyền & Quy trình vận hành' : 'Không gian quản lý lớp học của Giáo viên'}
             </h2>
-            <p>
-              • Toàn bộ 16 câu hạt giống trạm BS01 (P01–P04, M01–M06, R01–R04, T01–T02) mặc định ở trạng thái <strong>Chờ giáo viên duyệt</strong>. Giáo viên có thể mở tab <strong>4. Ngân hàng</strong> để xem trước công thức KaTeX và bấm duyệt đơn lẻ hoặc hàng loạt.
-            </p>
-            <p>
-              • Dữ liệu từ tài khoản TEST tự động được tách riêng khỏi <strong>6. Báo cáo lớp</strong> và tệp xuất CSV.
-            </p>
+            {isAdmin ? (
+              <>
+                <p>
+                  • <strong>Quản trị viên (Admin):</strong> Tạo & quản lý tài khoản giáo viên ở tab <strong>2. Người dùng & GV</strong>, theo dõi mọi lớp học và cấu hình hệ thống.
+                </p>
+                <p>
+                  • <strong>Giáo viên:</strong> Mỗi giáo viên có thể tự tạo nhiều lớp ở tab <strong>3. Lớp & mã</strong>, chỉ xem và theo dõi tiến độ / lỗi sai của học sinh thuộc lớp mình phụ trách (tách biệt hoàn toàn với giáo viên khác bằng bảo mật RLS trên Supabase).
+                </p>
+              </>
+            ) : (
+              <>
+                <p>
+                  • Bạn có thể tạo nhiều lớp học ở tab <strong>3. Lớp của tôi</strong> (mỗi lớp có mã tham gia riêng cho học sinh đăng ký).
+                </p>
+                <p>
+                  • Ở tab <strong>2. Học sinh của tôi</strong>, bấm nút <strong>Tiến độ &amp; Lỗi sai</strong> bên cạnh từng học sinh để xem chi tiết mốc đang học, trạng thái 6 cụm kỹ năng, các câu làm sai và mã lỗi cụ thể (E01–E12).
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -311,25 +369,60 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               value={userSearch}
               onChange={(e) => setUserSearch(e.target.value)}
               placeholder="Tìm theo mã HS, tên đăng nhập hoặc biệt danh..."
-              className="flex-1 min-w-[220px] px-3.5 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-sm"
+              className="flex-1 min-w-[200px] px-3.5 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-sm"
             />
+            <select
+              value={userClassFilter}
+              onChange={(e) => setUserClassFilter(e.target.value)}
+              className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+            >
+              <option value="ALL">
+                {isAdmin ? 'Tất cả lớp' : `Tất cả lớp của tôi (${classes.length})`}
+              </option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Lớp {c.name} ({c.code})
+                </option>
+              ))}
+            </select>
+            {isAdmin && (
+              <select
+                value={userRoleFilter}
+                onChange={(e) => setUserRoleFilter(e.target.value as 'ALL' | UserRole)}
+                className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+              >
+                <option value="ALL">Mọi vai trò</option>
+                <option value="teacher">Chỉ Giáo viên</option>
+                <option value="student">Chỉ Học viên</option>
+                <option value="admin">Chỉ Quản trị</option>
+              </select>
+            )}
             <div className="flex flex-wrap gap-2">
               {isAdmin && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const res = await dataService.createTwoTestAccounts(user);
-                    setTestAccMsg(
-                      res.created.length > 0
-                        ? `Đã tạo tài khoản TEST: ${res.created.join(' | ')}`
-                        : '2 tài khoản TEST (test_hv01, test_hv02) đã tồn tại sẵn.',
-                    );
-                    refresh();
-                  }}
-                  className="btn-tactile btn-gold text-xs py-2 px-3"
-                >
-                  <Plus className="w-4 h-4" /> Tạo 2 tài khoản TEST
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateTeacher((v) => !v)}
+                    className="btn-tactile btn-jade text-xs py-2 px-3"
+                  >
+                    <UserPlus className="w-4 h-4" /> Tạo tài khoản Giáo viên
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await dataService.createTwoTestAccounts(user);
+                      setTestAccMsg(
+                        res.created.length > 0
+                          ? `Đã tạo tài khoản TEST: ${res.created.join(' | ')}`
+                          : '2 tài khoản TEST (test_hv01, test_hv02) đã tồn tại sẵn.',
+                      );
+                      refresh();
+                    }}
+                    className="btn-tactile btn-gold text-xs py-2 px-3"
+                  >
+                    <Plus className="w-4 h-4" /> Tạo 2 tài khoản TEST
+                  </button>
+                </>
               )}
               <button
                 type="button"
@@ -350,6 +443,79 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
 
+          {isAdmin && showCreateTeacher && (
+            <div className="p-4 rounded-2xl bg-[#E6F6F3] border-2 border-[#2E9C8A] space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-display text-base font-extrabold text-[#14284A]">
+                  Tạo tài khoản Giáo viên mới (chỉ quản lý học sinh &amp; lớp của riêng mình)
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateTeacher(false)}
+                  className="p-1 text-[#14284A]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  value={teacherDisplayName}
+                  onChange={(e) => setTeacherDisplayName(e.target.value)}
+                  placeholder="Tên hiển thị (vd: Cô Lan - Toán 10)"
+                  className="px-3 py-2 rounded-xl bg-white border border-[#2E9C8A] text-xs"
+                />
+                <input
+                  type="text"
+                  value={teacherUsername}
+                  onChange={(e) => setTeacherUsername(e.target.value)}
+                  placeholder="Tên đăng nhập (vd: gv_lan)"
+                  className="px-3 py-2 rounded-xl bg-white border border-[#2E9C8A] text-xs"
+                />
+                <input
+                  type="password"
+                  value={teacherPassword}
+                  onChange={(e) => setTeacherPassword(e.target.value)}
+                  placeholder="Mật khẩu (tối thiểu 8 ký tự)"
+                  className="px-3 py-2 rounded-xl bg-white border border-[#2E9C8A] text-xs"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={creatingTeacher}
+                  onClick={async () => {
+                    setCreatingTeacher(true);
+                    const res = await dataService.adminCreateTeacher(user, {
+                      displayName: teacherDisplayName,
+                      username: teacherUsername,
+                      password: teacherPassword,
+                    });
+                    setCreatingTeacher(false);
+                    if (res.ok && res.user) {
+                      setTestAccMsg(
+                        `Đã tạo tài khoản Giáo viên "${res.user.displayName}" (đăng nhập: ${res.user.username}). Giáo viên đăng nhập xong có thể tự tạo nhiều lớp ở tab Lớp của tôi.`,
+                      );
+                      setTeacherDisplayName('');
+                      setTeacherUsername('');
+                      setTeacherPassword('');
+                      setShowCreateTeacher(false);
+                      refresh();
+                    } else {
+                      setTestAccMsg(res.error ?? 'Không thể tạo tài khoản giáo viên.');
+                    }
+                  }}
+                  className="btn-tactile btn-jade text-xs py-2 px-4"
+                >
+                  {creatingTeacher ? 'Đang tạo...' : 'Xác nhận tạo Giáo viên'}
+                </button>
+                <span className="text-[11px] text-[#145B4F]">
+                  Tài khoản quản trị của bạn vẫn giữ đăng nhập sau khi tạo.
+                </span>
+              </div>
+            </div>
+          )}
+
           {testAccMsg && (
             <p className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B]">
               {testAccMsg}
@@ -360,11 +526,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="border-b-2 border-[#D5B87E] text-[#5B6B82]">
-                  <th className="py-2 pr-3">Mã HS</th>
+                  <th className="py-2 pr-3">Mã</th>
                   <th className="py-2 pr-3">Tên đăng nhập</th>
-                  <th className="py-2 pr-3">Biệt danh</th>
+                  <th className="py-2 pr-3">Biệt danh / Tên</th>
+                  <th className="py-2 pr-3">Lớp</th>
                   <th className="py-2 pr-3">Vai trò</th>
-                  <th className="py-2 pr-3">Hành trình</th>
+                  <th className="py-2 pr-3">Tiến độ &amp; Lỗi sai</th>
                   <th className="py-2 pr-3">XP</th>
                   <th className="py-2">Thao tác</th>
                 </tr>
@@ -372,16 +539,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <tbody className="divide-y divide-[#E5D3A8]">
                 {users
                   .filter((u) => {
+                    if (userClassFilter !== 'ALL' && u.classId !== userClassFilter) return false;
+                    if (isAdmin && userRoleFilter !== 'ALL' && u.role !== userRoleFilter) return false;
                     const q = userSearch.trim().toLowerCase();
                     if (!q) return true;
                     return (
                       u.username.includes(q) ||
                       u.studentCode.toLowerCase().includes(q) ||
-                      u.displayName.toLowerCase().includes(q)
+                      u.displayName.toLowerCase().includes(q) ||
+                      u.classCode.toLowerCase().includes(q)
                     );
                   })
                   .map((u) => {
                     const j = normalizeJourneyProgress(u.journey);
+                    const stuAttempts = allScopedAttempts.filter((a) => a.userId === u.uid);
+                    const wrongAttempts = stuAttempts.filter((a) => !a.isCorrect);
                     return (
                       <tr key={u.uid}>
                         <td className="py-2.5 pr-3 font-bold tabular-nums">
@@ -392,6 +564,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </td>
                         <td className="py-2.5 pr-3">{u.username}</td>
                         <td className="py-2.5 pr-3 font-semibold">{u.displayName}</td>
+                        <td className="py-2.5 pr-3 text-[#4B5B73]">
+                          {u.role === 'student'
+                            ? classNameById.get(u.classId ?? '') ?? u.classCode
+                            : '—'}
+                        </td>
                         <td className="py-2.5 pr-3">
                           {isAdmin && u.uid !== user.uid ? (
                             <select
@@ -407,14 +584,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <option value="admin">Quản trị</option>
                             </select>
                           ) : (
-                            <span className="font-bold uppercase">{u.role}</span>
+                            <span className="font-bold uppercase">
+                              {u.role === 'teacher' ? 'Giáo viên' : u.role === 'admin' ? 'Quản trị' : 'Học viên'}
+                            </span>
                           )}
                         </td>
-                        <td className="py-2.5 pr-3 tabular-nums font-bold text-[#18685B]">
-                          Mốc {j.currentMoc}/10 ({j.passedMoc.length} qua)
+                        <td className="py-2.5 pr-3 tabular-nums">
+                          <div className="font-bold text-[#18685B]">
+                            Mốc {j.currentMoc}/10 ({j.passedMoc.length} qua · {computeJourneyPercent(j)}%)
+                          </div>
+                          {u.role === 'student' && (
+                            <div className="text-[11px] text-[#5B6B82]">
+                              {stuAttempts.length} lượt ·{' '}
+                              <span className={wrongAttempts.length > 0 ? 'font-bold text-[#B24A16]' : ''}>
+                                {wrongAttempts.length} câu sai
+                              </span>
+                            </div>
+                          )}
                         </td>
                         <td className="py-2.5 pr-3 tabular-nums font-bold">{u.xp}</td>
                         <td className="py-2.5 flex flex-wrap gap-1.5">
+                          {u.role === 'student' && (
+                            <button
+                              type="button"
+                              onClick={() => setInspectStudentUid(u.uid)}
+                              className="px-2 py-1 rounded-lg bg-[#14284A] text-[#FFFBF0] font-bold flex items-center gap-1 !min-h-[32px]"
+                            >
+                              <BarChart3 className="w-3 h-3" />
+                              Tiến độ &amp; Lỗi sai
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -546,32 +745,58 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
 
           <div className="space-y-2">
-            {classes.map((cls) => (
-              <div
-                key={cls.id}
-                className="p-3.5 rounded-xl bg-[#FFFBF0] border-2 border-[#D9C293] flex flex-wrap items-center justify-between gap-2"
-              >
-                <div>
-                  <p className="font-display text-lg font-extrabold text-[#14284A]">Lớp {cls.name}</p>
-                  <p className="text-xs text-[#5B6B82]">
-                    Mã tham gia: <strong className="text-[#1F7A6B]">{cls.code}</strong> · Sĩ số đã đăng ký:{' '}
-                    <strong className="tabular-nums">
-                      {users.filter((u) => u.classCode === cls.code && u.role === 'student' && !u.isTestAccount).length}
-                    </strong>
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    dataService.regenerateClassCode(user, cls.id);
-                    refresh();
-                  }}
-                  className="btn-tactile btn-paper text-xs py-2 px-3"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Đổi mã lớp
-                </button>
-              </div>
-            ))}
+            {classes.length === 0 ? (
+              <p className="text-xs text-[#5B6B82] p-4 rounded-xl bg-[#FFFBF0] border border-[#D9C293]">
+                Bạn chưa tạo lớp nào. Hãy nhập tên lớp (vd: <strong>10A1</strong>) và mã lớp (vd: <strong>TOAN10A1</strong>) ở trên — một giáo viên có thể tạo nhiều lớp khác nhau!
+              </p>
+            ) : (
+              classes.map((cls) => {
+                const owner = users.find((u) => u.uid === cls.teacherUid);
+                const studentCount = users.filter(
+                  (u) =>
+                    (u.classId === cls.id || u.classCode === cls.code) &&
+                    u.role === 'student' &&
+                    !u.isTestAccount,
+                ).length;
+                return (
+                  <div
+                    key={cls.id}
+                    className="p-3.5 rounded-xl bg-[#FFFBF0] border-2 border-[#D9C293] flex flex-wrap items-center justify-between gap-2"
+                  >
+                    <div>
+                      <p className="font-display text-lg font-extrabold text-[#14284A]">Lớp {cls.name}</p>
+                      <p className="text-xs text-[#5B6B82]">
+                        Mã tham gia: <strong className="text-[#1F7A6B]">{cls.code}</strong> · Sĩ số:{' '}
+                        <strong className="tabular-nums">{studentCount}</strong>
+                        {isAdmin && owner ? ` · Phụ trách: ${owner.displayName}` : ''}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUserClassFilter(cls.id);
+                          setTab('users');
+                        }}
+                        className="btn-tactile btn-gold text-xs py-2 px-3"
+                      >
+                        <Users className="w-3.5 h-3.5" /> Xem học sinh lớp này
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          dataService.regenerateClassCode(user, cls.id);
+                          refresh();
+                        }}
+                        className="btn-tactile btn-paper text-xs py-2 px-3"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" /> Đổi mã lớp
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
@@ -900,92 +1125,171 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         />
       )}
 
-      {/* TAB 6: CLASS REPORTS (by internal code HS-xxx, explicit denominators, excluding TEST) */}
-      {tab === 'reports' && (
-        <div className="notebook-card p-4 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="font-display text-xl font-extrabold text-[#14284A]">
-                Báo cáo học tập theo mã học viên (không công khai tên thật)
-              </h2>
-              <p className="text-xs text-[#5B6B82]">
-                Mẫu số hiện tại: <strong>{attempts.length} lượt làm bài</strong> ·{' '}
-                <strong>{events.length} sự kiện gốc</strong> (
-                {includeTestInReport ? 'gồm cả tài khoản TEST' : 'đã loại bỏ tài khoản TEST'}).
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="text-xs font-bold flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={includeTestInReport}
-                  onChange={(e) => setIncludeTestInReport(e.target.checked)}
-                  className="accent-[#2E9C8A]"
-                />
-                Hiện cả dữ liệu TEST
-              </label>
-              <button
-                type="button"
-                onClick={() =>
-                  downloadCsv(
-                    'toan-du-ky-bao-cao-luot-lam.csv',
-                    dataService.exportAttemptsCsv(includeTestInReport),
-                  )
-                }
-                className="btn-tactile btn-jade text-xs py-2 px-3"
-              >
-                <Download className="w-4 h-4" /> Xuất CSV lượt làm
-              </button>
-            </div>
-          </div>
+      {/* TAB 7: CLASS REPORTS & ERROR DIAGNOSTICS */}
+      {tab === 'reports' && (() => {
+        const wrongAttempts = attempts.filter((a) => !a.isCorrect);
+        const errorCounts = new Map<string, number>();
+        for (const a of wrongAttempts) {
+          const code = a.errorCode || 'OTHER';
+          errorCounts.set(code, (errorCounts.get(code) ?? 0) + 1);
+        }
+        const sortedErrors = Array.from(errorCounts.entries()).sort((a, b) => b[1] - a[1]);
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b-2 border-[#D5B87E] text-[#5B6B82]">
-                  <th className="py-2 pr-3">Mã HS</th>
-                  <th className="py-2 pr-3">Câu</th>
-                  <th className="py-2 pr-3">Cụm</th>
-                  <th className="py-2 pr-3">Chế độ</th>
-                  <th className="py-2 pr-3">Kết quả</th>
-                  <th className="py-2 pr-3">Mã lỗi</th>
-                  <th className="py-2">Thời gian</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E5D3A8]">
-                {attempts.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-6 text-center text-[#5B6B82]">
-                      Chưa có lượt làm bài nào trong bộ lọc hiện tại.
-                    </td>
-                  </tr>
-                ) : (
-                  attempts.slice(-40).reverse().map((att) => (
-                    <tr key={att.id}>
-                      <td className="py-2 pr-3 font-bold tabular-nums">{att.studentCode}</td>
-                      <td className="py-2 pr-3">{att.questionId}</td>
-                      <td className="py-2 pr-3 font-bold">{att.cluster}</td>
-                      <td className="py-2 pr-3">
-                        {att.mode === 'verify' ? 'Kiểm chứng' : 'Luyện tập'}
-                        {att.switchedToPractice ? ' (đã đổi)' : ''}
-                      </td>
-                      <td className="py-2 pr-3 font-bold">
-                        {att.isCorrect ? (
-                          <span className="text-[#1F7A6B]">Đúng</span>
-                        ) : (
-                          <span className="text-[#8A5108]">Chưa đúng</span>
+        return (
+          <div className="notebook-card p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-xl font-extrabold text-[#14284A]">
+                  Báo cáo tiến độ &amp; chẩn đoán lỗi sai theo lớp
+                </h2>
+                <p className="text-xs text-[#5B6B82]">
+                  Mẫu số: <strong>{attempts.length} lượt làm bài</strong> ({wrongAttempts.length} lượt chưa đúng) ·{' '}
+                  <strong>{events.length} sự kiện gốc</strong> (
+                  {includeTestInReport ? 'gồm cả tài khoản TEST' : 'đã loại bỏ tài khoản TEST'}).
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={reportClassFilter}
+                  onChange={(e) => setReportClassFilter(e.target.value)}
+                  className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+                >
+                  <option value="ALL">
+                    {isAdmin ? 'Tất cả lớp' : `Tất cả lớp của tôi (${classes.length})`}
+                  </option>
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Lớp {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+                <label className="text-xs font-bold flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={includeTestInReport}
+                    onChange={(e) => setIncludeTestInReport(e.target.checked)}
+                    className="accent-[#2E9C8A]"
+                  />
+                  Hiện cả dữ liệu TEST
+                </label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadCsv(
+                      'toan-du-ky-bao-cao-luot-lam.csv',
+                      dataService.exportAttemptsCsv(includeTestInReport),
+                    )
+                  }
+                  className="btn-tactile btn-jade text-xs py-2 px-3"
+                >
+                  <Download className="w-4 h-4" /> Xuất CSV lượt làm
+                </button>
+              </div>
+            </div>
+
+            {sortedErrors.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-[#FFF5E2] border border-[#D98A1F] space-y-2">
+                <p className="text-xs font-extrabold text-[#8A5108] flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4" />
+                  Các lỗi học sinh hay mắc trong phạm vi đang lọc:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {sortedErrors.slice(0, 6).map(([code, count]) => {
+                    const info = ERROR_CATALOG[code];
+                    return (
+                      <div
+                        key={code}
+                        className="p-2.5 rounded-xl bg-white border border-[#E5D3A8] text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-extrabold text-[#14284A]">
+                            {code === 'OTHER' ? 'Lỗi tính toán / chưa phân loại' : `${code} · ${info?.label ?? code}`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-[#FFF3DB] text-[#8A5108] font-extrabold tabular-nums">
+                            {count} lượt
+                          </span>
+                        </div>
+                        {info?.stepHint && (
+                          <p className="text-[11px] text-[#5B6B82] mt-1">{info.stepHint}</p>
                         )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b-2 border-[#D5B87E] text-[#5B6B82]">
+                    <th className="py-2 pr-3">Mã HS</th>
+                    <th className="py-2 pr-3">Câu</th>
+                    <th className="py-2 pr-3">Cụm</th>
+                    <th className="py-2 pr-3">Chế độ</th>
+                    <th className="py-2 pr-3">Kết quả</th>
+                    <th className="py-2 pr-3">Chi tiết lỗi mắc phải</th>
+                    <th className="py-2">Thời gian</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E5D3A8]">
+                  {attempts.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-6 text-center text-[#5B6B82]">
+                        Chưa có lượt làm bài nào trong bộ lọc hiện tại.
                       </td>
-                      <td className="py-2 pr-3">{att.errorCode ?? '—'}</td>
-                      <td className="py-2 tabular-nums">{Math.round(att.durationMs / 1000)}s</td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    attempts.slice(-50).reverse().map((att) => {
+                      const errInfo = att.errorCode ? ERROR_CATALOG[att.errorCode] : undefined;
+                      return (
+                        <tr key={att.id}>
+                          <td className="py-2 pr-3 font-bold tabular-nums">
+                            <button
+                              type="button"
+                              onClick={() => setInspectStudentUid(att.userId)}
+                              className="underline text-[#14284A] hover:text-[#1F7A6B]"
+                              title="Xem chi tiết tiến độ & lỗi sai của học sinh này"
+                            >
+                              {att.studentCode}
+                            </button>
+                          </td>
+                          <td className="py-2 pr-3 font-semibold">{att.questionId}</td>
+                          <td className="py-2 pr-3 font-bold">{att.cluster}</td>
+                          <td className="py-2 pr-3">
+                            {att.mode === 'verify' ? 'Kiểm chứng' : 'Luyện tập'}
+                            {att.switchedToPractice ? ' (đã đổi)' : ''}
+                          </td>
+                          <td className="py-2 pr-3 font-bold">
+                            {att.isCorrect ? (
+                              <span className="text-[#1F7A6B]">Đúng</span>
+                            ) : (
+                              <span className="text-[#B24A16]">
+                                Chưa đúng{att.clickedDontKnow ? ' (Em chưa biết)' : ''}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {att.errorCode ? (
+                              <span>
+                                <strong>{att.errorCode}</strong>
+                                {errInfo ? ` — ${errInfo.label}` : ''}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="py-2 tabular-nums">{Math.round(att.durationMs / 1000)}s</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* TAB 7: REBUTTALS */}
       {tab === 'rebuttals' && (
@@ -1055,8 +1359,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 8: SETTINGS */}
-      {tab === 'settings' && (
+      {/* TAB 9: SETTINGS (Admin only) */}
+      {tab === 'settings' && isAdmin && (
         <div className="notebook-card p-5 space-y-4">
           <h2 className="font-display text-xl font-extrabold text-[#14284A]">
             Cài đặt hệ thống & Kết nối dữ liệu
@@ -1375,8 +1679,220 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 9: SELF TEST */}
-      {tab === 'selftest' && <SelfTestScreen embedded />}
+      {/* TAB 10: SELF TEST (Admin only) */}
+      {tab === 'selftest' && isAdmin && <SelfTestScreen embedded />}
+
+      {/* STUDENT PROGRESS & ERROR DIAGNOSTICS MODAL */}
+      {inspectedStudent && (() => {
+        const j = normalizeJourneyProgress(inspectedStudent.journey);
+        const stuAttempts = allScopedAttempts.filter((a) => a.userId === inspectedStudent.uid);
+        const wrongAttempts = stuAttempts.filter((a) => !a.isCorrect).reverse();
+        const errCounts = new Map<string, number>();
+        for (const a of wrongAttempts) {
+          const code = a.errorCode || 'OTHER';
+          errCounts.set(code, (errCounts.get(code) ?? 0) + 1);
+        }
+        const topErrors = Array.from(errCounts.entries()).sort((a, b) => b[1] - a[1]);
+
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-[#14284A]/60 flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="notebook-card max-w-3xl w-full max-h-[90dvh] overflow-y-auto p-5 space-y-4">
+              <div className="flex items-start justify-between gap-3 border-b border-[#E5D3A8] pb-3">
+                <div>
+                  <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
+                    Hồ sơ chẩn đoán học tập · {inspectedStudent.studentCode}
+                  </p>
+                  <h3 className="font-display text-2xl font-extrabold text-[#14284A]">
+                    {inspectedStudent.displayName} ({inspectedStudent.username})
+                  </h3>
+                  <p className="text-xs text-[#5B6B82]">
+                    Lớp: <strong>{classNameById.get(inspectedStudent.classId ?? '') ?? inspectedStudent.classCode}</strong> ·{' '}
+                    Hành trình: <strong>Mốc {j.currentMoc}/10 ({computeJourneyPercent(j)}%)</strong> ·{' '}
+                    XP: <strong>{inspectedStudent.xp}</strong>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectStudentUid(null)}
+                  className="p-1.5 rounded-lg hover:bg-[#FFF4D6]"
+                >
+                  <X className="w-5 h-5 text-[#14284A]" />
+                </button>
+              </div>
+
+              {/* 1. 10-Milestone Journey Progress */}
+              <div className="space-y-2">
+                <h4 className="font-display text-base font-extrabold text-[#14284A]">
+                  1. Tiến độ hành trình 10 mốc ({j.passedMoc.length}/10 đã vượt qua)
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {ALL_MOC_IDS.map((mocId) => {
+                    const def = JOURNEY_MILESTONES_BY_ID[mocId];
+                    const passed = j.passedMoc.includes(mocId);
+                    const current = j.currentMoc === mocId && !passed;
+                    return (
+                      <div
+                        key={mocId}
+                        className={`p-2 rounded-xl border text-[11px] ${
+                          passed
+                            ? 'bg-[#E6F6F3] border-[#2E9C8A] text-[#145B4F]'
+                            : current
+                              ? 'bg-[#FFF4D6] border-[#E0A93B] text-[#8A5108]'
+                              : 'bg-white border-[#E5D3A8] text-[#7A8799]'
+                        }`}
+                      >
+                        <p className="font-extrabold">
+                          Mốc {mocId}: {def.city}
+                        </p>
+                        <p>{passed ? 'Đã hoàn thành' : current ? 'Đang học' : 'Chưa mở'}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 2. 6 Skill Clusters */}
+              <div className="space-y-2">
+                <h4 className="font-display text-base font-extrabold text-[#14284A]">
+                  2. Đánh giá 6 cụm kiến thức Chương III
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {SKILL_CLUSTER_LIST.map((c) => {
+                    const rec = inspectedStudent.skills[c];
+                    const meta = SKILL_CLUSTERS[c];
+                    const cWrong = wrongAttempts.filter((a) => a.cluster === c).length;
+                    return (
+                      <div
+                        key={c}
+                        className="p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-extrabold text-[#14284A]">
+                            {c} · {meta.shortTitle}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold text-[11px] ${
+                              rec.state === 'Tự làm được'
+                                ? 'bg-[#E6F6F3] text-[#145B4F]'
+                                : rec.state === 'Cần ôn lại'
+                                  ? 'bg-[#FDECEC] text-[#A82A2A]'
+                                  : 'bg-[#FFF3DB] text-[#8A5108]'
+                            }`}
+                          >
+                            {rec.state}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[#5B6B82]">
+                          Đúng tự lực: <strong>{rec.verifyCorrect}</strong> · Có hỗ trợ:{' '}
+                          <strong>{rec.practiceCorrect}</strong> · Sai: <strong className="text-[#B24A16]">{cWrong}</strong> · Tổng:{' '}
+                          <strong>{rec.totalAttempts}</strong>
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3. Top Errors */}
+              <div className="space-y-2">
+                <h4 className="font-display text-base font-extrabold text-[#14284A]">
+                  3. Các lỗi học sinh đang mắc ({wrongAttempts.length} lượt chưa đúng)
+                </h4>
+                {topErrors.length === 0 ? (
+                  <p className="text-xs text-[#1F7A6B] p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]">
+                    Học sinh chưa có lượt làm sai nào được ghi nhận.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {topErrors.map(([code, count]) => {
+                      const info = ERROR_CATALOG[code];
+                      return (
+                        <div
+                          key={code}
+                          className="p-3 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-xs"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-extrabold text-[#8A5108]">
+                              {code === 'OTHER'
+                                ? 'Lỗi tính toán / sai đáp án (chưa gắn mã E01–E12)'
+                                : `${code} — ${info?.label ?? code}`}
+                            </span>
+                            <span className="font-extrabold text-[#B24A16] tabular-nums">
+                              {count} lần
+                            </span>
+                          </div>
+                          {info?.stepHint && (
+                            <p className="text-[11px] text-[#5C3A06] mt-1">
+                              <strong>Gợi ý ôn tập:</strong> {info.stepHint}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* 4. Detailed Wrong Attempts */}
+              {wrongAttempts.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="font-display text-base font-extrabold text-[#14284A]">
+                    4. Chi tiết các câu làm sai gần nhất
+                  </h4>
+                  <div className="space-y-2">
+                    {wrongAttempts.slice(0, 15).map((att) => {
+                      const qItem = questionById.get(att.questionId);
+                      const errInfo = att.errorCode ? ERROR_CATALOG[att.errorCode] : undefined;
+                      return (
+                        <div
+                          key={att.id}
+                          className="p-3 rounded-xl bg-white border border-[#E5D3A8] text-xs space-y-1"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-extrabold text-[#14284A]">
+                              Câu {att.questionId} · Cụm {att.cluster} ·{' '}
+                              {att.mode === 'verify' ? 'Kiểm chứng' : 'Luyện tập'}
+                            </span>
+                            <span className="text-[11px] text-[#5B6B82]">
+                              {new Date(att.createdAt).toLocaleString('vi-VN')}
+                            </span>
+                          </div>
+                          {qItem?.stem_vi && (
+                            <div className="text-[#4B5B73]">
+                              <MathText text={qItem.stem_vi.slice(0, 200)} />
+                            </div>
+                          )}
+                          <p>
+                            <strong>Học sinh trả lời:</strong>{' '}
+                            <span className="font-mono text-[#B24A16]">
+                              {att.clickedDontKnow
+                                ? '(Bấm "Em chưa biết")'
+                                : typeof att.answerRaw === 'string' || typeof att.answerRaw === 'number'
+                                  ? String(att.answerRaw)
+                                  : JSON.stringify(att.answerRaw)}
+                            </span>
+                            {att.usedHint ? ' · (Đã xem gợi ý)' : ''}
+                          </p>
+                          {att.errorCode && (
+                            <p className="text-[#8A5108] font-semibold">
+                              <strong>Lỗi chẩn đoán:</strong> {att.errorCode}
+                              {errInfo ? ` — ${errInfo.label}` : ''}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

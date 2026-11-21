@@ -70,6 +70,28 @@ export function getSupabaseClient(): SupabaseClient | null {
 }
 
 /**
+ * Creates a non-persisting Supabase client used when an Admin registers a new
+ * Teacher auth account without overwriting the Admin's active browser session.
+ */
+export function createEphemeralSupabaseClient(
+  customConfig?: Partial<SupabasePublicConfig> | null,
+): SupabaseClient | null {
+  const cfg =
+    customConfig && isSupabaseConfigValid(customConfig)
+      ? customConfig
+      : defaultSupabaseConfig;
+  if (!isSupabaseConfigValid(cfg)) return null;
+  return createClient(cfg.url, cfg.publishableKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: `tdk_ephemeral_${Date.now()}`,
+    },
+  });
+}
+
+/**
  * Converts a classroom username (e.g. "hocvien01") to a deterministic email
  * for Supabase Auth Email/Password, or preserves a real email containing '@'.
  */
