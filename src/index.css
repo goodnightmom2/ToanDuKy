@@ -309,6 +309,118 @@
   animation: hitRecoil 0.36s ease-out;
 }
 
+/* Intro living-map ambient animations (clouds & gentle sea ripples) */
+@keyframes introMapBreathe {
+  0%,
+  100% {
+    transform: scale(1.015) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.05) translate3d(-0.6%, -0.4%, 0);
+  }
+}
+
+.animate-intro-breathe {
+  animation: introMapBreathe 32s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes cloudDriftRight {
+  0% {
+    transform: translate3d(-4%, 0, 0) scale(1);
+    opacity: 0.42;
+  }
+  50% {
+    transform: translate3d(6%, -1.5%, 0) scale(1.04);
+    opacity: 0.68;
+  }
+  100% {
+    transform: translate3d(-4%, 0, 0) scale(1);
+    opacity: 0.42;
+  }
+}
+
+@keyframes cloudDriftLeft {
+  0% {
+    transform: translate3d(4%, 0, 0) scale(1.02);
+    opacity: 0.38;
+  }
+  50% {
+    transform: translate3d(-7%, 1.2%, 0) scale(0.98);
+    opacity: 0.64;
+  }
+  100% {
+    transform: translate3d(4%, 0, 0) scale(1.02);
+    opacity: 0.38;
+  }
+}
+
+.animate-cloud-drift-slow {
+  animation: cloudDriftRight 34s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.animate-cloud-drift-medium {
+  animation: cloudDriftRight 24s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.animate-cloud-drift-reverse {
+  animation: cloudDriftLeft 29s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes seaWaveRipple {
+  0%,
+  100% {
+    transform: translate3d(0px, 0px, 0);
+    opacity: 0.28;
+  }
+  50% {
+    transform: translate3d(14px, -2.5px, 0);
+    opacity: 0.62;
+  }
+}
+
+@keyframes seaWaveRippleAlt {
+  0%,
+  100% {
+    transform: translate3d(10px, 1.5px, 0);
+    opacity: 0.22;
+  }
+  50% {
+    transform: translate3d(-12px, -2px, 0);
+    opacity: 0.56;
+  }
+}
+
+@keyframes seaShimmerPulse {
+  0%,
+  100% {
+    opacity: 0.14;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.34;
+    transform: scale(1.05);
+  }
+}
+
+.animate-sea-wave {
+  animation: seaWaveRipple 7.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.animate-sea-wave-alt {
+  animation: seaWaveRippleAlt 9.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.animate-sea-shimmer {
+  animation: seaShimmerPulse 6.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
 /* Respect prefers-reduced-motion and in-app .reduce-motion class */
 @media (prefers-reduced-motion: reduce) {
   *,
