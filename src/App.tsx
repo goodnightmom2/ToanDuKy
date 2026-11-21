@@ -65,7 +65,10 @@ function AppInner() {
 
   const [route, setRoute] = React.useState<AppRoute>(() => {
     if (typeof window !== 'undefined') {
-      if (window.location.hash === '#/selftest') return 'selftest';
+      if (window.location.hash === '#/selftest') {
+        const current = dataService.getCurrentUser();
+        if (current && canAccessAdmin(current)) return 'selftest';
+      }
       if (window.location.hash === '#/admin/map-align') {
         const current = dataService.getCurrentUser();
         if (current && canEditSettingsOrUsers(current)) return 'map_align';
@@ -133,7 +136,10 @@ function AppInner() {
   React.useEffect(() => {
     const onHashChange = () => {
       if (window.location.hash === '#/selftest') {
-        setRoute('selftest');
+        const current = dataService.getCurrentUser();
+        if (current && canAccessAdmin(current)) {
+          setRoute('selftest');
+        }
       } else if (window.location.hash === '#/admin/map-align') {
         const current = dataService.getCurrentUser();
         if (current && canEditSettingsOrUsers(current)) {
@@ -363,14 +369,9 @@ function AppInner() {
 
       {/* Main Content Area */}
       <div className={showMainShell ? 'flex-1 pb-24 md:pb-8' : 'flex-1'}>
-        {route === 'intro' && (
-          <IntroScreen
-            onStart={handleStartFromIntro}
-            onOpenSelfTest={() => navigate('selftest')}
-          />
-        )}
+        {route === 'intro' && <IntroScreen onStart={handleStartFromIntro} />}
 
-        {route === 'selftest' && (
+        {route === 'selftest' && canAccessAdmin(user) && (
           <SelfTestScreen onBack={() => navigate(user ? 'map' : 'intro')} />
         )}
 

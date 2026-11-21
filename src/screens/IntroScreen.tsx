@@ -1,15 +1,14 @@
 import React from 'react';
-import {Compass, Play, ShieldCheck} from 'lucide-react';
+import {Compass, Play} from 'lucide-react';
 import {Avatar} from '../components/Avatar.tsx';
 import {CloudScroll} from '../components/HeritageMotifs.tsx';
 import {APP_NAME, DEFAULT_AVATAR, ORG_INFO} from '../config.ts';
 
 interface IntroScreenProps {
   onStart: () => void;
-  onOpenSelfTest: () => void;
 }
 
-export const IntroScreen: React.FC<IntroScreenProps> = ({onStart, onOpenSelfTest}) => {
+export const IntroScreen: React.FC<IntroScreenProps> = ({onStart}) => {
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -213,14 +212,6 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({onStart, onOpenSelfTest
             <Compass className="w-3.5 h-3.5 text-[#18685B]" />
             Nhấn Enter hoặc chạm để vào
           </span>
-          <button
-            type="button"
-            onClick={onOpenSelfTest}
-            className="inline-flex items-center gap-1 text-[#14284A] underline hover:text-[#18685B] !min-h-[36px]"
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            Tự kiểm tra (#/selftest)
-          </button>
         </div>
       </div>
 
