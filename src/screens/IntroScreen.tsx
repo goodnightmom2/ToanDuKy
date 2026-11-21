@@ -69,71 +69,12 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({onStart}) => {
               <Avatar appearance={DEFAULT_AVATAR} size={120} />
             </div>
 
-            {/* Custom inline SVG Title Emblem — high-contrast ivory + deep navy outline + warm gold subtitle */}
-            <svg
-              viewBox="0 0 460 154"
-              className="w-full max-w-[320px] sm:max-w-[375px] h-auto drop-shadow-[0_4px_12px_rgba(5,16,32,0.75)]"
-              role="img"
-              aria-label={APP_NAME}
-            >
-              {/* Protractor & compass crest */}
-              <path
-                d="M178 48 A52 52 0 0 1 282 48"
-                fill="#FFF4D6"
-                fillOpacity="0.92"
-                stroke="#0B1F3A"
-                strokeWidth="3.5"
-              />
-              <line
-                x1="172"
-                y1="48"
-                x2="288"
-                y2="48"
-                stroke="#0B1F3A"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-              />
-              <polygon
-                points="230,10 218,46 242,46"
-                fill="#F7C948"
-                stroke="#0B1F3A"
-                strokeWidth="2.8"
-              />
-              <circle cx="230" cy="48" r="7" fill="#E04433" stroke="#0B1F3A" strokeWidth="2.5" />
-
-              {/* Main wordmark */}
-              <text
-                x="230"
-                y="108"
-                textAnchor="middle"
-                fontFamily="Baloo 2, sans-serif"
-                fontSize="58"
-                fontWeight="800"
-                fill="#FFFDF5"
-                stroke="#0B1F3A"
-                strokeWidth="8"
-                strokeLinejoin="round"
-                paintOrder="stroke fill"
-              >
-                {APP_NAME}
-              </text>
-              <text
-                x="230"
-                y="140"
-                textAnchor="middle"
-                fontFamily="Noto Serif, serif"
-                fontSize="16.5"
-                fontStyle="italic"
-                fontWeight="700"
-                fill="#FFE28A"
-                stroke="#0B1F3A"
-                strokeWidth="3.2"
-                strokeLinejoin="round"
-                paintOrder="stroke fill"
-              >
-                Hệ thức lượng trong tam giác · Toán 10
-              </text>
-            </svg>
+            {/* Official App Logo Emblem */}
+            <img
+              src="/logo.png"
+              alt={APP_NAME}
+              className="w-52 sm:w-64 h-auto object-contain drop-shadow-[0_8px_18px_rgba(4,16,32,0.72)] select-none"
+            />
 
             {/* Girl Scholar Chibi Mascot */}
             <div

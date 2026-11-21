@@ -112,6 +112,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({onAuthenticated, onBackTo
           >
             ← Quay lại màn hình giới thiệu
           </button>
+          <img
+            src="/logo.png"
+            alt={APP_NAME}
+            className="w-24 h-24 mx-auto object-contain drop-shadow-md pt-1 select-none"
+          />
           <h1 className="font-display text-3xl font-extrabold text-[#14284A]">{APP_NAME}</h1>
           <p className="text-sm text-[#5B6B82]">
             {tab === 'setup_admin'

@@ -329,9 +329,13 @@ function AppInner() {
             <button
               type="button"
               onClick={() => navigate('map')}
-              className="font-display text-2xl font-extrabold text-[#14284A] flex items-center gap-2 !min-h-[40px]"
+              className="font-display text-2xl font-extrabold text-[#14284A] flex items-center gap-2.5 !min-h-[40px]"
             >
-              <Compass className="w-6 h-6 text-[#2E9C8A]" />
+              <img
+                src="/logo.png"
+                alt="Logo Toán Du Ký"
+                className="w-10 h-10 object-contain drop-shadow-sm shrink-0"
+              />
               {APP_NAME}
             </button>
 
