@@ -7,6 +7,7 @@ import {
   fixLatexControlChars,
   getGenAIClient,
   jsonResponse,
+  verifyRequestAuth,
 } from '../_shared.ts';
 
 interface ExtractPageInput {
@@ -28,6 +29,11 @@ interface ExtractBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const auth = await verifyRequestAuth(request, {requireStaff: true});
+  if (!auth.ok) {
+    return jsonResponse({error: auth.error, fallbackToManual: true}, auth.status);
+  }
+
   let body: ExtractBody = {};
   try {
     body = (await request.json()) as ExtractBody;

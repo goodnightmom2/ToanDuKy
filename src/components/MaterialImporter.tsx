@@ -124,7 +124,12 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const driveConfigured = Boolean(settings.driveClientId?.trim() && settings.driveApiKey?.trim());
 
   const fetchAiStatus = React.useCallback(() => {
-    fetch(`/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`)
+    void dataService.getAccessToken().then((token) => {
+      const headers: Record<string, string> = token ? {Authorization: `Bearer ${token}`} : {};
+      return fetch(`/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`, {
+        headers,
+      });
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: AiStatusInfo | null) => {
         if (d) setAiStatus(d);
@@ -332,9 +337,13 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           }))
         : [];
 
+      const token = await dataService.getAccessToken();
       const resp = await fetch('/api/ai/extract', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? {Authorization: `Bearer ${token}`} : {}),
+        },
         body: JSON.stringify({
           text: hasPdfPages ? '' : importText,
           pages: pagesPayload,

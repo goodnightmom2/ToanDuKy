@@ -4,6 +4,7 @@ import {
   DAILY_QUOTA_DEFAULT,
   getGenAIClient,
   jsonResponse,
+  verifyRequestAuth,
 } from '../_shared.ts';
 
 interface ReviewOpenBody {
@@ -14,6 +15,11 @@ interface ReviewOpenBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const auth = await verifyRequestAuth(request);
+  if (!auth.ok) {
+    return jsonResponse({error: auth.error}, auth.status);
+  }
+
   let body: ReviewOpenBody = {};
   try {
     body = (await request.json()) as ReviewOpenBody;

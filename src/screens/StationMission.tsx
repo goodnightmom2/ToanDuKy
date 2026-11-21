@@ -140,9 +140,13 @@ export const StationMission: React.FC<StationMissionProps> = ({
 
       if (payload.explanationText && settings.aiEnabled) {
         try {
+          const token = await dataService.getAccessToken();
           const resp = await fetch('/api/ai/review-open', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? {Authorization: `Bearer ${token}`} : {}),
+            },
             body: JSON.stringify({
               stem: payload.question.stem_vi,
               expectedSolution: payload.question.solution_vi,

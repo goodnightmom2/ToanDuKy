@@ -196,7 +196,7 @@ test('Nhập tệp JSON đính kèm Hoc_lieu_BS01_cho_giao_vien_duyet.json đọ
 
   const jsonPath = path.resolve(
     process.cwd(),
-    'public/assets/aistudio/Hoc_lieu_BS01_cho_giao_vien_duyet_cfde0807.json',
+    'src/math/fixtures/Hoc_lieu_BS01_cho_giao_vien_duyet.json',
   );
   const raw = fs.readFileSync(jsonPath, 'utf-8');
   const parsed = parseSection11Json(raw, {

@@ -707,8 +707,8 @@ function settingsToRow(s: AppSettings): Record<string, unknown> {
     ai_enabled: Boolean(s.aiEnabled),
     ai_daily_quota_limit: s.aiDailyQuotaLimit,
     audio_default_on: Boolean(s.audioDefaultOn),
-    drive_client_id: s.driveClientId ?? null,
-    drive_api_key: s.driveApiKey ?? null,
+    drive_client_id: null,
+    drive_api_key: null,
     journey_unlock_all_demo: Boolean(s.journeyUnlockAllDemo),
     map_background_data_url: s.mapBackgroundDataUrl ?? null,
     map_background_has_baked_labels: Boolean(s.mapBackgroundHasBakedLabels),
@@ -1147,28 +1147,36 @@ export class DataService {
     if (!this.supabase) return;
     const sb = this.supabase;
 
-    // 1. Global settings
+    // 1. Global settings (+ staff-only integration settings for Admin/Teacher)
     try {
-      const {data: setRow} = await sb
-        .from('app_settings')
-        .select('*')
-        .eq('id', 'global')
-        .maybeSingle();
-      if (setRow) {
-        const patch = rowToSettingsPatch(setRow as Record<string, unknown>);
-        const definedPatch: Partial<AppSettings> = {};
+      const isStaff = user.role === 'admin' || user.role === 'teacher';
+      const [setRes, staffSetRes] = await Promise.all([
+        sb.from('app_settings').select('*').eq('id', 'global').maybeSingle(),
+        isStaff
+          ? sb.from('staff_settings').select('*').eq('id', 'global').maybeSingle()
+          : Promise.resolve({data: null}),
+      ]);
+      const definedPatch: Partial<AppSettings> = {};
+      if (setRes.data) {
+        const patch = rowToSettingsPatch(setRes.data as Record<string, unknown>);
         for (const [k, v] of Object.entries(patch)) {
-          if (v !== undefined) {
+          if (v !== undefined && k !== 'driveClientId' && k !== 'driveApiKey') {
             (definedPatch as Record<string, unknown>)[k] = v;
           }
         }
-        if (Object.keys(definedPatch).length > 0) {
-          this.save({
-            ...this.db,
-            settings: {...this.db.settings, ...definedPatch},
-          });
-        }
       }
+      if (isStaff && staffSetRes.data) {
+        const sRow = staffSetRes.data as Record<string, unknown>;
+        definedPatch.driveClientId = sRow.drive_client_id ? String(sRow.drive_client_id) : undefined;
+        definedPatch.driveApiKey = sRow.drive_api_key ? String(sRow.drive_api_key) : undefined;
+      } else if (!isStaff) {
+        definedPatch.driveClientId = undefined;
+        definedPatch.driveApiKey = undefined;
+      }
+      this.save({
+        ...this.db,
+        settings: {...this.db.settings, ...definedPatch},
+      });
     } catch {
       // Ignore if offline
     }
@@ -1190,7 +1198,8 @@ export class DataService {
     }
 
     // 3. Role-scoped users, classes, attempts, learning_events, rebuttals, survey_reports
-    // RLS on Postgres already guarantees strict tenant/class/user isolation!
+    // Strictly REPLACE cached collections with RLS-scoped server rows (keeping ONLY unsynced own records)
+    // to prevent cross-account data leakage on shared classroom computers.
     try {
       const mergeById = <T extends {id: string}>(localArr: T[], remoteArr: T[]): T[] => {
         const map = new Map<string, T>();
@@ -1209,14 +1218,21 @@ export class DataService {
         sb.from('survey_reports').select('*'),
       ]);
 
+      const syncedAttSet = new Set(this.db.syncedAttemptIds ?? []);
+      const syncedRebSet = new Set(this.db.syncedRebuttalIds ?? []);
+      const syncedRepSet = new Set(this.db.syncedReportIds ?? []);
+      const dirtyUsersSet = new Set(this.db.dirtyUserUids ?? []);
+
+      // Keep ONLY current user (+ any unsynced dirty local copy of current user) and RLS-returned users
       const userMap = new Map<string, UserAccount>();
-      for (const u of this.db.users) userMap.set(u.uid, u);
+      const localSelf = this.db.users.find((u) => u.uid === user.uid);
+      userMap.set(user.uid, localSelf && dirtyUsersSet.has(user.uid) ? mergeUserProgressIdempotent(user, localSelf) : user);
       if (Array.isArray(uRes.data)) {
         for (const row of uRes.data) {
           const ru = rowToUser(row as Record<string, unknown>);
           if (!ru.uid) continue;
-          const localMatch = userMap.get(ru.uid);
-          userMap.set(ru.uid, localMatch ? mergeUserProgressIdempotent(ru, localMatch) : ru);
+          const prev = userMap.get(ru.uid);
+          userMap.set(ru.uid, prev && dirtyUsersSet.has(ru.uid) ? mergeUserProgressIdempotent(ru, prev) : ru);
         }
       }
 
@@ -1236,28 +1252,32 @@ export class DataService {
         ? repRes.data.map((r) => rowToReport(r as Record<string, unknown>))
         : [];
 
+      const ownUnsyncedAttempts = this.db.attempts.filter(
+        (a) => a.userId === user.uid && !syncedAttSet.has(a.id),
+      );
+      const ownUnsyncedEvents = this.db.events.filter((e) => e.userId === user.uid && !e.synced);
+      const ownUnsyncedRebuttals = this.db.rebuttals.filter(
+        (r) => r.userId === user.uid && !syncedRebSet.has(r.id),
+      );
+      const ownUnsyncedReports = this.db.reports.filter(
+        (r) => r.userId === user.uid && !syncedRepSet.has(r.id),
+      );
+
       const evMap = new Map<string, LearningEvent>();
-      for (const ev of this.db.events) evMap.set(ev.eventId, ev);
+      for (const ev of ownUnsyncedEvents) evMap.set(ev.eventId, ev);
       for (const ev of remoteEvents) evMap.set(ev.eventId, ev);
 
       this.save({
         ...this.db,
         users: Array.from(userMap.values()),
-        classes:
-          remoteClasses.length > 0 ? mergeById(this.db.classes, remoteClasses) : this.db.classes,
-        attempts: mergeById(this.db.attempts, remoteAttempts),
+        classes: remoteClasses,
+        attempts: mergeById(ownUnsyncedAttempts, remoteAttempts),
         events: Array.from(evMap.values()),
-        rebuttals: mergeById(this.db.rebuttals, remoteRebuttals),
-        reports: mergeById(this.db.reports, remoteReports),
-        syncedAttemptIds: Array.from(
-          new Set([...(this.db.syncedAttemptIds ?? []), ...remoteAttempts.map((a) => a.id)]),
-        ),
-        syncedRebuttalIds: Array.from(
-          new Set([...(this.db.syncedRebuttalIds ?? []), ...remoteRebuttals.map((r) => r.id)]),
-        ),
-        syncedReportIds: Array.from(
-          new Set([...(this.db.syncedReportIds ?? []), ...remoteReports.map((r) => r.id)]),
-        ),
+        rebuttals: mergeById(ownUnsyncedRebuttals, remoteRebuttals),
+        reports: mergeById(ownUnsyncedReports, remoteReports),
+        syncedAttemptIds: remoteAttempts.map((a) => a.id),
+        syncedRebuttalIds: remoteRebuttals.map((r) => r.id),
+        syncedReportIds: remoteReports.map((r) => r.id),
       });
     } catch (err) {
       console.error('[Supabase] hydrate collections error:', err);
@@ -1381,13 +1401,7 @@ export class DataService {
             };
           }
 
-          const salt = generateSalt();
-          const hash = await hashPassword(params.password, salt);
-          const adminUser: UserAccount = {
-            ...rowToUser(createdRow as Record<string, unknown>),
-            passwordHash: hash,
-            passwordSalt: salt,
-          };
+          const adminUser: UserAccount = rowToUser(createdRow as Record<string, unknown>);
 
           // Best-effort seed initial questions to Supabase
           void this.seedQuestionsToSupabase(this.db.questions);
@@ -1593,13 +1607,7 @@ export class DataService {
               };
             }
 
-            const salt = generateSalt();
-            const hash = await hashPassword(params.password, salt);
-            const createdUser: UserAccount = {
-              ...rowToUser(createdRow as Record<string, unknown>),
-              passwordHash: hash,
-              passwordSalt: salt,
-            };
+            const createdUser: UserAccount = rowToUser(createdRow as Record<string, unknown>);
 
             this.supabaseSignedInUid = createdUser.uid;
             this.adapterMode = 'supabase';
@@ -1747,13 +1755,11 @@ export class DataService {
             return {ok: false, error: 'Tài khoản này đang tạm khóa. Vui lòng liên hệ giáo viên.'};
           }
 
-          // Preserve local password hash for offline fallback convenience
-          const salt = generateSalt();
-          const hash = await hashPassword(password, salt);
+          // Security: never persist password hashes into browser localStorage in Supabase mode
           this.save({
             ...this.db,
             users: this.db.users.map((u) =>
-              u.uid === uid ? {...u, passwordHash: hash, passwordSalt: salt} : u,
+              u.uid === uid ? {...u, passwordHash: '', passwordSalt: ''} : u,
             ),
             currentUid: uid,
           });
@@ -1825,12 +1831,47 @@ export class DataService {
     return {ok: true, user};
   }
 
+  async getAccessToken(): Promise<string | null> {
+    if (!this.supabase) return null;
+    try {
+      const {data} = await this.supabase.auth.getSession();
+      return data.session?.access_token ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   logout(): void {
     clearDriveToken();
+    const wasSupabaseMode = this.isSupabaseConfigured();
     if (this.supabase) {
       void this.supabase.auth.signOut();
     }
     this.supabaseSignedInUid = null;
+
+    if (wasSupabaseMode) {
+      // Security: scrub all synced cloud profiles, student data & staff integration keys
+      // from browser localStorage on logout to protect shared classroom computers.
+      const syncedAtt = new Set(this.db.syncedAttemptIds ?? []);
+      const syncedReb = new Set(this.db.syncedRebuttalIds ?? []);
+      const syncedRep = new Set(this.db.syncedReportIds ?? []);
+      const fresh = createInitialDb();
+      this.save({
+        ...fresh,
+        currentUid: null,
+        attempts: this.db.attempts.filter((a) => !syncedAtt.has(a.id)),
+        events: this.db.events.filter((e) => !e.synced),
+        rebuttals: this.db.rebuttals.filter((r) => !syncedReb.has(r.id)),
+        reports: this.db.reports.filter((r) => !syncedRep.has(r.id)),
+        settings: {
+          ...fresh.settings,
+          supabaseUrl: this.db.settings.supabaseUrl,
+          supabasePublishableKey: this.db.settings.supabasePublishableKey,
+        },
+      });
+      return;
+    }
+
     this.save({...this.db, currentUid: null});
   }
 
@@ -2781,13 +2822,7 @@ export class DataService {
           };
         }
 
-        const salt = generateSalt();
-        const hash = await hashPassword(params.password, salt);
-        const teacherUser: UserAccount = {
-          ...rowToUser(createdRow as Record<string, unknown>),
-          passwordHash: hash,
-          passwordSalt: salt,
-        };
+        const teacherUser: UserAccount = rowToUser(createdRow as Record<string, unknown>);
         this.save({
           ...this.db,
           users: [...this.db.users.filter((u) => u.uid !== teacherUser.uid), teacherUser],
@@ -2930,13 +2965,7 @@ export class DataService {
           };
         }
 
-        const salt = generateSalt();
-        const hash = await hashPassword(params.password, salt);
-        const studentUser: UserAccount = {
-          ...rowToUser(createdRow as Record<string, unknown>),
-          passwordHash: hash,
-          passwordSalt: salt,
-        };
+        const studentUser: UserAccount = rowToUser(createdRow as Record<string, unknown>);
         this.save({
           ...this.db,
           users: [...this.db.users.filter((u) => u.uid !== studentUser.uid), studentUser],
@@ -3391,6 +3420,17 @@ export class DataService {
       void this.supabase
         .from('app_settings')
         .upsert(settingsToRow(nextSettings), {onConflict: 'id'});
+      if (patch.driveClientId !== undefined || patch.driveApiKey !== undefined) {
+        void this.supabase.from('staff_settings').upsert(
+          {
+            id: 'global',
+            drive_client_id: nextSettings.driveClientId ?? null,
+            drive_api_key: nextSettings.driveApiKey ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          {onConflict: 'id'},
+        );
+      }
     }
     return true;
   }
