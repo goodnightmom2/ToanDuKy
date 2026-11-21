@@ -15,7 +15,7 @@ import {
 import {ErrorBoundary} from './components/ErrorBoundary.tsx';
 import {APP_NAME, ORG_INFO} from './config.ts';
 import {JOURNEY_MILESTONES_BY_ID} from './journey.ts';
-import {AdminPanel} from './screens/AdminPanel.tsx';
+import {AdminPanel, type AdminTab} from './screens/AdminPanel.tsx';
 import {AdventureMap} from './screens/AdventureMap.tsx';
 import {AuthScreen} from './screens/AuthScreen.tsx';
 import {AvatarCreator} from './screens/AvatarCreator.tsx';
@@ -29,13 +29,21 @@ import {ProgressBook} from './screens/ProgressBook.tsx';
 import {SelfTestScreen} from './screens/SelfTestScreen.tsx';
 import {StationMission} from './screens/StationMission.tsx';
 import {StationScene} from './screens/StationScene.tsx';
+import {TeacherClassMap} from './screens/TeacherClassMap.tsx';
 import {
   canAccessAdmin,
   canEditSettingsOrUsers,
   dataService,
   getSyncStatusLabel,
 } from './services/dataService.ts';
-import type {AvatarAppearance, MocId, StationId, SyncStatus, UserAccount} from './types.ts';
+import type {
+  AvatarAppearance,
+  MocId,
+  SkillCluster,
+  StationId,
+  SyncStatus,
+  UserAccount,
+} from './types.ts';
 import {soundEngine} from './utils/audio.ts';
 
 type AppRoute =
@@ -91,6 +99,10 @@ function AppInner() {
   const [bossStartHit, setBossStartHit] = React.useState(0);
   const [bossStartHp, setBossStartHp] = React.useState(100);
   const [previewingAsStudent, setPreviewingAsStudent] = React.useState(false);
+  const [adminInitialTab, setAdminInitialTab] = React.useState<AdminTab | undefined>(undefined);
+  const [adminInitialCluster, setAdminInitialCluster] = React.useState<SkillCluster | 'ALL' | undefined>(
+    undefined,
+  );
 
   // Subscribe to DataService changes (Firebase Auth hydration, save status, pending sync count, journey updates)
   React.useEffect(() => {
@@ -180,7 +192,11 @@ function AppInner() {
 
   const handleStartFromIntro = () => {
     if (user) {
-      navigate(user.avatarCreated ? 'map' : 'avatar_create');
+      if (canAccessAdmin(user)) {
+        navigate('map');
+      } else {
+        navigate(user.avatarCreated ? 'map' : 'avatar_create');
+      }
     } else {
       navigate('auth');
     }
@@ -188,11 +204,11 @@ function AppInner() {
 
   const handleAuthenticated = (loggedIn: UserAccount) => {
     setUser(loggedIn);
-    if (loggedIn.role === 'admin' && !loggedIn.avatarCreated) {
+    if (loggedIn.role === 'admin') {
       navigate('admin');
-    } else if (loggedIn.role === 'admin' && loggedIn.username) {
-      // Admin starts in map or can open admin immediately; if brand new admin, show admin panel right away
-      navigate('admin');
+    } else if (loggedIn.role === 'teacher') {
+      // Teachers land directly on their Class Monitoring Map (no student adventure required)
+      navigate('map');
     } else {
       navigate(loggedIn.avatarCreated ? 'map' : 'avatar_create');
     }
@@ -320,47 +336,77 @@ function AppInner() {
             </button>
 
             <nav className="flex items-center gap-1.5" aria-label="Điều hướng chính">
-              {[
-                {id: 'map' as const, label: 'Bản đồ', icon: Compass},
-                {id: 'practice' as const, label: 'Luyện tập', icon: Dumbbell},
-                {id: 'inventory' as const, label: 'Túi đồ', icon: Backpack},
-                {id: 'progress' as const, label: 'Tiến độ', icon: BookOpen},
-                {id: 'profile' as const, label: 'Hồ sơ', icon: UserIcon},
-              ].map((item) => {
-                const Icon = item.icon;
-                const active =
-                  route === item.id ||
-                  (item.id === 'map' && ['scene', 'mission', 'boss'].includes(route));
-                return (
+              {isStaff ? (
+                <>
                   <button
-                    key={item.id}
                     type="button"
-                    onClick={() => navigate(item.id)}
+                    onClick={() => navigate('map')}
                     className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition ${
-                      active
+                      route === 'map'
                         ? 'bg-[#14284A] text-[#FFFBF0]'
                         : 'text-[#14284A] hover:bg-[#FFF4D6]'
                     }`}
                   >
-                    <Icon className="w-4 h-4" />
-                    {item.label}
+                    <Compass className="w-4 h-4" />
+                    Bản đồ lớp
                   </button>
-                );
-              })}
-
-              {isStaff && (
-                <button
-                  type="button"
-                  onClick={() => navigate('admin')}
-                  className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 border-2 ${
-                    route === 'admin'
-                      ? 'bg-[#E0A93B] text-[#14284A] border-[#B9831E]'
-                      : 'bg-[#FFF4D6] text-[#14284A] border-[#D5B87E]'
-                  }`}
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  Quản trị
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminInitialTab(undefined);
+                      setAdminInitialCluster(undefined);
+                      navigate('admin');
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 border-2 ${
+                      route === 'admin'
+                        ? 'bg-[#E0A93B] text-[#14284A] border-[#B9831E]'
+                        : 'bg-[#FFF4D6] text-[#14284A] border-[#D5B87E]'
+                    }`}
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    Quản lý lớp &amp; Câu hỏi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('profile')}
+                    className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition ${
+                      route === 'profile'
+                        ? 'bg-[#14284A] text-[#FFFBF0]'
+                        : 'text-[#14284A] hover:bg-[#FFF4D6]'
+                    }`}
+                  >
+                    <UserIcon className="w-4 h-4" />
+                    Hồ sơ
+                  </button>
+                </>
+              ) : (
+                [
+                  {id: 'map' as const, label: 'Bản đồ', icon: Compass},
+                  {id: 'practice' as const, label: 'Luyện tập', icon: Dumbbell},
+                  {id: 'inventory' as const, label: 'Túi đồ', icon: Backpack},
+                  {id: 'progress' as const, label: 'Tiến độ', icon: BookOpen},
+                  {id: 'profile' as const, label: 'Hồ sơ', icon: UserIcon},
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const active =
+                    route === item.id ||
+                    (item.id === 'map' && ['scene', 'mission', 'boss'].includes(route));
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => navigate(item.id)}
+                      className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition ${
+                        active
+                          ? 'bg-[#14284A] text-[#FFFBF0]'
+                          : 'text-[#14284A] hover:bg-[#FFF4D6]'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {item.label}
+                    </button>
+                  );
+                })
               )}
             </nav>
           </div>
@@ -390,7 +436,22 @@ function AppInner() {
           />
         )}
 
-        {route === 'map' && user && (
+        {route === 'map' && user && isStaff && (
+          <TeacherClassMap
+            user={user}
+            onOpenAdmin={(opts) => {
+              setAdminInitialTab(opts?.tab);
+              setAdminInitialCluster(opts?.cluster);
+              navigate('admin');
+            }}
+            onRefreshApp={() => {
+              const latest = dataService.getCurrentUser();
+              if (latest) setUser(latest);
+            }}
+          />
+        )}
+
+        {route === 'map' && user && !isStaff && (
           <AdventureMap
             user={user}
             animateFromMoc={animateFromMoc}
@@ -535,6 +596,8 @@ function AppInner() {
         {route === 'admin' && user && canAccessAdmin(user) && (
           <AdminPanel
             user={user}
+            initialTab={adminInitialTab}
+            initialBankCluster={adminInitialCluster}
             onExitAdmin={() => navigate('map')}
             onPreviewAsStudent={() => {
               setPreviewingAsStudent(true);
@@ -569,39 +632,65 @@ function AppInner() {
         </footer>
       )}
 
-      {/* Mobile 5-Tab Bottom Navigation Bar (safe-area, >= 44px targets) */}
+      {/* Mobile Bottom Navigation Bar (Staff 3-tab vs Student 5-tab) */}
       {showMainShell && user && (
         <nav
           className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-[#FFFBF0] border-t-2 border-[#D5B87E] pb-safe no-print"
           aria-label="Thanh điều hướng điện thoại"
         >
-          <div className="grid grid-cols-5 px-1 pt-1">
-            {[
-              {id: 'map' as const, label: 'Bản đồ', icon: Compass},
-              {id: 'practice' as const, label: 'Luyện', icon: Dumbbell},
-              {id: 'inventory' as const, label: 'Túi đồ', icon: Backpack},
-              {id: 'progress' as const, label: 'Tiến độ', icon: BookOpen},
-              {id: 'profile' as const, label: 'Hồ sơ', icon: UserIcon},
-            ].map((item) => {
-              const Icon = item.icon;
-              const active =
-                route === item.id ||
-                (item.id === 'map' && ['scene', 'mission', 'boss'].includes(route));
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => navigate(item.id)}
-                  className={`flex flex-col items-center justify-center py-1.5 rounded-xl text-[11px] font-bold ${
-                    active ? 'text-[#145B4F] bg-[#E6F6F3]' : 'text-[#4B5B73]'
-                  }`}
-                >
-                  <Icon className="w-5 h-5 mb-0.5" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          {isStaff ? (
+            <div className="grid grid-cols-3 px-1 pt-1">
+              {[
+                {id: 'map' as const, label: 'Bản đồ lớp', icon: Compass},
+                {id: 'admin' as const, label: 'Quản lý', icon: ShieldCheck},
+                {id: 'profile' as const, label: 'Hồ sơ', icon: UserIcon},
+              ].map((item) => {
+                const Icon = item.icon;
+                const active = route === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => navigate(item.id)}
+                    className={`flex flex-col items-center justify-center py-1.5 rounded-xl text-[11px] font-bold ${
+                      active ? 'text-[#145B4F] bg-[#E6F6F3]' : 'text-[#4B5B73]'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5 mb-0.5" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid grid-cols-5 px-1 pt-1">
+              {[
+                {id: 'map' as const, label: 'Bản đồ', icon: Compass},
+                {id: 'practice' as const, label: 'Luyện', icon: Dumbbell},
+                {id: 'inventory' as const, label: 'Túi đồ', icon: Backpack},
+                {id: 'progress' as const, label: 'Tiến độ', icon: BookOpen},
+                {id: 'profile' as const, label: 'Hồ sơ', icon: UserIcon},
+              ].map((item) => {
+                const Icon = item.icon;
+                const active =
+                  route === item.id ||
+                  (item.id === 'map' && ['scene', 'mission', 'boss'].includes(route));
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => navigate(item.id)}
+                    className={`flex flex-col items-center justify-center py-1.5 rounded-xl text-[11px] font-bold ${
+                      active ? 'text-[#145B4F] bg-[#E6F6F3]' : 'text-[#4B5B73]'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5 mb-0.5" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </nav>
       )}
     </div>

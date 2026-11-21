@@ -30,6 +30,12 @@ interface JourneyMapProps {
   animateFromMoc?: MocId | null;
   onAnimationDone?: () => void;
   onSelectMoc: (mocId: MocId) => void;
+  /** Teacher/Admin monitoring mode: hides student avatar & locks, shows student counts per milestone */
+  monitorMode?: {
+    studentCountsByMoc: Partial<Record<MocId, number>>;
+    totalStudents: number;
+    completedAllCount?: number;
+  };
 }
 
 const DEFAULT_PUBLIC_MAP_URL = '/journey-map.jpg';
@@ -82,7 +88,9 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
   animateFromMoc = null,
   onAnimationDone,
   onSelectMoc,
+  monitorMode,
 }) => {
+  const isMonitor = Boolean(monitorMode);
   const journey = React.useMemo(() => normalizeJourneyProgress(rawJourney), [rawJourney]);
   const freeMode = isFreeModeUnlocked(journey);
   const percent = computeJourneyPercent(journey);
@@ -555,28 +563,31 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
           <div className="absolute inset-0 z-20">
             {JOURNEY_MILESTONES.map((m) => {
               const pos = effectiveCoords[m.id];
-              const isPassed = journey.passedMoc.includes(m.id);
-              const isCurrent = !freeMode && journey.currentMoc === m.id;
-              const isUnlocked = canEnterMoc(m.id, journey, unlockAllDemo);
+              const isPassed = !isMonitor && journey.passedMoc.includes(m.id);
+              const isCurrent = !isMonitor && !freeMode && journey.currentMoc === m.id;
+              const isUnlocked = isMonitor || canEnterMoc(m.id, journey, unlockAllDemo);
               const isLocked = !isUnlocked;
               const isSelected = selectedMocId === m.id;
               const st = journey.mocStatus[m.id];
               const bossDefeated = Boolean(st?.bossDefeated);
               const stars = st?.skillStars ?? (isPassed ? 2 : 0);
+              const monitorCount = monitorMode?.studentCountsByMoc[m.id] ?? 0;
 
-              const stateText = isPassed
-                ? 'đã vượt qua'
-                : isCurrent
-                  ? 'mốc hiện tại'
-                  : isUnlocked
-                    ? 'đã mở khóa'
-                    : `đang khóa, hoàn thành Mốc ${m.id - 1} để mở`;
+              const stateText = isMonitor
+                ? `${monitorCount} học sinh đang ở mốc này`
+                : isPassed
+                  ? 'đã vượt qua'
+                  : isCurrent
+                    ? 'mốc hiện tại'
+                    : isUnlocked
+                      ? 'đã mở khóa'
+                      : `đang khóa, hoàn thành Mốc ${m.id - 1} để mở`;
 
               return (
                 <div
                   key={m.id}
                   className="absolute -translate-x-1/2 -translate-y-1/2"
-                  style={{left: `${pos.x}%`, top: `${pos.y}%`, zIndex: isCurrent ? 35 : isSelected ? 30 : 22}}
+                  style={{left: `${pos.x}%`, top: `${pos.y}%`, zIndex: isCurrent ? 35 : isSelected ? 32 : monitorCount > 0 ? 26 : 22}}
                 >
                   <button
                     type="button"
@@ -584,7 +595,7 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
                     aria-label={`Mốc ${m.id}: ${m.city} (${stateText})`}
                     aria-pressed={isSelected}
                     data-moc-id={m.id}
-                    data-moc-state={isPassed ? 'passed' : isCurrent ? 'current' : isUnlocked ? 'unlocked' : 'locked'}
+                    data-moc-state={isMonitor ? 'monitor' : isPassed ? 'passed' : isCurrent ? 'current' : isUnlocked ? 'unlocked' : 'locked'}
                     className={`group relative flex flex-col items-center justify-center focus:outline-none focus-visible:ring-4 focus-visible:ring-[#E0A93B] rounded-full transition-transform !min-h-0 ${
                       isSelected ? 'scale-110' : 'hover:scale-105'
                     }`}
@@ -595,7 +606,26 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
                     )}
 
                     {/* PIN ICON BY STATE */}
-                    {isCurrent ? (
+                    {isMonitor ? (
+                      /* Teacher Monitoring Pin: shows student count right inside the pin! */
+                      <div
+                        className={`relative w-8 h-8 sm:w-10 sm:h-10 rounded-full border-2 shadow-[0_3px_8px_rgba(20,40,74,0.45)] flex flex-col items-center justify-center leading-none transition-colors ${
+                          monitorCount > 0
+                            ? 'bg-[#1E8E78] border-[#FFFBF0] text-white'
+                            : 'bg-[#FFFBF0] border-[#14284A] text-[#14284A]'
+                        }`}
+                      >
+                        <span className="font-display font-extrabold text-xs sm:text-sm tabular-nums">
+                          {monitorCount}
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] font-extrabold uppercase opacity-90">
+                          HS
+                        </span>
+                        <span className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-[#14284A] border border-[#FFFBF0] text-[#F8D258] text-[8px] font-extrabold flex items-center justify-center">
+                          {m.id}
+                        </span>
+                      </div>
+                    ) : isCurrent ? (
                       /* Large golden teardrop pin with open book + compass + red flag */
                       <div
                         className={`relative flex items-center justify-center ${
@@ -677,22 +707,30 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
                     {/* PIN LABEL PILL (masks baked artwork labels cleanly when hasBakedLabels is true) */}
                     <span
                       className={`absolute ${getLabelOffsetClass(m.id, isCurrent)} whitespace-nowrap font-display font-extrabold leading-tight rounded-lg border shadow-sm transition-colors pointer-events-none ${
-                        isCurrent
-                          ? 'px-2 py-0.5 text-[9.5px] sm:text-xs bg-[#F8C846] text-[#14284A] border-[#8A4F0B] shadow-md'
-                          : isPassed
-                            ? 'px-1.5 py-0.5 text-[8.5px] sm:text-[11px] bg-[#FFFBF0] text-[#145B4F] border-[#2E9C8A]'
-                            : isLocked
-                              ? showBakedMasks
-                                ? 'px-1.5 py-0.5 text-[8.5px] sm:text-[10.5px] bg-[#F5F7FA] text-[#475569] border-[#94A3B8]'
-                                : 'px-1.5 py-0.5 text-[8.5px] sm:text-[10.5px] bg-[#FFFBF0]/82 text-[#475569] border-[#CBD5E1]'
-                              : 'px-1.5 py-0.5 text-[8.5px] sm:text-[11px] bg-[#FFF4D6] text-[#14284A] border-[#B9831E]'
+                        isMonitor
+                          ? isSelected
+                            ? 'px-2 py-0.5 text-[9px] sm:text-xs bg-[#F8C846] text-[#14284A] border-[#8A4F0B] shadow-md'
+                            : monitorCount > 0
+                              ? 'px-1.5 py-0.5 text-[8.5px] sm:text-[11px] bg-[#E6F6F3] text-[#145B4F] border-[#1E8E78]'
+                              : 'px-1.5 py-0.5 text-[8.5px] sm:text-[10.5px] bg-[#FFFBF0]/92 text-[#14284A] border-[#C9A86A]'
+                          : isCurrent
+                            ? 'px-2 py-0.5 text-[9.5px] sm:text-xs bg-[#F8C846] text-[#14284A] border-[#8A4F0B] shadow-md'
+                            : isPassed
+                              ? 'px-1.5 py-0.5 text-[8.5px] sm:text-[11px] bg-[#FFFBF0] text-[#145B4F] border-[#2E9C8A]'
+                              : isLocked
+                                ? showBakedMasks
+                                  ? 'px-1.5 py-0.5 text-[8.5px] sm:text-[10.5px] bg-[#F5F7FA] text-[#475569] border-[#94A3B8]'
+                                  : 'px-1.5 py-0.5 text-[8.5px] sm:text-[10.5px] bg-[#FFFBF0]/82 text-[#475569] border-[#CBD5E1]'
+                                : 'px-1.5 py-0.5 text-[8.5px] sm:text-[11px] bg-[#FFF4D6] text-[#14284A] border-[#B9831E]'
                       }`}
                     >
-                      {isCurrent
-                        ? `Cột mốc ${m.id}: ${m.displayLabel}`
-                        : isPassed
-                          ? `${m.id}. ${m.displayLabel} ✓`
-                          : `${m.id}. ${m.displayLabel}`}
+                      {isMonitor
+                        ? `${m.id}. ${m.displayLabel}${monitorCount > 0 ? ` (${monitorCount})` : ''}`
+                        : isCurrent
+                          ? `Cột mốc ${m.id}: ${m.displayLabel}`
+                          : isPassed
+                            ? `${m.id}. ${m.displayLabel} ✓`
+                            : `${m.id}. ${m.displayLabel}`}
                     </span>
                   </button>
                 </div>
@@ -700,28 +738,30 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
             })}
           </div>
 
-          {/* LAYER 4: Live Chibi Avatar standing beside current milestone (or walking along route!) */}
-          <div
-            className="absolute z-30 pointer-events-none -translate-x-1/2 -translate-y-3/4 transition-[left,top] duration-300"
-            style={{
-              left: `${avatarPos.xPct}%`,
-              top: `${avatarPos.yPct}%`,
-            }}
-            data-testid="journey-map-avatar"
-          >
-            <div className="relative flex flex-col items-center">
-              <div className="w-10 h-12 sm:w-14 sm:h-16 drop-shadow-[0_3px_4px_rgba(20,40,74,0.45)]">
-                <Avatar
-                  appearance={avatar}
-                  view={walkingPos ? 'side' : 'front'}
-                  frame={walkingPos ? (Math.floor(walkingPos.progress * 14) % 2 === 0 ? 'walk1' : 'walk2') : 'idle'}
-                  size={56}
-                  className="w-full h-full"
-                />
+          {/* LAYER 4: Live Chibi Avatar standing beside current milestone (student mode only) */}
+          {!isMonitor && (
+            <div
+              className="absolute z-30 pointer-events-none -translate-x-1/2 -translate-y-3/4 transition-[left,top] duration-300"
+              style={{
+                left: `${avatarPos.xPct}%`,
+                top: `${avatarPos.yPct}%`,
+              }}
+              data-testid="journey-map-avatar"
+            >
+              <div className="relative flex flex-col items-center">
+                <div className="w-10 h-12 sm:w-14 sm:h-16 drop-shadow-[0_3px_4px_rgba(20,40,74,0.45)]">
+                  <Avatar
+                    appearance={avatar}
+                    view={walkingPos ? 'side' : 'front'}
+                    frame={walkingPos ? (Math.floor(walkingPos.progress * 14) % 2 === 0 ? 'walk1' : 'walk2') : 'idle'}
+                    size={56}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="w-6 h-1.5 rounded-full bg-[#14284A]/35 -mt-1 blur-[0.5px]" />
               </div>
-              <span className="w-6 h-1.5 rounded-full bg-[#14284A]/35 -mt-1 blur-[0.5px]" />
             </div>
-          </div>
+          )}
 
           {/* LAYER 5: Top-Left HTML/CSS Wooden Sign Logo "Toán Du Ký" */}
           <div
@@ -784,20 +824,34 @@ export const JourneyMap: React.FC<JourneyMapProps> = ({
                 </div>
               </div>
 
-              {/* Real % golden progress bar */}
+              {/* Real % golden progress bar (or Class Summary HUD in Teacher Monitor Mode) */}
               <div className="flex-1 mb-0.5 bg-[#4B2B12]/95 border-2 border-[#E6B856] rounded-xl px-2 py-1 shadow-md">
-                <div className="flex items-center justify-between text-[8.5px] sm:text-[10px] font-extrabold text-[#FFF4D6] leading-none mb-1 tabular-nums">
-                  <span>{freeMode ? 'Tự do' : 'Tiến độ'}</span>
-                  <span className="text-[#F8D258]">
-                    {percent}% ({passedCount}/10)
-                  </span>
-                </div>
-                <div className="w-full h-2 rounded-full bg-[#2B1707] border border-[#8F6024] overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#E09B24] via-[#F7CE4E] to-[#FFF2A6] transition-all duration-500"
-                    style={{width: `${percent}%`}}
-                  />
-                </div>
+                {isMonitor ? (
+                  <>
+                    <div className="flex items-center justify-between text-[8.5px] sm:text-[10px] font-extrabold text-[#FFF4D6] leading-none mb-1 tabular-nums">
+                      <span>Giám sát lớp</span>
+                      <span className="text-[#F8D258]">{monitorMode?.totalStudents ?? 0} HS</span>
+                    </div>
+                    <p className="text-[7.5px] sm:text-[9px] font-bold text-[#F9DE8A] leading-tight">
+                      Chạm vào từng mốc để xem DS học sinh
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between text-[8.5px] sm:text-[10px] font-extrabold text-[#FFF4D6] leading-none mb-1 tabular-nums">
+                      <span>{freeMode ? 'Tự do' : 'Tiến độ'}</span>
+                      <span className="text-[#F8D258]">
+                        {percent}% ({passedCount}/10)
+                      </span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-[#2B1707] border border-[#8F6024] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-[#E09B24] via-[#F7CE4E] to-[#FFF2A6] transition-all duration-500"
+                        style={{width: `${percent}%`}}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>

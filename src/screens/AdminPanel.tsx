@@ -51,13 +51,15 @@ import {SelfTestScreen} from './SelfTestScreen.tsx';
 
 interface AdminPanelProps {
   user: UserAccount;
+  initialTab?: AdminTab;
+  initialBankCluster?: SkillCluster | 'ALL';
   onExitAdmin: () => void;
   onPreviewAsStudent: () => void;
   onOpenMapAlign?: () => void;
   onRefreshApp: () => void;
 }
 
-type AdminTab =
+export type AdminTab =
   | 'overview'
   | 'users'
   | 'classes'
@@ -71,18 +73,24 @@ type AdminTab =
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   user,
+  initialTab,
+  initialBankCluster,
   onExitAdmin,
   onPreviewAsStudent,
   onOpenMapAlign,
   onRefreshApp,
 }) => {
   const isAdmin = canEditSettingsOrUsers(user);
-  const [tab, setTab] = React.useState<AdminTab>('overview');
+  const [tab, setTab] = React.useState<AdminTab>(initialTab ?? 'overview');
   const [tick, setTick] = React.useState(0);
   const refresh = () => {
     setTick((t) => t + 1);
     onRefreshApp();
   };
+
+  React.useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
 
   // Derived role-scoped data (Admin sees all; Teacher sees ONLY own classes & students)
   const users = React.useMemo(() => dataService.getScopedUsers(user), [tick, user]);
@@ -101,16 +109,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [teacherUsername, setTeacherUsername] = React.useState('');
   const [teacherPassword, setTeacherPassword] = React.useState('');
   const [creatingTeacher, setCreatingTeacher] = React.useState(false);
+  const [showCreateStudent, setShowCreateStudent] = React.useState(false);
+  const [stuDisplayName, setStuDisplayName] = React.useState('');
+  const [stuUsername, setStuUsername] = React.useState('');
+  const [stuPassword, setStuPassword] = React.useState('');
+  const [stuClassId, setStuClassId] = React.useState<string>(() => classes[0]?.id ?? '');
+  const [creatingStudent, setCreatingStudent] = React.useState(false);
   const [testAccMsg, setTestAccMsg] = React.useState('');
   const [resetTargetUid, setResetTargetUid] = React.useState<string | null>(null);
   const [resetNewPass, setResetNewPass] = React.useState('');
+
+  React.useEffect(() => {
+    if (!stuClassId && classes.length > 0) {
+      setStuClassId(classes[0].id);
+    }
+  }, [classes, stuClassId]);
 
   // Class tab states
   const [newClassName, setNewClassName] = React.useState('');
   const [newClassCode, setNewClassCode] = React.useState('');
 
   // Bank tab states
-  const [bankFilterCluster, setBankFilterCluster] = React.useState<SkillCluster | 'ALL'>('ALL');
+  const [bankFilterCluster, setBankFilterCluster] = React.useState<SkillCluster | 'ALL'>(
+    initialBankCluster ?? 'ALL',
+  );
+  React.useEffect(() => {
+    if (initialBankCluster) setBankFilterCluster(initialBankCluster);
+  }, [initialBankCluster]);
   const [bankFilterStatus, setBankFilterStatus] = React.useState<ReviewStatus | 'ALL'>('ALL');
   const [selectedQIds, setSelectedQIds] = React.useState<string[]>([]);
   const [previewQuestion, setPreviewQuestion] = React.useState<QuestionItem | null>(null);
@@ -270,7 +295,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <Eye className="w-4 h-4" /> Xem như học viên
           </button>
           <button type="button" onClick={onExitAdmin} className="btn-tactile btn-paper text-xs py-2 px-3">
-            <ArrowLeft className="w-4 h-4" /> Về giao diện học
+            <ArrowLeft className="w-4 h-4" /> Về Bản đồ lớp
           </button>
         </div>
       </div>
@@ -398,14 +423,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </select>
             )}
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateStudent((v) => !v);
+                  setShowCreateTeacher(false);
+                }}
+                className="btn-tactile btn-jade text-xs py-2 px-3"
+              >
+                <UserPlus className="w-4 h-4" /> Cấp tài khoản Học sinh
+              </button>
               {isAdmin && (
                 <>
                   <button
                     type="button"
-                    onClick={() => setShowCreateTeacher((v) => !v)}
-                    className="btn-tactile btn-jade text-xs py-2 px-3"
+                    onClick={() => {
+                      setShowCreateTeacher((v) => !v);
+                      setShowCreateStudent(false);
+                    }}
+                    className="btn-tactile btn-ink text-xs py-2 px-3"
                   >
-                    <UserPlus className="w-4 h-4" /> Tạo tài khoản Giáo viên
+                    <UserPlus className="w-4 h-4 text-[#E0A93B]" /> Tạo tài khoản Giáo viên
                   </button>
                   <button
                     type="button"
@@ -442,6 +480,109 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </button>
             </div>
           </div>
+
+          {showCreateStudent && (
+            <div className="p-4 rounded-2xl bg-[#FFF4D6] border-2 border-[#E0A93B] space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-display text-base font-extrabold text-[#14284A]">
+                  Cấp tài khoản Học sinh &amp; đưa trực tiếp vào lớp bạn quản lý
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateStudent(false)}
+                  className="p-1 text-[#14284A]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              {classes.length === 0 ? (
+                <div className="text-xs text-[#8A5108] space-y-2">
+                  <p>
+                    Bạn chưa có lớp học nào. Hãy tạo ít nhất 1 lớp ở tab <strong>3. Lớp của tôi</strong> trước khi cấp tài khoản cho học sinh.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTab('classes')}
+                    className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Đi tới tạo lớp ngay
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                    <select
+                      value={stuClassId}
+                      onChange={(e) => setStuClassId(e.target.value)}
+                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold text-[#14284A]"
+                    >
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          Lớp {c.name} ({c.code})
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={stuDisplayName}
+                      onChange={(e) => setStuDisplayName(e.target.value)}
+                      placeholder="Tên/Biệt danh HS (vd: Minh Anh 10A1)"
+                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                    />
+                    <input
+                      type="text"
+                      value={stuUsername}
+                      onChange={(e) => setStuUsername(e.target.value)}
+                      placeholder="Tên đăng nhập (vd: hs_minhanh)"
+                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                    />
+                    <input
+                      type="password"
+                      value={stuPassword}
+                      onChange={(e) => setStuPassword(e.target.value)}
+                      placeholder="Mật khẩu cấp cho HS (≥ 8 ký tự)"
+                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={creatingStudent}
+                      onClick={async () => {
+                        setCreatingStudent(true);
+                        const chosenPass = stuPassword;
+                        const res = await dataService.staffCreateStudent(user, {
+                          displayName: stuDisplayName,
+                          username: stuUsername,
+                          password: chosenPass,
+                          classId: stuClassId || classes[0].id,
+                        });
+                        setCreatingStudent(false);
+                        if (res.ok && res.user) {
+                          const clsName = classNameById.get(res.user.classId ?? '') ?? res.user.classCode;
+                          setTestAccMsg(
+                            `Đã cấp tài khoản cho "${res.user.displayName}" vào Lớp ${clsName} — Tên đăng nhập: ${res.user.username} | Mật khẩu: ${chosenPass}`,
+                          );
+                          setStuDisplayName('');
+                          setStuUsername('');
+                          setStuPassword('');
+                          refresh();
+                        } else {
+                          setTestAccMsg(res.error ?? 'Không thể cấp tài khoản học sinh.');
+                        }
+                      }}
+                      className="btn-tactile btn-jade text-xs py-2 px-4"
+                    >
+                      {creatingStudent ? 'Đang tạo...' : 'Xác nhận cấp tài khoản'}
+                    </button>
+                    <span className="text-[11px] text-[#5C3A06]">
+                      Học sinh được thêm thẳng vào lớp đã chọn và xuất hiện ngay trên Bản đồ lớp của bạn.
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {isAdmin && showCreateTeacher && (
             <div className="p-4 rounded-2xl bg-[#E6F6F3] border-2 border-[#2E9C8A] space-y-3">

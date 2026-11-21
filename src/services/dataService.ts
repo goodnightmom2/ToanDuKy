@@ -2846,6 +2846,156 @@ export class DataService {
     return {ok: true, user: teacherUser};
   }
 
+  /**
+   * Allows a Teacher (for their own classes) or Admin (for any class) to directly
+   * issue a student login account and assign the student straight into that class.
+   */
+  async staffCreateStudent(
+    actor: UserAccount,
+    params: {username: string; password: string; displayName: string; classId: string},
+  ): Promise<{ok: boolean; user?: UserAccount; error?: string}> {
+    if (!canAccessAdmin(actor)) {
+      return {ok: false, error: 'Chỉ giáo viên hoặc quản trị viên mới có quyền cấp tài khoản học sinh.'};
+    }
+    const uCheck = validateUsername(params.username);
+    if (!uCheck.ok) return {ok: false, error: uCheck.message};
+    const pCheck = validatePassword(params.password);
+    if (!pCheck.ok) return {ok: false, error: pCheck.message};
+
+    const cls = this.db.classes.find((c) => c.id === params.classId);
+    if (!cls) {
+      return {ok: false, error: 'Vui lòng chọn một lớp hợp lệ (hãy tạo lớp ở tab Lớp trước nếu chưa có).'};
+    }
+    if (actor.role === 'teacher' && !this.isManagedByTeacher(actor, cls.id, cls.teacherUid)) {
+      return {ok: false, error: 'Giáo viên chỉ được cấp tài khoản cho học sinh thuộc lớp mình phụ trách.'};
+    }
+
+    const normalized = params.username.trim().toLowerCase();
+    const displayName = params.displayName.trim() || 'Học viên khám phá';
+    const now = new Date().toISOString();
+
+    const initialProfile = {
+      avatar: {...DEFAULT_AVATAR},
+      skills: createInitialSkills(),
+      inventory: {
+        outfits: ['hoc_vien', 'ao_xanh_ngoc'],
+        tools: ['tool_ruler'],
+        heroCards: [],
+        landmarkCards: [],
+        skillCards: ['sk_angle_sum'],
+        upgradeShards: 0,
+        openedChests: [],
+      },
+      stations: createInitialStations(),
+      journey: createInitialJourneyProgress(),
+      preferences: {
+        audioEnabled: this.db.settings.audioDefaultOn,
+        reduceMotion: false,
+        easyMove: false,
+      },
+    };
+
+    // 1. Supabase mode: signUp on ephemeral client so Teacher/Admin stays logged in
+    if (this.isSupabaseConfigured() && this.supabase && this.isOnline) {
+      try {
+        // Ensure class exists on server before binding student
+        await this.supabase.from('classes').upsert(classToRow(cls), {onConflict: 'id'});
+
+        const ephemeral = createEphemeralSupabaseClient(this.resolveSupabaseConfig());
+        if (!ephemeral) {
+          return {ok: false, error: 'Không khởi tạo được kết nối Supabase.'};
+        }
+        const {data: authData, error: signUpErr} = await ephemeral.auth.signUp({
+          email: toAuthEmail(normalized),
+          password: params.password,
+        });
+        if (signUpErr || !authData.user) {
+          return {ok: false, error: mapSupabaseAuthError(signUpErr).message};
+        }
+
+        const {data: createdRow, error: rpcErr} = await this.supabase.rpc(
+          'staff_create_student_profile',
+          {
+            p_target_uid: authData.user.id,
+            p_username: normalized,
+            p_display_name: displayName,
+            p_class_id: cls.id,
+            p_initial_profile: initialProfile,
+          },
+        );
+        if (rpcErr || !createdRow) {
+          return {
+            ok: false,
+            error: rpcErr?.message || 'Không thể lưu hồ sơ học sinh vào lớp trên Supabase.',
+          };
+        }
+
+        const salt = generateSalt();
+        const hash = await hashPassword(params.password, salt);
+        const studentUser: UserAccount = {
+          ...rowToUser(createdRow as Record<string, unknown>),
+          passwordHash: hash,
+          passwordSalt: salt,
+        };
+        this.save({
+          ...this.db,
+          users: [...this.db.users.filter((u) => u.uid !== studentUser.uid), studentUser],
+        });
+        return {ok: true, user: studentUser};
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : 'Lỗi cấp tài khoản học sinh trên Supabase.',
+        };
+      }
+    }
+
+    // 2. LocalAdapter fallback
+    if (this.db.users.some((u) => u.username === normalized)) {
+      return {ok: false, error: 'Tên đăng nhập này đã tồn tại.'};
+    }
+    const salt = generateSalt();
+    const hash = await hashPassword(params.password, salt);
+    const uid = generateId('usr');
+    const countInClass =
+      this.db.users.filter((u) => u.classId === cls.id && u.role === 'student').length + 1;
+    const studentUser: UserAccount = {
+      uid,
+      username: normalized,
+      passwordHash: hash,
+      passwordSalt: salt,
+      role: 'student',
+      status: 'active',
+      displayName,
+      studentCode: `HS-${cls.name}-${String(countInClass).padStart(2, '0')}`,
+      classId: cls.id,
+      classCode: cls.code,
+      teacherUid: cls.teacherUid,
+      assignedClassIds: [],
+      researchConsent: false,
+      isTestAccount: false,
+      locked: false,
+      createdAt: now,
+      avatarCreated: false,
+      avatar: initialProfile.avatar,
+      xp: 0,
+      awardedKeys: [],
+      skills: initialProfile.skills,
+      inventory: initialProfile.inventory,
+      stations: initialProfile.stations,
+      journey: initialProfile.journey,
+      pausedSession: null,
+      recentQuestionSessions: [],
+      leaderboardOptIn: false,
+      preferences: initialProfile.preferences,
+    };
+    this.save({
+      ...this.db,
+      users: [...this.db.users, studentUser],
+    });
+    return {ok: true, user: studentUser};
+  }
+
   adminSetUserRole(actor: UserAccount, targetUid: string, role: UserRole): boolean {
     if (!canEditSettingsOrUsers(actor)) return false;
     this.updateUser(targetUid, (u) => ({...u, role}), {adminFullSync: true});
