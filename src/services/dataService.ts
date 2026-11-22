@@ -771,7 +771,7 @@ function mapSupabaseAuthError(err: {message?: string; status?: number} | null | 
   if (raw.includes('failed to fetch') || raw.includes('network')) {
     return {
       fallbackRecommended: true,
-      message: 'Không có kết nối mạng tới máy chủ Supabase.',
+      message: 'Không có kết nối mạng tới máy chủ hệ thống.',
     };
   }
   if (raw.includes('already registered') || raw.includes('already been registered')) {
@@ -783,8 +783,7 @@ function mapSupabaseAuthError(err: {message?: string; status?: number} | null | 
   if (raw.includes('email not confirmed')) {
     return {
       fallbackRecommended: false,
-      message:
-        'Tài khoản chưa được kích hoạt email. Quản trị viên hãy tắt "Confirm email" trong Supabase Dashboard → Authentication → Providers → Email.',
+      message: 'Tài khoản chưa được kích hoạt. Vui lòng liên hệ quản trị viên.',
     };
   }
   if (raw.includes('invalid login credentials')) {
@@ -807,7 +806,7 @@ function mapSupabaseAuthError(err: {message?: string; status?: number} | null | 
   }
   return {
     fallbackRecommended: false,
-    message: err?.message || 'Lỗi xác thực Supabase.',
+    message: err?.message || 'Lỗi xác thực tài khoản.',
   };
 }
 
@@ -959,6 +958,9 @@ export class DataService {
       window.addEventListener('online', () => {
         this.isOnline = true;
         this.notify();
+        if (this.isSupabaseAuthenticated() && this.getPendingSyncCount() > 0) {
+          void this.syncLocalDataToServer();
+        }
       });
       window.addEventListener('offline', () => {
         this.isOnline = false;
@@ -1210,6 +1212,10 @@ export class DataService {
       });
 
       await this.hydrateCollectionsForRole(remoteUser);
+      this.lastNotice = '';
+      if (this.getPendingSyncCount() > 0) {
+        void this.syncLocalDataToServer();
+      }
       return this.getCurrentUser();
     } catch (err) {
       console.error('[Supabase] hydrateUser error:', err);
@@ -1991,24 +1997,25 @@ export class DataService {
     if (!this.isSupabaseConfigured() || !this.supabase) {
       return {
         ...empty,
-        message: 'Supabase chưa sẵn sàng. Vui lòng kiểm tra VITE_SUPABASE_URL và VITE_SUPABASE_PUBLISHABLE_KEY.',
+        message: 'Hệ thống đang hoạt động ở chế độ lưu tạm trên máy.',
       };
     }
     if (!this.isOnline) {
       return {
         ...empty,
-        message: 'Thiết bị đang ngoại tuyến. Dữ liệu vẫn ở trạng thái "Chờ đồng bộ" trên máy này.',
+        message: 'Thiết bị đang ngoại tuyến. Dữ liệu sẽ tự động đồng bộ ngay khi có mạng trở lại.',
       };
     }
 
-    const {data: authData} = await this.supabase.auth.getUser();
-    const authUser = authData.user;
+    const {data: sessionData} = await this.supabase.auth.getSession();
+    const authUser = sessionData.session?.user ?? (await this.supabase.auth.getUser()).data.user;
     if (!authUser) {
       return {
         ...empty,
-        message: 'Vui lòng đăng nhập bằng tài khoản Supabase trước khi đồng bộ dữ liệu lên máy chủ.',
+        message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng xuất và đăng nhập lại để tiếp tục đồng bộ.',
       };
     }
+    this.supabaseSignedInUid = authUser.id;
 
     const sb = this.supabase;
     const authUid = authUser.id;
@@ -2039,7 +2046,7 @@ export class DataService {
       if (fetchErr || !remoteRow) {
         return {
           ...empty,
-          message: 'Không tìm thấy hồ sơ tài khoản trên máy chủ Supabase để đồng bộ.',
+          message: 'Không tìm thấy hồ sơ tài khoản trên máy chủ để đồng bộ.',
         };
       }
 
@@ -2238,11 +2245,13 @@ export class DataService {
         dirtyUserUids: (this.db.dirtyUserUids ?? []).filter((id) => !localAliases.has(id)),
       });
 
+      this.lastNotice = '';
+      this.lastCloudWriteFailed = false;
       const totalNew = syncedEvents + syncedAttempts + syncedRebuttals + syncedReports;
       const message =
         totalNew > 0
-          ? `Đã đồng bộ thành công hồ sơ và ${totalNew} bản ghi mới (${syncedAttempts} lượt làm, ${syncedEvents} sự kiện, ${syncedRebuttals} phản biện, ${syncedReports} báo cáo). Bỏ qua ${skippedDuplicates} bản ghi đã tồn tại.`
-          : `Dữ liệu trên máy đã khớp với Supabase (bỏ qua ${skippedDuplicates} bản ghi đã tồn tại, không tạo trùng).`;
+          ? `Đã đồng bộ thành công hồ sơ và ${totalNew} bản ghi mới lên máy chủ.`
+          : 'Tất cả dữ liệu đã được đồng bộ đầy đủ với máy chủ.';
 
       return {
         ok: true,

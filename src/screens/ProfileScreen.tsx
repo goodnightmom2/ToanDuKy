@@ -178,7 +178,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </div>
       </div>
 
-      {/* Cloud Sync Status + Logout */}
+      {/* Cloud Sync Status + Logout (clean, no backend vendor internals exposed) */}
       <div className="notebook-card-warm p-4 space-y-2.5 text-xs text-[#5B6B82]">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="font-bold text-[#14284A]">
@@ -188,20 +188,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 syncStatus === 'saved' ? 'text-[#1F7A6B]' : 'text-[#8A5108]'
               }
             >
-              {getSyncStatusLabel(syncStatus)}
+              {syncStatus === 'saved' ? 'Đã đồng bộ tự động ✓' : getSyncStatusLabel(syncStatus)}
             </span>
-            {isStaff && (
-              <>
-                {' '}· Chế độ:{' '}
-                {dataService.adapterMode === 'supabase'
-                  ? 'Máy chủ đám mây (Supabase)'
-                  : 'Lưu cục bộ dự phòng'}
-              </>
-            )}
-            {pendingCount > 0 ? ` · ${pendingCount} mục chưa đồng bộ` : ''}
+            {pendingCount > 0 ? ` · ${pendingCount} mục đang chờ đồng bộ` : ''}
           </p>
         </div>
-        {dataService.lastNotice && (
+        {user.role === 'admin' && dataService.lastNotice && (
           <p className="p-2.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] font-semibold">
             {dataService.lastNotice}
           </p>
@@ -219,9 +211,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             className="btn-tactile btn-jade text-xs py-2 px-3.5"
           >
             <CloudUpload className="w-4 h-4" />
-            {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ tiến độ lên máy chủ'}
+            {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ lại dữ liệu'}
           </button>
-          {isStaff && (
+          {user.role === 'admin' && (
             <button type="button" onClick={onOpenSelfTest} className="btn-tactile btn-paper text-xs py-2 px-3">
               Kiểm tra hệ thống
             </button>

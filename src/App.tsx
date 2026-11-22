@@ -107,8 +107,12 @@ function AppInner() {
   // Subscribe to DataService changes (Firebase Auth hydration, save status, pending sync count, journey updates)
   React.useEffect(() => {
     const updateFromService = () => {
-      setSyncStatus(dataService.getSyncStatus());
+      const nextStatus = dataService.getSyncStatus();
+      setSyncStatus(nextStatus);
       setPendingSyncCount(dataService.getPendingSyncCount());
+      if (nextStatus === 'saved') {
+        setSyncBannerMsg('');
+      }
       const latest = dataService.getCurrentUser();
       setUser((prev) => {
         if (!latest && !prev) return prev;
@@ -137,11 +141,15 @@ function AppInner() {
     setSyncBannerMsg('');
     const res = await dataService.syncLocalDataToServer();
     setSyncBusy(false);
-    setSyncBannerMsg(res.message);
+    const nextStatus = dataService.getSyncStatus();
+    setSyncStatus(nextStatus);
+    setPendingSyncCount(dataService.getPendingSyncCount());
+    if (nextStatus !== 'saved') {
+      setSyncBannerMsg(res.message);
+      window.setTimeout(() => setSyncBannerMsg(''), 5000);
+    }
     const latest = dataService.getCurrentUser();
     if (latest) setUser(latest);
-    setSyncStatus(dataService.getSyncStatus());
-    setPendingSyncCount(dataService.getPendingSyncCount());
   };
 
   // Sync hash changes (#/selftest, #/admin/map-align)
@@ -259,15 +267,13 @@ function AppInner() {
 
   return (
     <div className="min-h-dvh paper-surface flex flex-col">
-      {/* 3-State Save & Sync Status Bar: Đã lưu / Chờ đồng bộ / Đang lưu trên máy này */}
-      {showMainShell && (
+      {/* Compact Sync Status Bar — shown ONLY when offline/pending sync so normal sessions stay clean */}
+      {showMainShell && (syncStatus !== 'saved' || Boolean(syncBannerMsg)) && (
         <div
           className={`border-b px-3 py-1.5 text-xs font-semibold flex flex-wrap items-center justify-center gap-2 no-print ${
             syncStatus === 'saved'
               ? 'bg-[#E6F6F3] border-[#9CD5CA] text-[#1F7A6B]'
-              : syncStatus === 'pending_sync'
-                ? 'bg-[#FFF4D6] border-[#D98A1F] text-[#8A5108]'
-                : 'bg-[#FFF4D6] border-[#D5B87E] text-[#8A5108]'
+              : 'bg-[#FFF4D6] border-[#D98A1F] text-[#8A5108]'
           }`}
           data-sync-status={syncStatus}
         >
@@ -281,9 +287,7 @@ function AppInner() {
             )}
             <span>
               Trạng thái lưu: <strong>{getSyncStatusLabel(syncStatus)}</strong>
-              {syncStatus === 'pending_sync' && pendingSyncCount > 0
-                ? ` (${pendingSyncCount} mục)`
-                : ''}
+              {pendingSyncCount > 0 ? ` (${pendingSyncCount} mục)` : ''}
             </span>
           </span>
 
@@ -295,11 +299,11 @@ function AppInner() {
               className="px-2.5 py-0.5 rounded-lg bg-[#14284A] text-[#FFFBF0] text-[11px] font-bold inline-flex items-center gap-1 !min-h-[28px]"
             >
               <CloudUpload className="w-3 h-3" />
-              {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ dữ liệu trên máy lên máy chủ'}
+              {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ ngay'}
             </button>
           )}
 
-          {syncBannerMsg && (
+          {syncBannerMsg && user?.role === 'admin' && (
             <span className="text-[11px] font-bold underline decoration-dotted">{syncBannerMsg}</span>
           )}
         </div>
