@@ -178,7 +178,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </div>
       </div>
 
-      {/* Cloud Sync Status + Logout (clean, no backend vendor internals exposed) */}
+      {/* Cloud Sync Status + Logout (Teacher & Student auto-sync; manual tools reserved for Admin) */}
       <div className="notebook-card-warm p-4 space-y-2.5 text-xs text-[#5B6B82]">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="font-bold text-[#14284A]">
@@ -188,9 +188,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 syncStatus === 'saved' ? 'text-[#1F7A6B]' : 'text-[#8A5108]'
               }
             >
-              {syncStatus === 'saved' ? 'Đã đồng bộ tự động ✓' : getSyncStatusLabel(syncStatus)}
+              {syncStatus === 'saved'
+                ? 'Đã đồng bộ tự động ✓'
+                : user.role === 'admin'
+                  ? getSyncStatusLabel(syncStatus)
+                  : 'Đang tự động đồng bộ...'}
             </span>
-            {pendingCount > 0 ? ` · ${pendingCount} mục đang chờ đồng bộ` : ''}
+            {user.role === 'admin' && pendingCount > 0 ? ` · ${pendingCount} mục đang chờ đồng bộ` : ''}
           </p>
         </div>
         {user.role === 'admin' && dataService.lastNotice && (
@@ -198,25 +202,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             {dataService.lastNotice}
           </p>
         )}
-        {syncMsg && (
+        {user.role === 'admin' && syncMsg && (
           <p className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-[#1F7A6B] font-semibold">
             {syncMsg}
           </p>
         )}
         <div className="flex flex-wrap gap-2 pt-2">
-          <button
-            type="button"
-            disabled={syncBusy}
-            onClick={() => void handleSyncToServer()}
-            className="btn-tactile btn-jade text-xs py-2 px-3.5"
-          >
-            <CloudUpload className="w-4 h-4" />
-            {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ lại dữ liệu'}
-          </button>
           {user.role === 'admin' && (
-            <button type="button" onClick={onOpenSelfTest} className="btn-tactile btn-paper text-xs py-2 px-3">
-              Kiểm tra hệ thống
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={syncBusy}
+                onClick={() => void handleSyncToServer()}
+                className="btn-tactile btn-jade text-xs py-2 px-3.5"
+              >
+                <CloudUpload className="w-4 h-4" />
+                {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ lại dữ liệu'}
+              </button>
+              <button type="button" onClick={onOpenSelfTest} className="btn-tactile btn-paper text-xs py-2 px-3">
+                Kiểm tra hệ thống
+              </button>
+            </>
           )}
           <button type="button" onClick={onLogout} className="btn-tactile btn-amber text-xs py-2 px-3.5">
             <LogOut className="w-4 h-4" /> Đăng xuất

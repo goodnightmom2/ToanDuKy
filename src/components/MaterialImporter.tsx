@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, STATIONS} from '../config.ts';
 import {verifyQuestionByCode} from '../math/verifier.ts';
-import {dataService, generateId} from '../services/dataService.ts';
+import {canEditSettingsOrUsers, dataService, generateId} from '../services/dataService.ts';
 import {
   clearDriveToken,
   downloadDriveFileArrayBuffer,
@@ -86,6 +86,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   onQuestionsChanged,
   onOpenSettingsTab,
 }) => {
+  const isAdmin = canEditSettingsOrUsers(user);
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
   const [sourceName, setSourceName] = React.useState('Tài liệu Chương III');
   const [driveFileId, setDriveFileId] = React.useState<string | undefined>(undefined);
@@ -443,22 +444,27 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     const toCommit = draftItems.filter((d) => targetIds.includes(d.id));
     if (toCommit.length === 0) return;
 
+    // Teachers can ONLY submit drafts to the Admin approval queue (never approve/reject directly)
+    const effectiveStatus: ReviewStatus = isAdmin ? targetStatus : 'pending_teacher_review';
+
     const note =
-      targetStatus === 'approved'
-        ? 'Nhập học liệu & giáo viên duyệt trực tiếp'
-        : targetStatus === 'rejected'
+      effectiveStatus === 'approved'
+        ? 'Nhập học liệu & Admin duyệt trực tiếp'
+        : effectiveStatus === 'rejected'
           ? 'Nhập học liệu & từ chối'
-          : 'Nhập học liệu (chờ giáo viên duyệt)';
+          : isAdmin
+            ? 'Nhập học liệu (chờ Admin duyệt)'
+            : 'Giáo viên gửi đề xuất học liệu chờ Admin chấp nhận';
 
     for (const item of toCommit) {
       dataService.upsertQuestion(
         user,
         {
           ...item,
-          review_status: targetStatus,
-          reviewedBy: targetStatus !== 'pending_teacher_review' ? user.uid : undefined,
+          review_status: effectiveStatus,
+          reviewedBy: effectiveStatus !== 'pending_teacher_review' ? user.displayName : undefined,
           reviewedAt:
-            targetStatus !== 'pending_teacher_review' ? new Date().toISOString() : undefined,
+            effectiveStatus !== 'pending_teacher_review' ? new Date().toISOString() : undefined,
         },
         note,
       );
@@ -469,11 +475,13 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     onQuestionsChanged();
 
     const label =
-      targetStatus === 'approved'
-        ? 'Đã DUYỆT (approved — hiển thị cho học viên)'
-        : targetStatus === 'rejected'
-          ? 'Đã TỪ CHỐI (rejected)'
-          : 'Đã lưu vào Ngân hàng ở trạng thái CHỜ DUYỆT (pending_teacher_review)';
+      effectiveStatus === 'approved'
+        ? 'Đã DUYỆT (hiển thị ngay cho học viên)'
+        : effectiveStatus === 'rejected'
+          ? 'Đã TỪ CHỐI'
+          : isAdmin
+            ? 'Đã lưu vào Ngân hàng ở trạng thái CHỜ DUYỆT'
+            : 'Đã gửi vào hàng chờ ADMIN DUYỆT (câu hỏi chỉ hiển thị cho học sinh sau khi Admin chấp nhận)';
     setStatusMsg(`${label}: ${toCommit.length} câu hỏi.`);
   };
 
@@ -552,10 +560,15 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               Nhập học liệu Chương III (Google Drive / Máy tính / Dán văn bản + Gemini)
             </h2>
             <p className="text-xs text-[#5B6B82]">
-              Hỗ trợ <strong>.json</strong> (schema Mục 11.1), <strong>.docx</strong> (mammoth),{' '}
-              <strong>.pdf</strong> (pdf.js + gửi trang ảnh quét cho Gemini đa phương thức). Mặc định mọi câu vào{' '}
-              <strong>pending_teacher_review</strong>; chỉ câu <strong>approved</strong> mới hiện với học viên. Không lưu nguyên tệp PDF vào CSDL.
+              Hỗ trợ <strong>.json</strong>, <strong>.docx</strong>,{' '}
+              <strong>.pdf</strong> (có hỗ trợ trích xuất tự động). Mọi học liệu mới hoặc chỉnh sửa đều vào trạng thái{' '}
+              <strong>Chờ Admin duyệt</strong>; chỉ câu đã được <strong>Admin chấp nhận</strong> mới hiển thị với học sinh. Không lưu nguyên tệp PDF vào cơ sở dữ liệu.
             </p>
+            {!isAdmin && (
+              <p className="text-xs font-bold text-[#8A5108] bg-[#FFF5E2] border border-[#D98A1F] rounded-xl px-3 py-2 mt-1">
+                Lưu ý phân quyền Giáo viên: Tất cả câu hỏi/tài liệu bạn tải lên, chỉnh sửa hoặc thay thế sẽ được gửi vào hàng chờ để Quản trị viên (Admin) kiểm duyệt và chấp nhận trước khi áp dụng cho học sinh.
+              </p>
+            )}
           </div>
 
           <div className="min-w-[260px] p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] space-y-1.5">
@@ -801,14 +814,20 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   <li>Tạo <strong>API Key</strong> công khai (chỉ giới hạn cho Google Picker API và đúng domain).</li>
                   <li>Dán Client ID và API Key vào mục <strong>8. Cài đặt</strong> rồi quay lại bấm chọn tệp hoặc thư mục Drive.</li>
                 </ol>
-                <button
-                  type="button"
-                  onClick={onOpenSettingsTab}
-                  className="btn-tactile btn-paper text-xs py-2 px-3 w-full"
-                >
-                  <Settings className="w-4 h-4" />
-                  Mở mục 9. Cài đặt để nhập Client ID & API Key
-                </button>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={onOpenSettingsTab}
+                    className="btn-tactile btn-paper text-xs py-2 px-3 w-full"
+                  >
+                    <Settings className="w-4 h-4" />
+                    Mở mục 9. Cài đặt để nhập Client ID & API Key
+                  </button>
+                ) : (
+                  <p className="text-[11px] font-semibold text-[#5B6B82] bg-white/80 p-2 rounded-lg border border-[#E5D3A8]">
+                    Vui lòng liên hệ Quản trị viên (Admin) nếu cần cấu hình kết nối Google Drive cho hệ thống.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1027,27 +1046,33 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 type="button"
                 disabled={selectedIds.length === 0}
                 onClick={() => commitDrafts(selectedIds, 'pending_teacher_review')}
-                className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
               >
-                Lưu chờ duyệt ({selectedIds.length})
+                {isAdmin
+                  ? `Lưu chờ duyệt (${selectedIds.length})`
+                  : `Gửi Admin duyệt (${selectedIds.length})`}
               </button>
-              <button
-                type="button"
-                disabled={selectedIds.length === 0}
-                onClick={() => commitDrafts(selectedIds, 'approved')}
-                className="btn-tactile btn-jade text-xs py-1.5 px-3"
-              >
-                <Check className="w-4 h-4" />
-                Duyệt hàng loạt ({selectedIds.length})
-              </button>
-              <button
-                type="button"
-                disabled={selectedIds.length === 0}
-                onClick={() => commitDrafts(selectedIds, 'rejected')}
-                className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold !min-h-[36px] disabled:opacity-40"
-              >
-                Từ chối ({selectedIds.length})
-              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    type="button"
+                    disabled={selectedIds.length === 0}
+                    onClick={() => commitDrafts(selectedIds, 'approved')}
+                    className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                  >
+                    <Check className="w-4 h-4" />
+                    Duyệt hàng loạt ({selectedIds.length})
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedIds.length === 0}
+                    onClick={() => commitDrafts(selectedIds, 'rejected')}
+                    className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold !min-h-[36px] disabled:opacity-40"
+                  >
+                    Từ chối ({selectedIds.length})
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -1098,7 +1123,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="px-2 py-0.5 rounded bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]">
-                        pending_teacher_review
+                        Chờ Admin duyệt
                       </span>
                       {typeof item.confidence === 'number' && (
                         <span className="px-2 py-0.5 rounded bg-white border border-[#CBB17D] font-bold text-[#14284A]">
@@ -1571,26 +1596,30 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                       <button
                         type="button"
                         onClick={() => commitDrafts([item.id], 'pending_teacher_review')}
-                        className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                        className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
                       >
-                        Lưu chờ duyệt
+                        {isAdmin ? 'Lưu chờ duyệt' : 'Gửi Admin duyệt'}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => commitDrafts([item.id], 'approved')}
-                        className="btn-tactile btn-jade text-xs py-1.5 px-3"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        Duyệt ngay (Approved)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => commitDrafts([item.id], 'rejected')}
-                        className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1 !min-h-[34px]"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        Từ chối
-                      </button>
+                      {isAdmin && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => commitDrafts([item.id], 'approved')}
+                            className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            Duyệt ngay
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => commitDrafts([item.id], 'rejected')}
+                            className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1 !min-h-[34px]"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            Từ chối
+                          </button>
+                        </>
+                      )}
                     </div>
                     <button
                       type="button"

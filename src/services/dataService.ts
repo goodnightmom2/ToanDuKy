@@ -2214,9 +2214,19 @@ export class DataService {
           );
         }
         if (this.db.questions.length > 0) {
-          await sb
-            .from('questions')
-            .upsert(this.db.questions.map(questionToRow), {onConflict: 'id'});
+          const questionsToPush =
+            mergedUser.role === 'admin'
+              ? this.db.questions
+              : this.db.questions.filter(
+                  (q) =>
+                    q.review_status === 'pending_teacher_review' &&
+                    q.proposedByUid === authUid,
+                );
+          if (questionsToPush.length > 0) {
+            await sb
+              .from('questions')
+              .upsert(questionsToPush.map(questionToRow), {onConflict: 'id'});
+          }
         }
         if (mergedUser.role === 'admin') {
           await sb
@@ -2866,17 +2876,80 @@ export class DataService {
 
   upsertQuestion(actor: UserAccount, question: QuestionItem, editNote = 'Cập nhật nội dung'): boolean {
     if (!canAccessAdmin(actor)) return false;
+    const isAdminActor = canEditSettingsOrUsers(actor);
     const existingIdx = this.db.questions.findIndex((q) => q.id === question.id);
     const nextList = [...this.db.questions];
+    const now = new Date().toISOString();
     let savedQuestion: QuestionItem;
-    if (existingIdx >= 0) {
+
+    if (!isAdminActor) {
+      // Teacher path: every addition, edit, or replacement MUST wait for Admin approval.
+      // Live approved/existing questions are NEVER overwritten directly by a teacher.
+      const sanitizedBase: QuestionItem = {
+        ...question,
+        review_status: 'pending_teacher_review',
+        reviewedBy: undefined,
+        reviewedAt: undefined,
+      };
+      if (existingIdx >= 0) {
+        const prev = nextList[existingIdx];
+        const isOwnPendingDraft =
+          prev.review_status === 'pending_teacher_review' &&
+          prev.proposedByUid === actor.uid;
+        if (isOwnPendingDraft) {
+          savedQuestion = {
+            ...sanitizedBase,
+            id: prev.id,
+            version: prev.version ?? 1,
+            versionHistory: prev.versionHistory ?? [],
+            createdBy: prev.createdBy ?? actor.displayName,
+            replacesQuestionId: prev.replacesQuestionId,
+            proposedAction: prev.proposedAction ?? 'create',
+            proposedBy: actor.displayName,
+            proposedByUid: actor.uid,
+            proposedAt: now,
+            proposedNote: editNote,
+          };
+          nextList[existingIdx] = savedQuestion;
+        } else {
+          // Editing/replacing an existing bank question → create a separate pending proposal
+          savedQuestion = {
+            ...sanitizedBase,
+            id: generateId('prop'),
+            version: (prev.version ?? 1) + 1,
+            versionHistory: prev.versionHistory ?? [],
+            createdBy: prev.createdBy,
+            replacesQuestionId: prev.id,
+            proposedAction: prev.stem_vi.trim() !== sanitizedBase.stem_vi.trim() ? 'replace' : 'edit',
+            proposedBy: actor.displayName,
+            proposedByUid: actor.uid,
+            proposedAt: now,
+            proposedNote: editNote,
+          };
+          nextList.unshift(savedQuestion);
+        }
+      } else {
+        savedQuestion = {
+          ...sanitizedBase,
+          version: 1,
+          versionHistory: [],
+          createdBy: actor.displayName,
+          proposedAction: 'create',
+          proposedBy: actor.displayName,
+          proposedByUid: actor.uid,
+          proposedAt: now,
+          proposedNote: editNote,
+        };
+        nextList.unshift(savedQuestion);
+      }
+    } else if (existingIdx >= 0) {
       const prev = nextList[existingIdx];
       const nextVersion = (prev.version ?? 1) + 1;
       const history = [
         ...(prev.versionHistory ?? []),
         {
           version: prev.version ?? 1,
-          editedAt: new Date().toISOString(),
+          editedAt: now,
           editedBy: actor.displayName,
           note: editNote,
           stem_vi: prev.stem_vi,
@@ -2888,6 +2961,7 @@ export class DataService {
       savedQuestion = {...question, version: 1, versionHistory: [], createdBy: actor.displayName};
       nextList.unshift(savedQuestion);
     }
+
     this.save({...this.db, questions: nextList});
     if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
       void this.supabase.from('questions').upsert(questionToRow(savedQuestion), {onConflict: 'id'});
@@ -2900,32 +2974,91 @@ export class DataService {
     questionIds: string[],
     status: ReviewStatus,
   ): boolean {
-    if (!canAccessAdmin(actor)) return false;
+    if (!canEditSettingsOrUsers(actor)) return false;
     const idSet = new Set(questionIds);
     const now = new Date().toISOString();
     const updatedQuestions: QuestionItem[] = [];
-    const next = this.db.questions.map((q) => {
-      if (!idSet.has(q.id)) return q;
-      const upd = {...q, review_status: status, reviewedBy: actor.displayName, reviewedAt: now};
+    const proposalIdsToDelete: string[] = [];
+
+    const workingList = [...this.db.questions];
+
+    for (const qId of idSet) {
+      const idx = workingList.findIndex((q) => q.id === qId);
+      if (idx < 0) continue;
+      const item = workingList[idx];
+
+      // If Admin approves a teacher's edit/replace proposal, apply it onto the target live question
+      if (status === 'approved' && item.replacesQuestionId) {
+        const targetIdx = workingList.findIndex((t) => t.id === item.replacesQuestionId);
+        if (targetIdx >= 0) {
+          const target = workingList[targetIdx];
+          const nextVersion = (target.version ?? 1) + 1;
+          const history = [
+            ...(target.versionHistory ?? []),
+            {
+              version: target.version ?? 1,
+              editedAt: now,
+              editedBy: item.proposedBy ? `${item.proposedBy} (Admin ${actor.displayName} duyệt)` : actor.displayName,
+              note: item.proposedNote || 'Admin chấp nhận đề xuất chỉnh sửa/thay thế của giáo viên',
+              stem_vi: target.stem_vi,
+            },
+          ];
+          const {
+            replacesQuestionId: _rId,
+            proposedAction: _pAct,
+            proposedBy: _pBy,
+            proposedByUid: _pUid,
+            proposedAt: _pAt,
+            proposedNote: _pNote,
+            ...cleanProposal
+          } = item;
+          const mergedTarget: QuestionItem = {
+            ...target,
+            ...cleanProposal,
+            id: target.id,
+            review_status: 'approved',
+            reviewedBy: actor.displayName,
+            reviewedAt: now,
+            version: nextVersion,
+            versionHistory: history,
+          };
+          workingList[targetIdx] = mergedTarget;
+          updatedQuestions.push(mergedTarget);
+          proposalIdsToDelete.push(item.id);
+          continue;
+        }
+      }
+
+      const upd: QuestionItem = {
+        ...item,
+        review_status: status,
+        reviewedBy: actor.displayName,
+        reviewedAt: now,
+      };
+      workingList[idx] = upd;
       updatedQuestions.push(upd);
-      return upd;
-    });
-    this.save({...this.db, questions: next});
-    if (
-      updatedQuestions.length > 0 &&
-      this.supabase &&
-      this.isSupabaseAuthenticated() &&
-      this.isOnline
-    ) {
-      void this.supabase
-        .from('questions')
-        .upsert(updatedQuestions.map(questionToRow), {onConflict: 'id'});
+    }
+
+    const deleteSet = new Set(proposalIdsToDelete);
+    const finalQuestions =
+      deleteSet.size > 0 ? workingList.filter((q) => !deleteSet.has(q.id)) : workingList;
+
+    this.save({...this.db, questions: finalQuestions});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      if (updatedQuestions.length > 0) {
+        void this.supabase
+          .from('questions')
+          .upsert(updatedQuestions.map(questionToRow), {onConflict: 'id'});
+      }
+      if (proposalIdsToDelete.length > 0) {
+        void this.supabase.from('questions').delete().in('id', proposalIdsToDelete);
+      }
     }
     return true;
   }
 
   deleteQuestion(actor: UserAccount, questionId: string): boolean {
-    if (!canAccessAdmin(actor)) return false;
+    if (!canEditSettingsOrUsers(actor)) return false;
     this.save({...this.db, questions: this.db.questions.filter((q) => q.id !== questionId)});
     if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
       void this.supabase.from('questions').delete().eq('id', questionId);

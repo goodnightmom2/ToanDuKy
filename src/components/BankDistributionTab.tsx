@@ -115,19 +115,19 @@ export const BankDistributionTab: React.FC<BankDistributionTabProps> = ({
           </p>
         </div>
         <div className="notebook-card p-3.5">
-          <p className="text-[11px] font-bold text-[#145B4F]">Đã duyệt (Approved)</p>
+          <p className="text-[11px] font-bold text-[#145B4F]">Đã duyệt</p>
           <p className="font-display text-2xl font-extrabold text-[#145B4F] tabular-nums mt-0.5">
             {report.byStatus.approved}
           </p>
         </div>
         <div className="notebook-card p-3.5">
-          <p className="text-[11px] font-bold text-[#8A5608]">Chờ giáo viên duyệt</p>
+          <p className="text-[11px] font-bold text-[#8A5608]">Chờ Admin duyệt</p>
           <p className="font-display text-2xl font-extrabold text-[#8A5608] tabular-nums mt-0.5">
             {report.byStatus.pending_teacher_review}
           </p>
         </div>
         <div className="notebook-card p-3.5">
-          <p className="text-[11px] font-bold text-[#99261B]">Từ chối (Rejected)</p>
+          <p className="text-[11px] font-bold text-[#99261B]">Từ chối</p>
           <p className="font-display text-2xl font-extrabold text-[#99261B] tabular-nums mt-0.5">
             {report.byStatus.rejected}
           </p>

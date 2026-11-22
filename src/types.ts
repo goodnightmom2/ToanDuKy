@@ -293,6 +293,13 @@ export interface QuestionItem {
   createdBy?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  // Teacher change-proposal metadata (requires Admin acceptance before applying to live bank)
+  replacesQuestionId?: string;
+  proposedAction?: 'create' | 'edit' | 'replace';
+  proposedBy?: string;
+  proposedByUid?: string;
+  proposedAt?: string;
+  proposedNote?: string;
   // Section 12 import provenance, AI rationale & deterministic code verification
   source_file_name?: string;
   drive_file_id?: string;

@@ -173,6 +173,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editQSolution, setEditQSolution] = React.useState('');
   const [editQHint, setEditQHint] = React.useState('');
   const [editQNote, setEditQNote] = React.useState('');
+  const [bankActionMsg, setBankActionMsg] = React.useState('');
 
   // Reports tab states
   const [includeTestInReport, setIncludeTestInReport] = React.useState(false);
@@ -393,19 +394,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             {isAdmin ? (
               <>
                 <p>
-                  • <strong>Quản trị viên (Admin):</strong> Tạo & quản lý tài khoản giáo viên ở tab <strong>2. Người dùng & GV</strong>, theo dõi mọi lớp học và cấu hình hệ thống.
+                  • <strong>Quản trị viên (Admin):</strong> Tạo &amp; quản lý tài khoản giáo viên ở tab <strong>2. Người dùng &amp; GV</strong>, kiểm duyệt mọi câu hỏi/học liệu do giáo viên đề xuất ở tab <strong>4. Ngân hàng</strong>, theo dõi mọi lớp học và cấu hình hệ thống.
                 </p>
                 <p>
-                  • <strong>Giáo viên:</strong> Mỗi giáo viên có thể tự tạo nhiều lớp ở tab <strong>3. Lớp & mã</strong>, chỉ xem và theo dõi tiến độ / lỗi sai của học sinh thuộc lớp mình phụ trách (tách biệt hoàn toàn với giáo viên khác bằng bảo mật RLS trên Supabase).
+                  • <strong>Giáo viên:</strong> Tự tạo lớp học, cấp tài khoản học sinh hàng loạt, theo dõi tiến độ &amp; lỗi sai lớp mình phụ trách. Mọi thao tác thêm mới, chỉnh sửa hoặc thay thế câu hỏi/tài liệu của giáo viên đều đi qua bước <strong>Admin chấp nhận</strong>.
                 </p>
               </>
             ) : (
               <>
                 <p>
-                  • Bạn có thể tạo nhiều lớp học ở tab <strong>3. Lớp của tôi</strong> (mỗi lớp có mã tham gia riêng cho học sinh đăng ký).
+                  • Bạn có thể tạo nhiều lớp học ở tab <strong>3. Lớp của tôi</strong> và cấp tài khoản hàng loạt bằng Excel ở tab <strong>2. Học sinh của tôi</strong>.
                 </p>
                 <p>
                   • Ở tab <strong>2. Học sinh của tôi</strong>, bấm nút <strong>Tiến độ &amp; Lỗi sai</strong> bên cạnh từng học sinh để xem chi tiết mốc đang học, trạng thái 6 cụm kỹ năng, các câu làm sai và mã lỗi cụ thể (E01–E12).
+                </p>
+                <p>
+                  • Mọi đề xuất thêm mới, chỉnh sửa hoặc thay thế câu hỏi và học liệu ở tab <strong>4. Ngân hàng</strong> &amp; <strong>6. Nhập học liệu</strong> sẽ được chuyển tới <strong>Admin duyệt</strong> trước khi áp dụng cho học sinh.
                 </p>
               </>
             )}
@@ -530,22 +534,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 <Download className="w-4 h-4" /> Xuất Excel tài khoản (.xlsx)
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const csv = [
-                    'studentCode,username,displayName,role,classCode,xp,isTestAccount,locked',
-                    ...users.map(
-                      (u) =>
-                        `"${u.studentCode}","${u.username}","${u.displayName}","${u.role}","${u.classCode}",${u.xp},${u.isTestAccount},${u.locked}`,
-                    ),
-                  ].join('\n');
-                  downloadCsv('toan-du-ky-nguoi-dung.csv', csv);
-                }}
-                className="btn-tactile btn-paper text-xs py-2 px-3"
-              >
-                <Download className="w-4 h-4" /> Xuất CSV
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const csv = [
+                      'studentCode,username,displayName,role,classCode,xp,isTestAccount,locked',
+                      ...users.map(
+                        (u) =>
+                          `"${u.studentCode}","${u.username}","${u.displayName}","${u.role}","${u.classCode}",${u.xp},${u.isTestAccount},${u.locked}`,
+                      ),
+                    ].join('\n');
+                    downloadCsv('toan-du-ky-nguoi-dung.csv', csv);
+                  }}
+                  className="btn-tactile btn-paper text-xs py-2 px-3"
+                >
+                  <Download className="w-4 h-4" /> Xuất CSV
+                </button>
+              )}
             </div>
           </div>
 
@@ -1384,6 +1390,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* TAB 4: QUESTION BANK */}
       {tab === 'bank' && (
         <div className="space-y-4">
+          {!isAdmin && (
+            <div className="p-3.5 rounded-2xl bg-[#FFF5E2] border-2 border-[#D98A1F] text-xs font-semibold text-[#8A5108] flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-[#B9831E]" />
+              <span>
+                <strong>Quy trình kiểm duyệt học liệu:</strong> Mọi câu hỏi mới, chỉnh sửa hoặc thay thế do Giáo viên gửi lên đều được chuyển vào hàng chờ <strong>Admin chấp nhận</strong>. Câu hỏi đang hoạt động sẽ không bị thay đổi cho tới khi Admin duyệt.
+              </span>
+            </div>
+          )}
+
+          {bankActionMsg && (
+            <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#145B4F] flex items-center justify-between gap-2">
+              <span>{bankActionMsg}</span>
+              <button type="button" onClick={() => setBankActionMsg('')} className="p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Filters & Batch approve */}
           <div className="notebook-card p-4 flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap gap-2">
@@ -1405,45 +1429,52 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
               >
                 <option value="ALL">Mọi trạng thái</option>
-                <option value="pending_teacher_review">Chờ giáo viên duyệt</option>
+                <option value="pending_teacher_review">Chờ Admin duyệt</option>
                 <option value="approved">Đã duyệt</option>
                 <option value="rejected">Từ chối</option>
               </select>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={selectedQIds.length === 0}
-                onClick={() => {
-                  dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
-                  setSelectedQIds([]);
-                  refresh();
-                }}
-                className="btn-tactile btn-jade text-xs py-2 px-3"
-              >
-                <Check className="w-4 h-4" /> Duyệt đã chọn ({selectedQIds.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const allPending = questions
-                    .filter((q) => q.review_status === 'pending_teacher_review')
-                    .map((q) => q.id);
-                  dataService.setQuestionReviewStatus(user, allPending, 'approved');
-                  refresh();
-                }}
-                className="btn-tactile btn-gold text-xs py-2 px-3"
-              >
-                Duyệt toàn bộ câu chờ ({pendingQuestionsCount})
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={selectedQIds.length === 0}
+                  onClick={() => {
+                    dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
+                    setBankActionMsg(`Admin đã chấp nhận ${selectedQIds.length} câu hỏi / đề xuất.`);
+                    setSelectedQIds([]);
+                    refresh();
+                  }}
+                  className="btn-tactile btn-jade text-xs py-2 px-3"
+                >
+                  <Check className="w-4 h-4" /> Duyệt đã chọn ({selectedQIds.length})
+                </button>
+                <button
+                  type="button"
+                  disabled={pendingQuestionsCount === 0}
+                  onClick={() => {
+                    const allPending = questions
+                      .filter((q) => q.review_status === 'pending_teacher_review')
+                      .map((q) => q.id);
+                    dataService.setQuestionReviewStatus(user, allPending, 'approved');
+                    setBankActionMsg(`Admin đã chấp nhận toàn bộ ${allPending.length} mục chờ duyệt.`);
+                    refresh();
+                  }}
+                  className="btn-tactile btn-gold text-xs py-2 px-3"
+                >
+                  Duyệt toàn bộ câu chờ ({pendingQuestionsCount})
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Manual add question form (supports 4 question types + level + E01–E12 error code) */}
           <div className="notebook-card-warm p-4 space-y-2.5">
             <h2 className="font-display text-base font-extrabold text-[#14284A]">
-              Thêm câu hỏi mới (mặc định Chờ duyệt)
+              {isAdmin
+                ? 'Thêm câu hỏi mới (mặc định Chờ duyệt)'
+                : 'Đề xuất thêm câu hỏi mới (Chờ Admin chấp nhận)'}
             </h2>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <select
@@ -1610,7 +1641,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   ];
                   baseItem.expected_answer = {choice: 'a'};
                 }
-                dataService.upsertQuestion(user, baseItem, 'Giáo viên tạo thủ công');
+                dataService.upsertQuestion(
+                  user,
+                  baseItem,
+                  isAdmin ? 'Admin tạo thủ công' : 'Giáo viên đề xuất thêm câu hỏi mới',
+                );
+                setBankActionMsg(
+                  isAdmin
+                    ? 'Đã thêm câu hỏi mới vào ngân hàng (trạng thái Chờ duyệt).'
+                    : 'Đã gửi câu hỏi mới vào hàng chờ Admin chấp nhận. Câu hỏi sẽ chỉ hiển thị với học sinh sau khi Admin duyệt.',
+                );
                 setManualStem('');
                 setManualNumericAns('');
                 setManualOptA('');
@@ -1623,7 +1663,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               }}
               className="btn-tactile btn-jade text-xs py-2 px-4"
             >
-              <Plus className="w-4 h-4" /> Lưu vào ngân hàng (Chờ duyệt)
+              <Plus className="w-4 h-4" />{' '}
+              {isAdmin ? 'Lưu vào ngân hàng (Chờ duyệt)' : 'Gửi Admin duyệt'}
             </button>
           </div>
 
@@ -1634,20 +1675,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               .filter((q) => bankFilterStatus === 'ALL' || q.review_status === bankFilterStatus)
               .map((q) => {
                 const checked = selectedQIds.includes(q.id);
+                const isOwnPending =
+                  !isAdmin &&
+                  q.review_status === 'pending_teacher_review' &&
+                  q.proposedByUid === user.uid;
+                const isReplaceProposal = Boolean(q.replacesQuestionId);
                 return (
-                  <div key={q.id} className="notebook-card p-3.5 space-y-2">
+                  <div
+                    key={q.id}
+                    className={`notebook-card p-3.5 space-y-2 ${
+                      isReplaceProposal ? 'border-2 border-[#D98A1F] bg-[#FFFBF2]' : ''
+                    }`}
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <label className="flex items-start gap-2 cursor-pointer flex-1">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) =>
-                            setSelectedQIds((prev) =>
-                              e.target.checked ? [...prev, q.id] : prev.filter((id) => id !== q.id),
-                            )
-                          }
-                          className="mt-1 w-4 h-4 accent-[#2E9C8A]"
-                        />
+                        {isAdmin && (
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) =>
+                              setSelectedQIds((prev) =>
+                                e.target.checked ? [...prev, q.id] : prev.filter((id) => id !== q.id),
+                              )
+                            }
+                            className="mt-1 w-4 h-4 accent-[#2E9C8A]"
+                          />
+                        )}
                         <div className="text-sm text-[#14284A]">
                           <span className="font-extrabold mr-1.5">[{q.id}]</span>
                           <span className="px-1.5 py-0.5 rounded bg-[#FFF4D6] text-xs font-bold mr-1.5">
@@ -1666,8 +1719,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               ? 'Đã duyệt'
                               : q.review_status === 'rejected'
                                 ? 'Từ chối'
-                                : 'Chờ duyệt'}
+                                : 'Chờ Admin duyệt'}
                           </span>
+                          {isReplaceProposal && (
+                            <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#FFF0D1] border border-[#D98A1F] text-[#8A5108] text-xs font-extrabold">
+                              Đề xuất sửa/thay thế câu [{q.replacesQuestionId}]
+                              {q.proposedBy ? ` · GV ${q.proposedBy}` : ''}
+                            </span>
+                          )}
+                          {!isReplaceProposal && q.proposedBy && q.review_status === 'pending_teacher_review' && (
+                            <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#EEF6FF] border border-[#9EC5FE] text-[#14437A] text-xs font-bold">
+                              Đề xuất bởi GV {q.proposedBy}
+                            </span>
+                          )}
+                          {q.proposedNote && q.review_status === 'pending_teacher_review' && (
+                            <p className="text-[11px] text-[#8A5108] font-semibold mt-1">
+                              Ghi chú đề xuất: {q.proposedNote}
+                            </p>
+                          )}
                           <div className="mt-1">
                             <MathText text={q.stem_vi} />
                           </div>
@@ -1689,34 +1758,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             setEditQStem(q.stem_vi);
                             setEditQSolution(q.solution_vi);
                             setEditQHint(q.hints_vi[0] ?? '');
-                            setEditQNote('');
+                            setEditQNote(q.proposedNote ?? '');
                           }}
                           className="px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-xs font-bold !min-h-[34px]"
                         >
-                          Sửa (v{(q.version ?? 1) + 1})
+                          {isAdmin
+                            ? `Sửa (v${(q.version ?? 1) + 1})`
+                            : isOwnPending
+                              ? 'Sửa bản chờ duyệt'
+                              : 'Đề xuất sửa / thay thế'}
                         </button>
-                        {q.review_status !== 'approved' && (
+                        {isAdmin && q.review_status !== 'approved' && (
                           <button
                             type="button"
                             onClick={() => {
                               dataService.setQuestionReviewStatus(user, [q.id], 'approved');
+                              setBankActionMsg(
+                                isReplaceProposal
+                                  ? `Admin đã chấp nhận & áp dụng bản thay thế cho câu [${q.replacesQuestionId}].`
+                                  : `Admin đã duyệt câu [${q.id}].`,
+                              );
                               refresh();
                             }}
                             className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white text-xs font-bold !min-h-[34px]"
                           >
-                            Duyệt
+                            {isReplaceProposal ? 'Chấp nhận & áp dụng' : 'Duyệt'}
                           </button>
                         )}
-                        {q.review_status !== 'rejected' && (
+                        {isAdmin && q.review_status !== 'rejected' && (
                           <button
                             type="button"
                             onClick={() => {
                               dataService.setQuestionReviewStatus(user, [q.id], 'rejected');
+                              setBankActionMsg(
+                                isReplaceProposal
+                                  ? `Admin đã từ chối đề xuất thay thế câu [${q.replacesQuestionId}]. Bản gốc vẫn giữ nguyên.`
+                                  : `Admin đã chuyển câu [${q.id}] sang ngừng dùng.`,
+                              );
                               refresh();
                             }}
                             className="px-2.5 py-1 rounded-lg bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold !min-h-[34px]"
                           >
-                            Ngừng dùng
+                            {isReplaceProposal ? 'Từ chối đề xuất' : 'Ngừng dùng'}
                           </button>
                         )}
                       </div>
@@ -1731,14 +1814,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="notebook-card max-w-lg w-full p-5 space-y-3 text-xs">
                 <div className="flex items-center justify-between">
                   <h3 className="font-display text-lg font-extrabold text-[#14284A]">
-                    Chỉnh sửa câu {editingQuestion.id} → tạo phiên bản v{(editingQuestion.version ?? 1) + 1}
+                    {isAdmin
+                      ? `Chỉnh sửa câu ${editingQuestion.id} → tạo phiên bản v${(editingQuestion.version ?? 1) + 1}`
+                      : `Đề xuất chỉnh sửa / thay thế câu ${editingQuestion.replacesQuestionId ?? editingQuestion.id}`}
                   </h3>
                   <button type="button" onClick={() => setEditingQuestion(null)} className="p-1.5">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
                 <p className="text-[#5B6B82]">
-                  Bản cũ v{editingQuestion.version ?? 1} vẫn được giữ trong lịch sử phiên bản để bảo toàn minh chứng bài làm trước đó.
+                  {isAdmin
+                    ? `Bản cũ v${editingQuestion.version ?? 1} vẫn được giữ trong lịch sử phiên bản để bảo toàn minh chứng bài làm trước đó.`
+                    : 'Bản gốc đang hoạt động sẽ được giữ nguyên. Đề xuất chỉnh sửa/thay thế của bạn sẽ được gửi vào hàng chờ để Quản trị viên (Admin) xem xét và chấp nhận.'}
                 </p>
                 <div className="space-y-1">
                   <label className="font-bold text-[#14284A]">Nội dung đề bài</label>
@@ -1768,7 +1855,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="font-bold text-[#14284A]">Ghi chú lý do sửa</label>
+                  <label className="font-bold text-[#14284A]">Ghi chú lý do sửa / thay thế</label>
                   <input
                     type="text"
                     value={editQNote}
@@ -1797,14 +1884,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           solution_vi: editQSolution.trim() || editingQuestion.solution_vi,
                           hints_vi: [editQHint.trim() || editingQuestion.hints_vi[0] || '', ...editingQuestion.hints_vi.slice(1)],
                         },
-                        editQNote.trim() || 'Giáo viên chỉnh sửa nội dung',
+                        editQNote.trim() ||
+                          (isAdmin ? 'Admin chỉnh sửa nội dung' : 'Giáo viên đề xuất chỉnh sửa / thay thế'),
+                      );
+                      setBankActionMsg(
+                        isAdmin
+                          ? `Đã lưu phiên bản mới cho câu [${editingQuestion.id}].`
+                          : `Đã gửi đề xuất sửa/thay thế câu [${editingQuestion.replacesQuestionId ?? editingQuestion.id}] chờ Admin chấp nhận. Bản gốc vẫn giữ nguyên cho đến khi được duyệt.`,
                       );
                       setEditingQuestion(null);
                       refresh();
                     }}
                     className="btn-tactile btn-jade text-xs py-2 px-4"
                   >
-                    Lưu phiên bản mới
+                    {isAdmin ? 'Lưu phiên bản mới' : 'Gửi Admin chấp nhận'}
                   </button>
                 </div>
               </div>
@@ -1945,18 +2038,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   />
                   Hiện cả dữ liệu TEST
                 </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    downloadCsv(
-                      'toan-du-ky-bao-cao-luot-lam.csv',
-                      dataService.exportAttemptsCsv(includeTestInReport),
-                    )
-                  }
-                  className="btn-tactile btn-jade text-xs py-2 px-3"
-                >
-                  <Download className="w-4 h-4" /> Xuất CSV lượt làm
-                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadCsv(
+                        'toan-du-ky-bao-cao-luot-lam.csv',
+                        dataService.exportAttemptsCsv(includeTestInReport),
+                      )
+                    }
+                    className="btn-tactile btn-jade text-xs py-2 px-3"
+                  >
+                    <Download className="w-4 h-4" /> Xuất CSV lượt làm
+                  </button>
+                )}
               </div>
             </div>
 
