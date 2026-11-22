@@ -290,7 +290,7 @@ export function mergeUserProgressIdempotent(remote: UserAccount, local: UserAcco
     assignedClassIds: remote.assignedClassIds,
     createdAt: remote.createdAt,
     // Merge safe student-editable fields:
-    displayName: local.displayName || remote.displayName,
+    displayName: remote.displayName || local.displayName,
     avatarCreated: Boolean(remote.avatarCreated || local.avatarCreated),
     avatar: local.avatarCreated ? local.avatar : remote.avatar,
     xp: mergedXp,
@@ -472,8 +472,7 @@ function userToRow(user: UserAccount): Record<string, unknown> {
 }
 
 function userProgressUpdatePatch(user: UserAccount): Record<string, unknown> {
-  return {
-    display_name: user.displayName,
+  const patch: Record<string, unknown> = {
     avatar_created: Boolean(user.avatarCreated),
     avatar: user.avatar,
     xp: user.xp ?? 0,
@@ -487,6 +486,10 @@ function userProgressUpdatePatch(user: UserAccount): Record<string, unknown> {
     leaderboard_opt_in: Boolean(user.leaderboardOptIn),
     preferences: user.preferences,
   };
+  if (user.role !== 'student') {
+    patch.display_name = user.displayName;
+  }
+  return patch;
 }
 
 function rowToClass(row: Record<string, unknown>): ClassRoom {
@@ -2215,7 +2218,8 @@ export class DataService {
   saveAvatar(uid: string, displayName: string, avatar: AvatarAppearance): UserAccount | null {
     const updated = this.updateUser(uid, (u) => ({
       ...u,
-      displayName: displayName.trim() || u.displayName,
+      // Keep teacher-assigned / registered student name intact so teachers can always recognize students
+      displayName: u.role === 'student' ? u.displayName : displayName.trim() || u.displayName,
       avatar: {...avatar},
       avatarCreated: true,
     }));

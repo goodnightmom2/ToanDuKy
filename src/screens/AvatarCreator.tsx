@@ -66,7 +66,8 @@ const PRESET_GIRL_SCHOLAR: AvatarAppearance = {
 };
 
 export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCancel}) => {
-  const [step, setStep] = React.useState<1 | 2 | 3>(1);
+  const canEditName = user.role !== 'student';
+  const [step, setStep] = React.useState<1 | 2 | 3>(canEditName ? 1 : 2);
   const [displayName, setDisplayName] = React.useState(user.displayName);
   const [selectedHeroBio, setSelectedHeroBio] = React.useState<string>('');
   const [appearance, setAppearance] = React.useState<AvatarAppearance>({...user.avatar});
@@ -85,7 +86,8 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
 
   const handleConfirmSave = () => {
     const safeOutfit = unlockedSet.has(appearance.outfitId) ? appearance.outfitId : 'hoc_vien';
-    onSave(displayName.trim() || user.displayName, {...appearance, outfitId: safeOutfit});
+    const finalName = canEditName ? displayName.trim() || user.displayName : user.displayName;
+    onSave(finalName, {...appearance, outfitId: safeOutfit});
   };
 
   return (
@@ -96,7 +98,9 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
             Tạo nhân vật Chibi Toán Du Ký
           </h1>
           <p className="text-xs sm:text-sm text-[#4B5B73]">
-            Mọi thay đổi hiện ngay trên bản xem trước và đồng bộ sang bản đồ, cảnh trạm 2D và đấu BOSS.
+            {canEditName
+              ? 'Mọi thay đổi hiện ngay trên bản xem trước và đồng bộ sang bản đồ, cảnh trạm 2D và đấu BOSS.'
+              : 'Tên của em đã được cố định theo danh sách lớp. Em chỉ cần chọn ngoại hình & trang phục rồi nhấn Lưu nhân vật.'}
           </p>
         </div>
         {onCancel && (
@@ -107,12 +111,18 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
       </div>
 
       {/* Step tabs */}
-      <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
-        {[
-          {id: 1 as const, label: '1. Biệt danh'},
-          {id: 2 as const, label: '2. Ngoại hình'},
-          {id: 3 as const, label: '3. Trang phục'},
-        ].map((s) => (
+      <div className={`grid gap-1.5 sm:gap-2 ${canEditName ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        {(canEditName
+          ? [
+              {id: 1 as const, label: '1. Biệt danh'},
+              {id: 2 as const, label: '2. Ngoại hình'},
+              {id: 3 as const, label: '3. Trang phục'},
+            ]
+          : [
+              {id: 2 as const, label: '1. Ngoại hình'},
+              {id: 3 as const, label: '2. Trang phục'},
+            ]
+        ).map((s) => (
           <button
             key={s.id}
             type="button"
@@ -161,8 +171,13 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
             <div className="relative z-10 flex flex-col items-center">
               <Avatar appearance={effectiveAppearance} view={previewView} frame="idle" size={215} />
               <p className="mt-1.5 font-display text-xl font-extrabold text-[#14284A]">
-                {displayName.trim() || 'Học viên Toán Du Ký'}
+                {(canEditName ? displayName.trim() : user.displayName) || 'Học viên Toán Du Ký'}
               </p>
+              {!canEditName && (
+                <p className="mt-0.5 text-[11px] font-bold text-[#1D7A6A] bg-[#E6F6F3] border border-[#9CD5CA] px-2.5 py-0.5 rounded-full">
+                  Tên cố định theo lớp · {user.studentCode}
+                </p>
+              )}
               {previewLockedOutfitId && (
                 <p className="mt-1 text-xs font-semibold text-[#8A5608] px-3 text-center">
                   Đang xem thử bộ chưa mở khóa — khi lưu sẽ giữ bộ đã mở.
@@ -211,7 +226,7 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
 
         {/* Customization Controls */}
         <div className="lg:col-span-7 notebook-card p-4 sm:p-5 space-y-4">
-          {step === 1 && (
+          {canEditName && step === 1 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-[#14284A] mb-1.5" htmlFor="nick-input">
@@ -410,10 +425,12 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
                 </div>
               </div>
 
-              <div className="flex justify-between pt-2 gap-2">
-                <button type="button" onClick={() => setStep(1)} className="btn-tactile btn-paper text-xs sm:text-sm">
-                  ← Biệt danh
-                </button>
+              <div className={`flex pt-2 gap-2 ${canEditName ? 'justify-between' : 'justify-end'}`}>
+                {canEditName && (
+                  <button type="button" onClick={() => setStep(1)} className="btn-tactile btn-paper text-xs sm:text-sm">
+                    ← Biệt danh
+                  </button>
+                )}
                 <button type="button" onClick={() => setStep(3)} className="btn-tactile btn-gold text-xs sm:text-sm">
                   Tiếp sang Trang phục →
                 </button>

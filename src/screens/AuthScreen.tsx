@@ -330,7 +330,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({onAuthenticated, onBackTo
           <form onSubmit={handleRegister} className="notebook-card p-5 space-y-4">
             <div className="space-y-1">
               <label className="text-sm font-bold text-[#14284A]" htmlFor="reg-nick">
-                Biệt danh học viên (không cần nhập họ tên thật)
+                Họ và tên học sinh (hiển thị cố định trong lớp)
               </label>
               <input
                 id="reg-nick"
@@ -338,7 +338,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({onAuthenticated, onBackTo
                 required
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Ví dụ: Nhà khảo sát Vàm Cỏ"
+                placeholder="Ví dụ: Nguyễn Văn An"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-[#14284A]"
               />
             </div>
