@@ -8,6 +8,7 @@ import type {
   StationDefinition,
   StationId,
   StationProgress,
+  UserAccount,
 } from './types.ts';
 
 export const APP_NAME = 'Toán Du Ký';
@@ -464,34 +465,34 @@ export const OUTFITS: OutfitDef[] = [
     id: 'ao_xanh_ngoc',
     name: 'Áo xanh ngọc',
     unlockType: 'xp',
-    xpRequired: 0,
+    xpRequired: 25,
     primaryA: '#1F7A6B',
     accentA: '#8FD3E6',
     primaryB: '#2E9C8A',
     accentB: '#F7E7B8',
-    note: 'Mở khóa ở mốc 0 XP.',
+    note: 'Mở khóa ở Cấp 2 (25 XP hành trình).',
   },
   {
     id: 'ao_nang_phuong_nam',
     name: 'Áo nắng phương Nam',
     unlockType: 'xp',
-    xpRequired: 30,
+    xpRequired: 60,
     primaryA: '#D98A1F',
     accentA: '#FFF4D6',
     primaryB: '#E0A93B',
     accentB: '#14284A',
-    note: 'Mở khóa ở mốc 30 XP hành trình.',
+    note: 'Mở khóa ở Cấp 3 (60 XP hành trình).',
   },
   {
     id: 'ao_cham_kham_pha',
     name: 'Áo chàm khám phá',
     unlockType: 'xp',
-    xpRequired: 70,
+    xpRequired: 110,
     primaryA: '#14284A',
     accentA: '#E0A93B',
     primaryB: '#3B5F8F',
     accentB: '#8FD3E6',
-    note: 'Mở khóa ở mốc 70 XP hành trình.',
+    note: 'Mở khóa ở Cấp 4 (110 XP hành trình).',
   },
   {
     id: 'hero_ltk',
@@ -550,13 +551,63 @@ export const OUTFITS: OutfitDef[] = [
   },
 ];
 
+/**
+ * Single authoritative outfit unlock checker (BUG-08 / F09):
+ * Never grants an XP-locked outfit below its xpRequired threshold just because it was equipped.
+ */
+export function isOutfitUnlocked(outfit: OutfitDef, user: UserAccount): boolean {
+  if (outfit.unlockType === 'default') return true;
+  if (outfit.unlockType === 'xp') {
+    return (user.xp ?? 0) >= (outfit.xpRequired ?? 0);
+  }
+  if (outfit.unlockType === 'boss' && outfit.bossId) {
+    if (user.inventory.outfits.includes(outfit.id)) return true;
+    const bossStation = STATIONS.find((s) => s.bossId === outfit.bossId);
+    if (bossStation && user.stations[bossStation.id]?.bossDefeated) return true;
+    const mocStatusMap = user.journey?.mocStatus ?? {};
+    const bossMocMap: Record<BossId, number> = {B1: 2, B2: 4, B3: 6, B4: 8, B5: 10};
+    const mId = bossMocMap[outfit.bossId] as keyof typeof mocStatusMap;
+    return Boolean(mocStatusMap[mId]?.bossDefeated);
+  }
+  return false;
+}
+
+export interface AccessoryCatalogItem {
+  id: string;
+  slot: 'headwear' | 'accessory' | 'cape' | 'badge';
+  value: string;
+  name: string;
+  xpRequired: number;
+  note: string;
+}
+
+export const ACCESSORY_ITEMS: AccessoryCatalogItem[] = [
+  {id: 'acc_mu', slot: 'headwear', value: 'mu_tham_hiem', name: 'Mũ sao vàng', xpRequired: 0, note: 'Mở mặc định ở Cấp 1 (0 XP).'},
+  {id: 'acc_sotay', slot: 'accessory', value: 'so_tay', name: 'Sổ tay khảo sát', xpRequired: 0, note: 'Mở mặc định ở Cấp 1 (0 XP).'},
+  {id: 'acc_laban', slot: 'badge', value: 'la_ban', name: 'Huy hiệu La bàn', xpRequired: 0, note: 'Mở mặc định ở Cấp 1 (0 XP).'},
+  {id: 'acc_nonla', slot: 'headwear', value: 'non_la', name: 'Nón lá Việt Nam', xpRequired: 25, note: 'Mở khóa ở Cấp 2 (25 XP).'},
+  {id: 'acc_kinh', slot: 'accessory', value: 'kinh_tron', name: 'Kính tròn học giả', xpRequired: 25, note: 'Mở khóa ở Cấp 2 (25 XP).'},
+  {id: 'acc_khanran', slot: 'headwear', value: 'khan_ran', name: 'Khăn rằn Nam Bộ', xpRequired: 60, note: 'Mở khóa ở Cấp 3 (60 XP).'},
+  {id: 'acc_compa', slot: 'accessory', value: 'compa_deo', name: 'Compa đo đạc đeo vai', xpRequired: 60, note: 'Mở khóa ở Cấp 3 (60 XP).'},
+  {id: 'acc_ongnhom', slot: 'accessory', value: 'ong_nhom', name: 'Ống nhòm trắc địa', xpRequired: 110, note: 'Mở khóa ở Cấp 4 (110 XP).'},
+  {id: 'acc_khanngoc', slot: 'cape', value: 'khan_choang_ngoc', name: 'Khăn choàng xanh ngọc', xpRequired: 110, note: 'Mở khóa ở Cấp 4 (110 XP).'},
+  {id: 'acc_dongson', slot: 'headwear', value: 'vong_dong_son', name: 'Vòng hoa văn Đông Sơn', xpRequired: 170, note: 'Mở khóa ở Cấp 5 (170 XP).'},
+  {id: 'acc_chimlac', slot: 'badge', value: 'chim_lac', name: 'Huy hiệu Chim Lạc', xpRequired: 170, note: 'Mở khóa ở Cấp 5 (170 XP).'},
+  {id: 'acc_choangvang', slot: 'cape', value: 'ao_choang_vang', name: 'Áo choàng vàng Kiến tạo', xpRequired: 240, note: 'Mở khóa ở Cấp 6 (240 XP).'},
+  {id: 'acc_tamgiacvang', slot: 'badge', value: 'tam_giac_vang', name: 'Huy hiệu Tam giác vàng', xpRequired: 240, note: 'Mở khóa ở Cấp 6 (240 XP).'},
+];
+
+export function isAccessoryUnlocked(item: AccessoryCatalogItem, user: UserAccount): boolean {
+  return (user.xp ?? 0) >= item.xpRequired;
+}
+
 export const LANDMARK_CARDS = [
   {id: 'lm_baden', title: 'Chân núi Bà Đen', region: 'Tây Ninh', note: 'Mốc 1 · Khởi hành nền tảng tam giác và đơn vị đo.'},
   {id: 'lm_cantho', title: 'Chợ nổi Cần Thơ', region: 'Cần Thơ', note: 'Mốc 2 · Giá trị lượng giác góc 0°–180° và góc bù.'},
   {id: 'lm_tphcm', title: 'Đường phố TP. Hồ Chí Minh', region: 'TP. Hồ Chí Minh', note: 'Mốc 3 · Định lý Côsin tìm cạnh qua góc xen giữa.'},
   {id: 'lm_nhatrang', title: 'Đường ven biển Nha Trang', region: 'Nha Trang', note: 'Mốc 4 · Định lý Côsin tìm góc từ ba cạnh.'},
   {id: 'lm_danang', title: 'Bờ sông Hàn Đà Nẵng', region: 'Đà Nẵng', note: 'Mốc 5 · Định lý Sin và bán kính đường tròn ngoại tiếp R.'},
-  {id: 'lm_hue', title: 'Bến sông Hương Huế', region: 'Huế', note: 'Mốc 6 · Đo khoảng cách không tới được (BS01 S01–S08).'},
+  {id: 'lm_hue', title: 'Bến sông Hương Huế', region: 'Huế', note: 'Mốc 6 · Thực hành 8 bước đo khoảng cách qua sông Hương.'},
   {id: 'lm_vinh', title: 'Khu vườn quê Vinh', region: 'Vinh', note: 'Mốc 7 · Công thức diện tích tam giác S = 1/2 bc sin A.'},
   {id: 'lm_haiphong', title: 'Khu đất ven biển Hải Phòng', region: 'Hải Phòng', note: 'Mốc 8 · Công thức Heron, S = pr và S = abc / 4R.'},
   {id: 'lm_hanoi', title: 'Sân vườn Hồ Gươm Hà Nội', region: 'Hà Nội', note: 'Mốc 9 · Tổng hợp chọn định lý, mô hình hóa & phản biện.'},
@@ -587,7 +638,11 @@ export const SKILL_CARDS = [
     formula: 'Đoạn ngắm $AC = \\frac{AB \\cdot \\sin B}{\\sin(180^\\circ - A - B)}$; bề rộng vuông góc $h = AC \\cdot \\sin A$',
   },
   {id: 'sk_area_sas', title: 'Diện tích (cạnh–góc–cạnh)', formula: '$S = \\frac{1}{2}bc\\sin A$'},
-  {id: 'sk_heron', title: 'Heron, S = pr & S = abc/4R', formula: '$S = \\sqrt{p(p-a)(p-b)(p-c)},\\ p=\\frac{a+b+c}{2}$'},
+  {
+    id: 'sk_heron',
+    title: 'Heron, S = pr & S = abc/4R',
+    formula: '$S = \\sqrt{p(p-a)(p-b)(p-c)},\\quad S = pr,\\quad S = \\frac{abc}{4R}$ với $p = \\frac{a+b+c}{2}$ ($p$: nửa chu vi, $r$: bán kính nội tiếp, $R$: bán kính ngoại tiếp)',
+  },
   {id: 'sk_modeling', title: 'Tổng hợp & Mô hình hóa', formula: 'Chọn định lý Sin / Côsin / Diện tích theo dữ kiện'},
   {id: 'sk_mastery', title: 'Bản lĩnh cuối Chương III', formula: 'Tự giải độc lập & phản biện lỗi sai'},
 ];

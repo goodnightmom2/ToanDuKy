@@ -93,7 +93,7 @@ export const JOURNEY_MILESTONES: JourneyMilestoneDef[] = [
   {
     id: 2,
     city: 'Cần Thơ',
-    sceneName: 'Chợ nổi (mô phỏng)',
+    sceneName: 'Chợ nổi Cái Răng',
     displayLabel: 'Cần Thơ',
     lessonRef: 'Bài 5',
     mathTopics: 'Giá trị lượng giác 0°–180°, góc bù, dùng máy tính chế độ độ',
@@ -126,7 +126,7 @@ export const JOURNEY_MILESTONES: JourneyMilestoneDef[] = [
   {
     id: 3,
     city: 'TP. Hồ Chí Minh',
-    sceneName: 'Đường phố (mô phỏng)',
+    sceneName: 'Đường phố & công viên đô thị',
     displayLabel: 'TP. Hồ Chí Minh',
     lessonRef: 'Bài 6',
     mathTopics: 'Định lý cosin: tìm cạnh (chọn góc xen giữa)',
@@ -228,14 +228,14 @@ export const JOURNEY_MILESTONES: JourneyMilestoneDef[] = [
     sceneName: 'Bến sông Hương',
     displayLabel: 'Huế',
     lessonRef: 'Bài 6 (giải tam giác, đo khoảng cách)',
-    mathTopics: 'BS01 đầy đủ S01–S08 (đo khoảng cách không tới được, nhánh bổ trợ R01–R04, tự giải T01–T02)',
+    mathTopics: '8 bước thực hành đo khoảng cách qua sông Hương, nhánh bổ trợ & bài tự giải độc lập',
     levelLabel: 'Mức 3',
     levels: [3],
     clusters: ['SIN', 'MH'],
     missionQuestionCount: 8,
-    passCondition_vi: 'Hoàn thành S01–S08 (S08 được làm ở chế độ luyện) + hạ BOSS 3',
+    passCondition_vi: 'Hoàn thành 8 bước khảo sát qua sông + hạ BOSS 3',
     narrative_vi:
-      'Mốc trọng tâm tại Bến sông Hương (mô phỏng BS01): đo khoảng cách AC tới điểm C bên kia sông không thể đi qua trực tiếp bằng quy trình 8 bước S01–S08 và phiếu khảo sát.',
+      'Mốc trọng tâm tại Bến sông Hương: thực hành đo khoảng cách AC tới điểm C bên kia sông (phân biệt với bề rộng vuông góc h) qua 8 bước khảo sát và lập phiếu kết quả.',
     prepHint_vi:
       'Gợi ý chuẩn bị: Đo đường đáy AB và hai góc A, B ngay trên bờ, tính góc C = 180° − A − B rồi áp dụng Định lý Sin để tìm AC.',
     skippableFoundationCluster: 'NEN',
@@ -259,7 +259,7 @@ export const JOURNEY_MILESTONES: JourneyMilestoneDef[] = [
   {
     id: 7,
     city: 'Vinh',
-    sceneName: 'Khu vườn quê (mô phỏng)',
+    sceneName: 'Khu vườn miền Trung',
     displayLabel: 'Vinh',
     lessonRef: 'Bài 6 (diện tích)',
     mathTopics: 'S = ½bc·sin A, đơn vị m²',
@@ -324,7 +324,7 @@ export const JOURNEY_MILESTONES: JourneyMilestoneDef[] = [
   {
     id: 9,
     city: 'Hà Nội',
-    sceneName: 'Sân vườn Hồ Gươm (mô phỏng)',
+    sceneName: 'Sân vườn Hồ Gươm',
     displayLabel: 'Hà Nội',
     lessonRef: 'Bài 6 + cuối chương',
     mathTopics: 'Tổng hợp chọn sin/cosin/diện tích; mô hình hóa; đo chiều cao; phản biện',
@@ -839,6 +839,7 @@ export function buildMilestoneMissionQuestions(params: {
     (q) =>
       def.clusters.includes(q.cluster) &&
       levelSet.has(q.level) &&
+      q.standalone !== false &&
       (q.review_status === 'approved' || (params.allowPending && q.review_status === 'pending_teacher_review')),
   );
 

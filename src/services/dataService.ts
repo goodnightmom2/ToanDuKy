@@ -423,7 +423,7 @@ function rowToUser(row: Record<string, unknown>): UserAccount {
     awardedKeys: Array.isArray(row.awarded_keys) ? (row.awarded_keys as string[]) : [],
     skills: {...createInitialSkills(), ...((row.skills as Record<SkillCluster, SkillRecord>) ?? {})},
     inventory: {
-      outfits: rawInv.outfits ?? ['hoc_vien', 'ao_xanh_ngoc'],
+      outfits: rawInv.outfits ?? ['hoc_vien'],
       tools: rawInv.tools ?? ['tool_ruler'],
       heroCards: rawInv.heroCards ?? [],
       landmarkCards: rawInv.landmarkCards ?? [],
@@ -507,6 +507,7 @@ function rowToClass(row: Record<string, unknown>): ClassRoom {
     code: String(row.code),
     codeExpiresAt: row.code_expires_at ? String(row.code_expires_at) : undefined,
     teacherUid: String(row.teacher_uid),
+    archived: Boolean(row.archived),
     createdAt: String(row.created_at ?? new Date().toISOString()),
   };
 }
@@ -518,6 +519,7 @@ function classToRow(cls: ClassRoom): Record<string, unknown> {
     code: cls.code,
     code_expires_at: cls.codeExpiresAt ?? null,
     teacher_uid: cls.teacherUid,
+    archived: Boolean(cls.archived),
     created_at: cls.createdAt,
   };
 }
@@ -554,6 +556,8 @@ function attemptToRow(a: AttemptRecord): Record<string, unknown> {
     teacher_uid: a.teacherUid || a.userId,
     is_test_account: Boolean(a.isTestAccount),
     question_id: a.questionId,
+    question_version: a.questionVersion ?? 1,
+    question_snapshot: a.questionSnapshot ?? null,
     cluster: a.cluster,
     station_id: a.stationId ?? null,
     moc_id: a.mocId ?? null,
@@ -581,6 +585,8 @@ function rowToAttempt(row: Record<string, unknown>): AttemptRecord {
     teacherUid: row.teacher_uid ? String(row.teacher_uid) : undefined,
     isTestAccount: Boolean(row.is_test_account),
     questionId: String(row.question_id),
+    questionVersion: typeof row.question_version === 'number' ? row.question_version : 1,
+    questionSnapshot: row.question_snapshot ? String(row.question_snapshot) : undefined,
     cluster: row.cluster as SkillCluster,
     stationId: (row.station_id as StationId | null) ?? undefined,
     mocId: (row.moc_id as MocId | null) ?? undefined,
@@ -1454,10 +1460,10 @@ export class DataService {
           };
         } else {
           const initialProfile = {
-            avatar: {...DEFAULT_AVATAR, outfitId: 'ao_cham_kham_pha'},
+            avatar: {...DEFAULT_AVATAR, outfitId: 'hoc_vien'},
             skills: createInitialSkills(),
             inventory: {
-              outfits: ['hoc_vien', 'ao_xanh_ngoc', 'ao_cham_kham_pha'],
+              outfits: ['hoc_vien'],
               tools: ['tool_ruler', 'tool_protractor'],
               heroCards: [],
               landmarkCards: [],
@@ -1509,11 +1515,18 @@ export class DataService {
         }
       } catch (err) {
         const mapped = mapSupabaseAuthError(err instanceof Error ? {message: err.message} : null);
-        if (!mapped.fallbackRecommended) {
-          return {ok: false, error: mapped.message};
-        }
-        this.lastNotice = `${mapped.message} Đã chuyển sang LocalAdapter (lưu trên máy này).`;
+        return {
+          ok: false,
+          error: `${mapped.message} Vui lòng kiểm tra kết nối mạng và thử lại (hệ thống lớp học không tạo tài khoản cục bộ tách rời).`,
+        };
       }
+    }
+
+    if (this.isSupabaseConfigured()) {
+      return {
+        ok: false,
+        error: 'Thiết bị đang ngoại tuyến — chưa thể khởi tạo tài khoản quản trị lên máy chủ. Vui lòng kết nối mạng và thử lại.',
+      };
     }
 
     // 2. LocalAdapter Fallback
@@ -1545,12 +1558,12 @@ export class DataService {
       locked: false,
       createdAt: now,
       avatarCreated: true,
-      avatar: {...DEFAULT_AVATAR, outfitId: 'ao_cham_kham_pha'},
+      avatar: {...DEFAULT_AVATAR, outfitId: 'hoc_vien'},
       xp: 0,
       awardedKeys: [],
       skills: createInitialSkills(),
       inventory: {
-        outfits: ['hoc_vien', 'ao_xanh_ngoc', 'ao_cham_kham_pha'],
+        outfits: ['hoc_vien'],
         tools: ['tool_ruler', 'tool_protractor'],
         heroCards: [],
         landmarkCards: [],
@@ -1654,7 +1667,7 @@ export class DataService {
               avatar: {...DEFAULT_AVATAR},
               skills: createInitialSkills(),
               inventory: {
-                outfits: ['hoc_vien', 'ao_xanh_ngoc'],
+                outfits: ['hoc_vien'],
                 tools: ['tool_ruler'],
                 heroCards: [],
                 landmarkCards: [],
@@ -1706,11 +1719,18 @@ export class DataService {
         }
       } catch (err) {
         const mapped = mapSupabaseAuthError(err instanceof Error ? {message: err.message} : null);
-        if (!mapped.fallbackRecommended) {
-          return {ok: false, error: mapped.message};
-        }
-        this.lastNotice = `${mapped.message} Đã chuyển sang LocalAdapter (lưu trên máy này).`;
+        return {
+          ok: false,
+          error: `${mapped.message} Vui lòng kiểm tra kết nối mạng và thử lại (hệ thống lớp học không tạo tài khoản cục bộ tách rời).`,
+        };
       }
+    }
+
+    if (!params.isTestAccount && this.isSupabaseConfigured()) {
+      return {
+        ok: false,
+        error: 'Thiết bị đang ngoại tuyến — chưa thể đăng ký tài khoản lên máy chủ lớp học. Vui lòng kết nối mạng và thử lại.',
+      };
     }
 
     // 2. LocalAdapter Fallback (or Admin creating TEST accounts)
@@ -1861,30 +1881,26 @@ export class DataService {
         }
 
         const mapped = mapSupabaseAuthError(error);
-        // Check if local user matches password (offline/local account fallback)
-        const localUser = this.db.users.find((u) => u.username === normalized);
-        if (localUser && localUser.passwordHash) {
-          const candidateHash = await hashPassword(password, localUser.passwordSalt);
-          if (candidateHash === localUser.passwordHash) {
-            if (localUser.locked || localUser.status === 'locked') {
-              return {ok: false, error: 'Tài khoản này đang tạm khóa. Vui lòng liên hệ giáo viên.'};
-            }
-            this.adapterMode = 'local';
-            this.save({...this.db, currentUid: localUser.uid});
-            return {
-              ok: true,
-              user: localUser,
-              notice: mapped.fallbackRecommended
-                ? `${mapped.message} Đang đăng nhập bằng LocalAdapter (lưu trên máy này).`
-                : 'Đang dùng tài khoản lưu trên máy này (LocalAdapter).',
-            };
-          }
-        }
-        return {ok: false, error: mapped.message};
+        return {
+          ok: false,
+          error: mapped.fallbackRecommended
+            ? `${mapped.message} Vui lòng kiểm tra kết nối mạng và thử lại (hệ thống lớp học không tự tách dữ liệu cục bộ).`
+            : mapped.message,
+        };
       } catch (err) {
         const mapped = mapSupabaseAuthError(err instanceof Error ? {message: err.message} : null);
-        return {ok: false, error: mapped.message};
+        return {
+          ok: false,
+          error: `${mapped.message} Vui lòng kiểm tra kết nối mạng và thử lại.`,
+        };
       }
+    }
+
+    if (this.isSupabaseConfigured()) {
+      return {
+        ok: false,
+        error: 'Thiết bị đang ngoại tuyến — không thể đăng nhập vào máy chủ lớp học. Vui lòng kết nối mạng và thử lại.',
+      };
     }
 
     // 2. LocalAdapter Login
@@ -2437,9 +2453,14 @@ export class DataService {
     eventId?: string,
   ): {attempt: AttemptRecord; user: UserAccount | null} {
     const scope = this.resolveScope(attemptInput.userId);
+    const matchedQ = this.db.questions.find((q) => q.id === attemptInput.questionId);
     const attempt: AttemptRecord = {
       ...attemptInput,
       id: generateId('att'),
+      questionVersion: attemptInput.questionVersion ?? matchedQ?.version ?? 1,
+      questionSnapshot:
+        attemptInput.questionSnapshot ??
+        (matchedQ ? matchedQ.stem_vi.replace(/\s+/g, ' ').trim().slice(0, 140) : undefined),
       classId: attemptInput.classId || scope.classId,
       teacherUid: attemptInput.teacherUid || scope.teacherUid,
       studentCode: attemptInput.studentCode || scope.studentCode,
@@ -2909,6 +2930,178 @@ export class DataService {
     return [...this.db.classes];
   }
 
+  toggleUserLock(
+    actor: UserAccount,
+    targetUid: string,
+  ): {ok: boolean; locked?: boolean; error?: string} {
+    if (!canAccessAdmin(actor)) {
+      return {ok: false, error: 'Không có quyền khóa tài khoản.'};
+    }
+    const target = this.db.users.find((u) => u.uid === targetUid);
+    if (!target) return {ok: false, error: 'Không tìm thấy tài khoản.'};
+    if (target.uid === actor.uid) {
+      return {ok: false, error: 'Không thể tự khóa tài khoản của chính mình.'};
+    }
+    if (actor.role === 'teacher') {
+      if (target.role !== 'student' || !this.isManagedByTeacher(actor, target.classId, target.teacherUid)) {
+        return {ok: false, error: 'Giáo viên chỉ được khóa/mở khóa học sinh lớp mình quản lý.'};
+      }
+    }
+    const nextLocked = !target.locked;
+    const nextStatus: AccountStatus = nextLocked ? 'locked' : 'active';
+    this.save({
+      ...this.db,
+      users: this.db.users.map((u) =>
+        u.uid === targetUid ? {...u, locked: nextLocked, status: nextStatus} : u,
+      ),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase
+        .from('users')
+        .update({locked: nextLocked, status: nextStatus, updated_at: new Date().toISOString()})
+        .eq('uid', targetUid);
+    }
+    return {ok: true, locked: nextLocked};
+  }
+
+  updateStudentDisplayName(
+    actor: UserAccount,
+    targetUid: string,
+    newDisplayName: string,
+  ): {ok: boolean; error?: string} {
+    if (!canAccessAdmin(actor)) return {ok: false, error: 'Không có quyền sửa tên.'};
+    const trimmed = newDisplayName.trim();
+    if (trimmed.length < 2) return {ok: false, error: 'Tên hiển thị cần ít nhất 2 ký tự.'};
+    const target = this.db.users.find((u) => u.uid === targetUid);
+    if (!target) return {ok: false, error: 'Không tìm thấy tài khoản.'};
+    if (
+      actor.role === 'teacher' &&
+      (target.role !== 'student' || !this.isManagedByTeacher(actor, target.classId, target.teacherUid))
+    ) {
+      return {ok: false, error: 'Giáo viên chỉ được sửa tên học sinh lớp mình quản lý.'};
+    }
+    this.save({
+      ...this.db,
+      users: this.db.users.map((u) =>
+        u.uid === targetUid ? {...u, displayName: trimmed} : u,
+      ),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase
+        .from('users')
+        .update({display_name: trimmed, updated_at: new Date().toISOString()})
+        .eq('uid', targetUid);
+    }
+    return {ok: true};
+  }
+
+  async resetUserPasswordViaServer(
+    actor: UserAccount,
+    targetUid: string,
+    newPassword: string,
+  ): Promise<{ok: boolean; message: string}> {
+    if (!canAccessAdmin(actor)) {
+      return {ok: false, message: 'Không có quyền đặt lại mật khẩu.'};
+    }
+    const pCheck = validatePassword(newPassword);
+    if (!pCheck.ok) return {ok: false, message: pCheck.message ?? 'Mật khẩu chưa hợp lệ.'};
+
+    if (!this.isSupabaseConfigured()) {
+      const salt = generateSalt();
+      const hash = await hashPassword(newPassword, salt);
+      this.save({
+        ...this.db,
+        users: this.db.users.map((u) =>
+          u.uid === targetUid ? {...u, passwordHash: hash, passwordSalt: salt} : u,
+        ),
+      });
+      return {ok: true, message: 'Đã đặt lại mật khẩu cục bộ thành công.'};
+    }
+
+    try {
+      const token = await this.getAccessToken();
+      const resp = await fetch('/api/admin/reset-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? {Authorization: `Bearer ${token}`} : {}),
+        },
+        body: JSON.stringify({targetUid, newPassword}),
+      });
+      const data = (await resp.json()) as {ok?: boolean; message?: string; error?: string};
+      if (!resp.ok || !data.ok) {
+        return {ok: false, message: data.error ?? 'Chưa thể đặt lại mật khẩu.'};
+      }
+      return {ok: true, message: data.message ?? 'Đã đặt lại mật khẩu thành công.'};
+    } catch {
+      return {ok: false, message: 'Lỗi mạng khi gọi máy chủ đặt lại mật khẩu.'};
+    }
+  }
+
+  renameClass(actor: UserAccount, classId: string, newName: string): {ok: boolean; error?: string} {
+    if (!canAccessAdmin(actor)) return {ok: false, error: 'Không có quyền sửa lớp.'};
+    const trimmed = newName.trim();
+    if (trimmed.length < 2) return {ok: false, error: 'Tên lớp cần ít nhất 2 ký tự.'};
+    const cls = this.db.classes.find((c) => c.id === classId);
+    if (!cls) return {ok: false, error: 'Không tìm thấy lớp học.'};
+    if (actor.role === 'teacher' && !this.isManagedByTeacher(actor, cls.id, cls.teacherUid)) {
+      return {ok: false, error: 'Giáo viên chỉ được sửa lớp mình phụ trách.'};
+    }
+    const updated: ClassRoom = {...cls, name: trimmed};
+    this.save({
+      ...this.db,
+      classes: this.db.classes.map((c) => (c.id === classId ? updated : c)),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('classes').update({name: trimmed}).eq('id', classId);
+    }
+    return {ok: true};
+  }
+
+  reassignClassTeacher(
+    actor: UserAccount,
+    classId: string,
+    newTeacherUid: string,
+  ): {ok: boolean; error?: string} {
+    if (!canEditSettingsOrUsers(actor)) {
+      return {ok: false, error: 'Chỉ Quản trị viên mới được chuyển giáo viên phụ trách lớp.'};
+    }
+    const cls = this.db.classes.find((c) => c.id === classId);
+    if (!cls) return {ok: false, error: 'Không tìm thấy lớp học.'};
+    const updated: ClassRoom = {...cls, teacherUid: newTeacherUid};
+    this.save({
+      ...this.db,
+      classes: this.db.classes.map((c) => (c.id === classId ? updated : c)),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('classes').update({teacher_uid: newTeacherUid}).eq('id', classId);
+    }
+    return {ok: true};
+  }
+
+  toggleArchiveClass(
+    actor: UserAccount,
+    classId: string,
+  ): {ok: boolean; archived?: boolean; error?: string} {
+    if (!canAccessAdmin(actor)) return {ok: false, error: 'Không có quyền lưu trữ lớp.'};
+    const cls = this.db.classes.find((c) => c.id === classId);
+    if (!cls) return {ok: false, error: 'Không tìm thấy lớp học.'};
+    if (actor.role === 'teacher' && !this.isManagedByTeacher(actor, cls.id, cls.teacherUid)) {
+      return {ok: false, error: 'Giáo viên chỉ được lưu trữ lớp mình phụ trách.'};
+    }
+    const nextArchived = !cls.archived;
+    this.save({
+      ...this.db,
+      classes: this.db.classes.map((c) =>
+        c.id === classId ? {...c, archived: nextArchived} : c,
+      ),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('classes').update({archived: nextArchived}).eq('id', classId);
+    }
+    return {ok: true, archived: nextArchived};
+  }
+
   private isManagedByTeacher(teacher: UserAccount, classId?: string, teacherUid?: string): boolean {
     if (teacher.role === 'admin') return true;
     if (teacher.role !== 'teacher') return false;
@@ -3060,10 +3253,10 @@ export class DataService {
     const now = new Date().toISOString();
 
     const initialProfile = {
-      avatar: {...DEFAULT_AVATAR, outfitId: 'ao_cham_kham_pha'},
+      avatar: {...DEFAULT_AVATAR, outfitId: 'hoc_vien'},
       skills: createInitialSkills(),
       inventory: {
-        outfits: ['hoc_vien', 'ao_xanh_ngoc', 'ao_cham_kham_pha'],
+        outfits: ['hoc_vien'],
         tools: ['tool_ruler', 'tool_protractor'],
         heroCards: [],
         landmarkCards: [],
@@ -3733,6 +3926,9 @@ export class DataService {
     const header = [
       'studentCode',
       'questionId',
+      'questionVersion',
+      'seed',
+      'questionSnapshot',
       'cluster',
       'mode',
       'switchedToPractice',
@@ -3751,6 +3947,9 @@ export class DataService {
         [
           r.studentCode,
           r.questionId,
+          r.questionVersion ?? 1,
+          r.seed ?? '',
+          r.questionSnapshot ?? '',
           r.cluster,
           r.mode,
           r.switchedToPractice,

@@ -400,6 +400,21 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
               </button>
             );
           })}
+          {(requireExplanation || question.type === 'error_spot') && (
+            <div className="space-y-1.5 pt-2">
+              <label className="block text-sm font-semibold text-[#1F3B63]">
+                Giải thích lập luận của em (1–2 câu để AI góp ý 3 phần &amp; gửi giáo viên):
+              </label>
+              <textarea
+                rows={2}
+                value={explanationText}
+                onChange={(e) => setExplanationText(e.target.value)}
+                disabled={solved}
+                placeholder="Ví dụ: Bạn An thay sai dấu của cos 120° vì 120° là góc tù nên cos 120° = -1/2..."
+                className="w-full px-3.5 py-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-sm text-[#14284A]"
+              />
+            </div>
+          )}
         </div>
       )}
 

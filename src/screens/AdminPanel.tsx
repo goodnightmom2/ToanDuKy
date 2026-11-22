@@ -141,10 +141,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [previewQuestion, setPreviewQuestion] = React.useState<QuestionItem | null>(null);
   const [manualStem, setManualStem] = React.useState('');
   const [manualCluster, setManualCluster] = React.useState<SkillCluster>('SIN');
+  const [manualLevel, setManualLevel] = React.useState<1 | 2 | 3 | 4>(2);
+  const [manualType, setManualType] = React.useState<'numeric' | 'mcq' | 'true_false_multi' | 'error_spot'>('numeric');
+  const [manualErrorCode, setManualErrorCode] = React.useState('E05');
+  const [manualOptA, setManualOptA] = React.useState('');
+  const [manualOptB, setManualOptB] = React.useState('');
+  const [manualOptC, setManualOptC] = React.useState('');
+  const [manualOptD, setManualOptD] = React.useState('');
   const [manualNumericAns, setManualNumericAns] = React.useState('');
   const [manualUnit, setManualUnit] = React.useState('m');
   const [manualSolution, setManualSolution] = React.useState('');
   const [manualHint, setManualHint] = React.useState('');
+  const [editingQuestion, setEditingQuestion] = React.useState<QuestionItem | null>(null);
+  const [editQStem, setEditQStem] = React.useState('');
+  const [editQSolution, setEditQSolution] = React.useState('');
+  const [editQHint, setEditQHint] = React.useState('');
+  const [editQNote, setEditQNote] = React.useState('');
 
   // Reports tab states
   const [includeTestInReport, setIncludeTestInReport] = React.useState(false);
@@ -787,12 +799,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <RotateCcw className="w-3 h-3" />
                             Đặt lại hành trình
                           </button>
-                          {isAdmin && u.uid !== user.uid && (
+                          {u.uid !== user.uid && (isAdmin || u.role === 'student') && (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  dataService.adminToggleLockUser(user, u.uid);
+                                  const nextName = window.prompt(
+                                    `Sửa tên hiển thị cho ${u.username}:`,
+                                    u.displayName,
+                                  );
+                                  if (nextName !== null) {
+                                    const res = dataService.updateStudentDisplayName(user, u.uid, nextName);
+                                    setTestAccMsg(
+                                      res.ok ? `Đã cập nhật tên thành "${nextName.trim()}".` : (res.error ?? 'Lỗi'),
+                                    );
+                                    refresh();
+                                  }
+                                }}
+                                className="px-2 py-1 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] font-bold !min-h-[32px]"
+                              >
+                                Sửa tên
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const res = dataService.toggleUserLock(user, u.uid);
+                                  setTestAccMsg(
+                                    res.ok
+                                      ? res.locked
+                                        ? `Đã tạm khóa tài khoản ${u.displayName} (giữ nguyên lịch sử điểm).`
+                                        : `Đã mở khóa tài khoản ${u.displayName}.`
+                                      : (res.error ?? 'Lỗi'),
+                                  );
                                   refresh();
                                 }}
                                 className="px-2 py-1 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] font-bold flex items-center gap-1 !min-h-[32px]"
@@ -832,8 +870,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  const res = await dataService.adminResetPassword(user, resetTargetUid, resetNewPass);
-                  setTestAccMsg(res.ok ? 'Đã đặt lại mật khẩu thành công.' : (res.error ?? 'Lỗi'));
+                  const res = await dataService.resetUserPasswordViaServer(user, resetTargetUid, resetNewPass);
+                  setTestAccMsg(res.message);
                   if (res.ok) setResetTargetUid(null);
                 }}
                 className="btn-tactile btn-jade text-xs py-1.5 px-3"
@@ -905,14 +943,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     className="p-3.5 rounded-xl bg-[#FFFBF0] border-2 border-[#D9C293] flex flex-wrap items-center justify-between gap-2"
                   >
                     <div>
-                      <p className="font-display text-lg font-extrabold text-[#14284A]">Lớp {cls.name}</p>
+                      <p className="font-display text-lg font-extrabold text-[#14284A]">
+                        Lớp {cls.name}{' '}
+                        {cls.archived && (
+                          <span className="ml-1 px-2 py-0.5 rounded-full bg-[#E2E8F0] text-[#475569] text-[11px] font-bold">
+                            Đã lưu trữ
+                          </span>
+                        )}
+                      </p>
                       <p className="text-xs text-[#5B6B82]">
                         Mã tham gia: <strong className="text-[#1F7A6B]">{cls.code}</strong> · Sĩ số:{' '}
                         <strong className="tabular-nums">{studentCount}</strong>
                         {isAdmin && owner ? ` · Phụ trách: ${owner.displayName}` : ''}
                       </p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {isAdmin && teachersList.length > 0 && (
+                        <select
+                          aria-label={`Đổi giáo viên phụ trách lớp ${cls.name}`}
+                          value={cls.teacherUid}
+                          onChange={(e) => {
+                            const res = dataService.reassignClassTeacher(user, cls.id, e.target.value);
+                            if (res.ok) refresh();
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold text-[#14284A]"
+                        >
+                          <option value={user.uid}>GV: {user.displayName}</option>
+                          {teachersList.map((t) => (
+                            <option key={t.uid} value={t.uid}>
+                              GV: {t.displayName} ({t.username})
+                            </option>
+                          ))}
+                        </select>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -921,7 +984,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         }}
                         className="btn-tactile btn-gold text-xs py-2 px-3"
                       >
-                        <Users className="w-3.5 h-3.5" /> Xem học sinh lớp này
+                        <Users className="w-3.5 h-3.5" /> Xem học sinh
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextName = window.prompt('Nhập tên mới cho lớp:', cls.name);
+                          if (nextName !== null) {
+                            const res = dataService.renameClass(user, cls.id, nextName);
+                            if (res.ok) refresh();
+                          }
+                        }}
+                        className="btn-tactile btn-paper text-xs py-2 px-3"
+                      >
+                        Sửa tên
                       </button>
                       <button
                         type="button"
@@ -931,7 +1007,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         }}
                         className="btn-tactile btn-paper text-xs py-2 px-3"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" /> Đổi mã lớp
+                        <RefreshCw className="w-3.5 h-3.5" /> Đổi mã
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          dataService.toggleArchiveClass(user, cls.id);
+                          refresh();
+                        }}
+                        className="btn-tactile btn-paper text-xs py-2 px-3"
+                      >
+                        {cls.archived ? 'Khôi phục' : 'Lưu trữ'}
                       </button>
                     </div>
                   </div>
@@ -1001,12 +1087,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
 
-          {/* Manual add question quick form */}
+          {/* Manual add question form (supports 4 question types + level + E01–E12 error code) */}
           <div className="notebook-card-warm p-4 space-y-2.5">
             <h2 className="font-display text-base font-extrabold text-[#14284A]">
-              Thêm nhanh câu hỏi số học (mặc định chờ duyệt)
+              Thêm câu hỏi mới (mặc định Chờ duyệt)
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <select
                 value={manualCluster}
                 onChange={(e) => setManualCluster(e.target.value as SkillCluster)}
@@ -1018,20 +1104,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </option>
                 ))}
               </select>
-              <input
-                type="text"
-                value={manualNumericAns}
-                onChange={(e) => setManualNumericAns(e.target.value)}
-                placeholder="Đáp án số (ví dụ: 55.3)"
-                className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
-              />
-              <input
-                type="text"
-                value={manualUnit}
-                onChange={(e) => setManualUnit(e.target.value)}
-                placeholder="Đơn vị (m, °, m²)"
-                className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
-              />
+              <select
+                value={manualLevel}
+                onChange={(e) => setManualLevel(Number(e.target.value) as 1 | 2 | 3 | 4)}
+                className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold"
+              >
+                <option value={1}>Mức 1 (Nhận biết)</option>
+                <option value={2}>Mức 2 (Thông hiểu)</option>
+                <option value={3}>Mức 3 (Vận dụng)</option>
+                <option value={4}>Mức 4 (Vận dụng cao)</option>
+              </select>
+              <select
+                value={manualType}
+                onChange={(e) =>
+                  setManualType(e.target.value as 'numeric' | 'mcq' | 'true_false_multi' | 'error_spot')
+                }
+                className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold"
+              >
+                <option value="numeric">Đáp án số</option>
+                <option value="mcq">Trắc nghiệm 4 lựa chọn</option>
+                <option value="true_false_multi">Đúng / Sai nhiều ý</option>
+                <option value="error_spot">Tìm lỗi sai lời giải</option>
+              </select>
+              <select
+                value={manualErrorCode}
+                onChange={(e) => setManualErrorCode(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold"
+              >
+                {Object.values(ERROR_CATALOG).map((e) => (
+                  <option key={e.code} value={e.code}>
+                    {e.code} · {e.subSkill}
+                  </option>
+                ))}
+              </select>
             </div>
             <input
               type="text"
@@ -1040,6 +1145,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               placeholder="Đề bài (hỗ trợ KaTeX trong $...$, ví dụ: Tính $AC$ biết...)"
               className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
             />
+            {manualType === 'numeric' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={manualNumericAns}
+                  onChange={(e) => setManualNumericAns(e.target.value)}
+                  placeholder="Đáp án số (ví dụ: 55.3)"
+                  className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                />
+                <input
+                  type="text"
+                  value={manualUnit}
+                  onChange={(e) => setManualUnit(e.target.value)}
+                  placeholder="Đơn vị (m, °, m²)"
+                  className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={manualOptA}
+                  onChange={(e) => setManualOptA(e.target.value)}
+                  placeholder={manualType === 'true_false_multi' ? 'Ý a) (Mặc định Đúng)' : 'Phương án A (Đáp án ĐÚNG)'}
+                  className="px-3 py-2 rounded-xl bg-white border border-[#2E9C8A] text-xs"
+                />
+                <input
+                  type="text"
+                  value={manualOptB}
+                  onChange={(e) => setManualOptB(e.target.value)}
+                  placeholder={manualType === 'true_false_multi' ? 'Ý b) (Mặc định Đúng)' : 'Phương án B (Nhiễu)'}
+                  className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                />
+                <input
+                  type="text"
+                  value={manualOptC}
+                  onChange={(e) => setManualOptC(e.target.value)}
+                  placeholder={manualType === 'true_false_multi' ? 'Ý c) (Mặc định Sai)' : 'Phương án C (Nhiễu)'}
+                  className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                />
+                <input
+                  type="text"
+                  value={manualOptD}
+                  onChange={(e) => setManualOptD(e.target.value)}
+                  placeholder={manualType === 'true_false_multi' ? 'Ý d) (Mặc định Sai)' : 'Phương án D (Nhiễu)'}
+                  className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                />
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <input
                 type="text"
@@ -1059,30 +1213,57 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <button
               type="button"
               onClick={() => {
-                const num = Number(manualNumericAns.replace(',', '.'));
-                if (!manualStem.trim() || !Number.isFinite(num)) return;
-                dataService.upsertQuestion(
-                  user,
-                  {
-                    id: generateId('gv'),
-                    cluster: manualCluster,
-                    skill_ids: [manualCluster.toLowerCase()],
-                    level: 2,
-                    type: 'numeric',
-                    stem_vi: manualStem.trim(),
-                    expected_answer: {rounded: num, value: num, decimal_places: 1, unit: manualUnit},
-                    fixedUnitLabel: manualUnit || undefined,
-                    solution_vi: manualSolution.trim() || `Đáp án là ${num} ${manualUnit}.`,
-                    anticipated_error_ids: ['E05'],
-                    hints_vi: [manualHint.trim() || 'Kiểm tra lại công thức và đơn vị đo.'],
-                    review_status: 'pending_teacher_review',
-                    source_refs: ['GV_BIEN_SOAN'],
-                    is_adapted: false,
-                  },
-                  'Giáo viên tạo thủ công',
-                );
+                if (!manualStem.trim()) return;
+                const baseItem: QuestionItem = {
+                  id: generateId('gv'),
+                  cluster: manualCluster,
+                  skill_ids: [manualCluster.toLowerCase()],
+                  level: manualLevel,
+                  type: manualType,
+                  stem_vi: manualStem.trim(),
+                  expected_answer: {},
+                  solution_vi: manualSolution.trim() || 'Đối chiếu lời giải cùng giáo viên.',
+                  anticipated_error_ids: [manualErrorCode],
+                  hints_vi: [
+                    manualHint.trim() || 'Kiểm tra lại công thức và đơn vị đo.',
+                    'Thực hiện lần lượt từng bước biến đổi rồi đối chiếu kết quả.',
+                  ],
+                  review_status: 'pending_teacher_review',
+                  source_refs: ['GV_BIEN_SOAN'],
+                  is_adapted: false,
+                };
+                if (manualType === 'numeric') {
+                  const num = Number(manualNumericAns.replace(',', '.'));
+                  if (!Number.isFinite(num)) return;
+                  baseItem.expected_answer = {rounded: num, value: num, decimal_places: 1, unit: manualUnit};
+                  baseItem.fixedUnitLabel = manualUnit || undefined;
+                  baseItem.solution_vi = manualSolution.trim() || `Đáp án là ${num} ${manualUnit}.`;
+                } else if (manualType === 'true_false_multi') {
+                  const stmts = [
+                    {id: 'a', label: manualOptA.trim() || 'Nhận định a', isTrue: true, errorCode: manualErrorCode},
+                    {id: 'b', label: manualOptB.trim() || 'Nhận định b', isTrue: true, errorCode: manualErrorCode},
+                    {id: 'c', label: manualOptC.trim() || 'Nhận định c', isTrue: false, errorCode: manualErrorCode},
+                    {id: 'd', label: manualOptD.trim() || 'Nhận định d', isTrue: false, errorCode: manualErrorCode},
+                  ];
+                  baseItem.statements = stmts;
+                  baseItem.expected_answer = {statements: {a: true, b: true, c: false, d: false}};
+                } else {
+                  if (!manualOptA.trim() || !manualOptB.trim()) return;
+                  baseItem.options = [
+                    {id: 'a', label: manualOptA.trim()},
+                    {id: 'b', label: manualOptB.trim(), errorCode: manualErrorCode},
+                    ...(manualOptC.trim() ? [{id: 'c', label: manualOptC.trim(), errorCode: manualErrorCode}] : []),
+                    ...(manualOptD.trim() ? [{id: 'd', label: manualOptD.trim(), errorCode: manualErrorCode}] : []),
+                  ];
+                  baseItem.expected_answer = {choice: 'a'};
+                }
+                dataService.upsertQuestion(user, baseItem, 'Giáo viên tạo thủ công');
                 setManualStem('');
                 setManualNumericAns('');
+                setManualOptA('');
+                setManualOptB('');
+                setManualOptC('');
+                setManualOptD('');
                 setManualSolution('');
                 setManualHint('');
                 refresh();
@@ -1140,13 +1321,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       </label>
 
-                      <div className="flex gap-1.5 shrink-0">
+                      <div className="flex flex-wrap gap-1.5 shrink-0">
                         <button
                           type="button"
                           onClick={() => setPreviewQuestion(q)}
                           className="px-2.5 py-1 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] text-xs font-bold !min-h-[34px]"
                         >
                           Xem trước
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingQuestion(q);
+                            setEditQStem(q.stem_vi);
+                            setEditQSolution(q.solution_vi);
+                            setEditQHint(q.hints_vi[0] ?? '');
+                            setEditQNote('');
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-xs font-bold !min-h-[34px]"
+                        >
+                          Sửa (v{(q.version ?? 1) + 1})
                         </button>
                         {q.review_status !== 'approved' && (
                           <button
@@ -1169,7 +1363,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             }}
                             className="px-2.5 py-1 rounded-lg bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold !min-h-[34px]"
                           >
-                            Từ chối
+                            Ngừng dùng
                           </button>
                         )}
                       </div>
@@ -1178,6 +1372,91 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 );
               })}
           </div>
+
+          {editingQuestion && (
+            <div className="fixed inset-0 z-50 bg-[#14284A]/55 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+              <div className="notebook-card max-w-lg w-full p-5 space-y-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-lg font-extrabold text-[#14284A]">
+                    Chỉnh sửa câu {editingQuestion.id} → tạo phiên bản v{(editingQuestion.version ?? 1) + 1}
+                  </h3>
+                  <button type="button" onClick={() => setEditingQuestion(null)} className="p-1.5">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <p className="text-[#5B6B82]">
+                  Bản cũ v{editingQuestion.version ?? 1} vẫn được giữ trong lịch sử phiên bản để bảo toàn minh chứng bài làm trước đó.
+                </p>
+                <div className="space-y-1">
+                  <label className="font-bold text-[#14284A]">Nội dung đề bài</label>
+                  <textarea
+                    rows={3}
+                    value={editQStem}
+                    onChange={(e) => setEditQStem(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-bold text-[#14284A]">Gợi ý bước đầu</label>
+                  <input
+                    type="text"
+                    value={editQHint}
+                    onChange={(e) => setEditQHint(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-bold text-[#14284A]">Lời giải mẫu</label>
+                  <textarea
+                    rows={2}
+                    value={editQSolution}
+                    onChange={(e) => setEditQSolution(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-bold text-[#14284A]">Ghi chú lý do sửa</label>
+                  <input
+                    type="text"
+                    value={editQNote}
+                    onChange={(e) => setEditQNote(e.target.value)}
+                    placeholder="Ví dụ: Sửa ký hiệu góc cho chuẩn SGK"
+                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditingQuestion(null)}
+                    className="btn-tactile btn-paper text-xs py-2 px-3"
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!editQStem.trim()) return;
+                      dataService.upsertQuestion(
+                        user,
+                        {
+                          ...editingQuestion,
+                          stem_vi: editQStem.trim(),
+                          solution_vi: editQSolution.trim() || editingQuestion.solution_vi,
+                          hints_vi: [editQHint.trim() || editingQuestion.hints_vi[0] || '', ...editingQuestion.hints_vi.slice(1)],
+                        },
+                        editQNote.trim() || 'Giáo viên chỉnh sửa nội dung',
+                      );
+                      setEditingQuestion(null);
+                      refresh();
+                    }}
+                    className="btn-tactile btn-jade text-xs py-2 px-4"
+                  >
+                    Lưu phiên bản mới
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {previewQuestion && (
             <div className="fixed inset-0 z-50 bg-[#14284A]/55 flex items-center justify-center p-4" role="dialog" aria-modal="true">

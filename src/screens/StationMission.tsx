@@ -137,30 +137,31 @@ export const StationMission: React.FC<StationMissionProps> = ({
       setT01Rubric(rubric);
       rubricScore = rubric.total;
       setT01ExplanationSaved(payload.explanationText ?? '');
+    }
 
-      if (payload.explanationText && settings.aiEnabled) {
-        try {
-          const token = await dataService.getAccessToken();
-          const resp = await fetch('/api/ai/review-open', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? {Authorization: `Bearer ${token}`} : {}),
-            },
-            body: JSON.stringify({
-              stem: payload.question.stem_vi,
-              expectedSolution: payload.question.solution_vi,
-              studentExplanation: payload.explanationText,
-              maxDaily: settings.aiDailyQuotaLimit,
-            }),
-          });
-          if (resp.ok) {
-            const data = (await resp.json()) as {comment_vi?: string};
-            if (data.comment_vi) setT01AiComment(data.comment_vi);
-          }
-        } catch {
-          // Optional AI review fails gracefully without affecting grading
+    // Trigger 3-part AI pedagogical feedback whenever student submits an explanation (T01 or Mốc 9–10)
+    if (payload.explanationText && settings.aiEnabled) {
+      try {
+        const token = await dataService.getAccessToken();
+        const resp = await fetch('/api/ai/review-open', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? {Authorization: `Bearer ${token}`} : {}),
+          },
+          body: JSON.stringify({
+            stem: payload.question.stem_vi,
+            expectedSolution: payload.question.solution_vi,
+            studentExplanation: payload.explanationText,
+            maxDaily: settings.aiDailyQuotaLimit,
+          }),
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as {comment_vi?: string};
+          if (data.comment_vi) setT01AiComment(data.comment_vi);
         }
+      } catch {
+        // Optional AI review fails gracefully without affecting grading
       }
     }
 
@@ -378,10 +379,17 @@ export const StationMission: React.FC<StationMissionProps> = ({
                 mocDef.independentFocus || stepIdx === genericQuestions.length - 1 ? 'verify' : 'practice'
               }
               helpAfterWrong={settings.helpAfterWrong}
+              requireExplanation={activeMocId >= 9 || currentQ.type === 'error_spot'}
               onComplete={handleRecordSubmission}
               onPause={handlePause}
               onRebuttalSubmit={handleRebuttalSubmit}
             />
+            {t01AiComment && (
+              <div className="p-3.5 rounded-2xl bg-[#EEF6FB] border-2 border-[#4FB0D0] text-xs text-[#14284A] whitespace-pre-line space-y-1">
+                <p className="font-extrabold text-[#1F3B63]">Góp ý lập luận 3 phần (AI &amp; Giáo viên):</p>
+                <p>{t01AiComment}</p>
+              </div>
+            )}
             {stepCleared && (
               <div className="flex justify-end">
                 <button
@@ -392,6 +400,7 @@ export const StationMission: React.FC<StationMissionProps> = ({
                     }
                     setStepIdx((i) => i + 1);
                     setStepCleared(false);
+                    setT01AiComment('');
                   }}
                   className="btn-tactile btn-jade"
                 >
@@ -443,6 +452,18 @@ export const StationMission: React.FC<StationMissionProps> = ({
     if (nextIdx === BS01_STEP_LIST.length - 1) {
       finishStationMission();
     }
+    // Auto-save mid-checkpoint on Mốc 6 after completing Stage 1 (steps 1–4)
+    if (nextIdx === 4) {
+      const saved = dataService.savePausedSession(user.uid, {
+        kind: 'mission',
+        stationId: station.id,
+        mocId: activeMocId,
+        stepIndex: 4,
+        savedAt: new Date().toISOString(),
+        mode: 'practice',
+      });
+      if (saved) onUserUpdated(saved);
+    }
     setStepIdx(Math.min(nextIdx, BS01_STEP_LIST.length - 1));
     setStepCleared(false);
   };
@@ -454,16 +475,22 @@ export const StationMission: React.FC<StationMissionProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
-              Mốc 6: Huế · Bến sông Hương (BS01 · S01–S08)
+              Mốc 6: Huế · Bến sông Hương (8 bước thực hành đo qua sông)
             </p>
             <h1 className="font-display text-xl sm:text-2xl font-extrabold text-[#14284A]">
-              {currentStep.code}: {currentStep.label}
+              Bước {safeStepIdx + 1}/{BS01_STEP_LIST.length}: {currentStep.label}
             </h1>
           </div>
           <button type="button" onClick={onBackToMap} className="btn-tactile btn-paper text-xs py-2 px-3">
             <ArrowLeft className="w-4 h-4" /> Về bản đồ
           </button>
         </div>
+
+        {safeStepIdx >= 4 && safeStepIdx < BS01_STEP_LIST.length - 1 && (
+          <div className="px-3 py-2 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B]">
+            Đã qua Chặng 1/2 (4 bước khảo sát đầu đã được lưu tiến độ) — Em có thể tạm dừng nghỉ hoặc tiếp tục Chặng 2!
+          </div>
+        )}
 
         {/* Clickable step rail (non-punitive exploration) */}
         <div className="flex gap-1.5 overflow-x-auto pb-1">

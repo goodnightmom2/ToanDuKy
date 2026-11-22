@@ -606,7 +606,7 @@ export const StationScene: React.FC<StationSceneProps> = ({
           <div className="notebook-card max-w-md w-full p-5 space-y-3">
             <h2 className="font-display text-xl font-bold text-[#14284A]">Cổng Toán ven bờ</h2>
             <p className="text-sm text-[#1B2A41]">
-              Trả lời nhanh để mở cổng (hoặc đóng để đi lối vòng phía dưới): Trong tam giác ABC, tổng ∠A + ∠B + ∠C bằng bao nhiêu độ?
+              Trả lời nhanh để mở cổng và nhận thưởng <strong className="text-[#1F7A6B]">+5 XP khám phá</strong> (hoặc đóng để đi lối vòng phía dưới): Trong tam giác ABC, tổng ∠A + ∠B + ∠C bằng bao nhiêu độ?
             </p>
             <div className="grid grid-cols-3 gap-2">
               {['90°', '180°', '360°'].map((opt) => (
@@ -617,9 +617,18 @@ export const StationScene: React.FC<StationSceneProps> = ({
                     setGateChoice(opt);
                     if (opt === '180°') {
                       playerRef.current.gateUnlocked = true;
+                      const bonus = dataService.awardOnce(
+                        user.uid,
+                        `gate_bonus_moc_${mocId ?? 1}`,
+                        {xp: 5},
+                      );
                       soundEngine.playCorrect();
                       setGateModalOpen(false);
-                      setNpcDialogue('Em đã mở Cổng Toán thành công với tổng ba góc bằng 180°!');
+                      setNpcDialogue(
+                        bonus.granted
+                          ? 'Tuyệt vời! Em đã mở Cổng Toán thành công với tổng ba góc 180° và nhận thưởng +5 XP khám phá!'
+                          : 'Em đã mở Cổng Toán thành công với tổng ba góc bằng 180°!',
+                      );
                     } else {
                       soundEngine.playGentleHint();
                     }

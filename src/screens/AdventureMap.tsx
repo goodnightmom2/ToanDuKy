@@ -173,7 +173,7 @@ export const AdventureMap: React.FC<AdventureMapProps> = ({
           />
 
           <p className="text-[11px] text-[#5B6B82] px-1">
-            Hành trình Nam → Bắc gồm 10 mốc học tập Chương III "Hệ thức lượng trong tam giác" (Toán 10 KNTT), hiển thị Biển Đông, Dãy núi Trường Sơn, Quần đảo Hoàng Sa và Quần đảo Trường Sa.
+            Hành trình xuyên Việt (khởi hành Tây Ninh → Cần Thơ rồi tiến dần ra cực Bắc Hà Giang) gồm 10 mốc học tập Chương III "Hệ thức lượng trong tam giác" (Toán 10 KNTT), hiển thị Biển Đông, Dãy núi Trường Sơn, Quần đảo Hoàng Sa và Quần đảo Trường Sa. Số đo và bản đồ mang tính mô phỏng học tập.
           </p>
         </div>
 
@@ -250,7 +250,7 @@ export const AdventureMap: React.FC<AdventureMapProps> = ({
                   {selectedStatus?.missionCompleted
                     ? 'Đã hoàn thành ✓'
                     : selectedDef.isBS01Full
-                      ? 'BS01 (S01–S08)'
+                      ? '8 bước đo sông Hương'
                       : `${selectedDef.missionQuestionCount} câu khảo sát`}
                 </strong>
               </div>
@@ -318,7 +318,7 @@ export const AdventureMap: React.FC<AdventureMapProps> = ({
                   {selectedPassed
                     ? 'Ôn lại nhiệm vụ mốc'
                     : selectedDef.isBS01Full
-                      ? 'Làm nhiệm vụ khảo sát S01–S08'
+                      ? 'Làm nhiệm vụ đo qua sông (8 bước)'
                       : `Làm nhiệm vụ mốc (${selectedDef.missionQuestionCount} câu)`}
                 </button>
 

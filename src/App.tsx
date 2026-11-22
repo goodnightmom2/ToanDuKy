@@ -13,7 +13,7 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import {ErrorBoundary} from './components/ErrorBoundary.tsx';
-import {APP_NAME, ORG_INFO} from './config.ts';
+import {ACCESSORY_ITEMS, APP_NAME, isAccessoryUnlocked, isOutfitUnlocked, ORG_INFO, OUTFITS} from './config.ts';
 import {JOURNEY_MILESTONES_BY_ID} from './journey.ts';
 import {AdminPanel, type AdminTab} from './screens/AdminPanel.tsx';
 import {AdventureMap} from './screens/AdventureMap.tsx';
@@ -552,9 +552,20 @@ function AppInner() {
           <InventoryScreen
             user={user}
             onEquipOutfit={(outfitId) => {
+              const target = OUTFITS.find((o) => o.id === outfitId);
+              if (!target || !isOutfitUnlocked(target, user)) return;
               const updated = dataService.updateUser(user.uid, (u) => ({
                 ...u,
                 avatar: {...u.avatar, outfitId},
+              }));
+              if (updated) setUser(updated);
+            }}
+            onEquipAccessory={(slot, value) => {
+              const item = ACCESSORY_ITEMS.find((a) => a.slot === slot && a.value === value);
+              if (!item || !isAccessoryUnlocked(item, user)) return;
+              const updated = dataService.updateUser(user.uid, (u) => ({
+                ...u,
+                avatar: {...u.avatar, [slot]: value},
               }));
               if (updated) setUser(updated);
             }}

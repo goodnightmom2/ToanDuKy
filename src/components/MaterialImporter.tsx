@@ -807,7 +807,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   className="btn-tactile btn-paper text-xs py-2 px-3 w-full"
                 >
                   <Settings className="w-4 h-4" />
-                  Mở mục 8. Cài đặt để nhập Client ID & API Key
+                  Mở mục 9. Cài đặt để nhập Client ID & API Key
                 </button>
               </div>
             )}

@@ -176,6 +176,7 @@ export interface ClassRoom {
   code: string;
   codeExpiresAt?: string;
   teacherUid: string;
+  archived?: boolean;
   createdAt: string;
 }
 
@@ -286,6 +287,7 @@ export interface QuestionItem {
   };
   generatorId?: string;
   seed?: number;
+  standalone?: boolean; // false for sequential story items (e.g. BS01 M01-M06) excluded from standalone random pools
   version?: number;
   versionHistory?: QuestionVersion[];
   createdBy?: string;
@@ -311,6 +313,8 @@ export interface AttemptRecord {
   teacherUid?: string;
   isTestAccount: boolean;
   questionId: string;
+  questionVersion?: number;
+  questionSnapshot?: string;
   cluster: SkillCluster;
   stationId?: StationId;
   mocId?: MocId;

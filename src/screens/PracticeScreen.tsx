@@ -1,7 +1,8 @@
 import React from 'react';
-import {CheckCircle2, ClipboardCheck, Dumbbell, RefreshCw} from 'lucide-react';
+import {CheckCircle2, ClipboardCheck, Dumbbell, Lock, RefreshCw} from 'lucide-react';
 import {QuestionCard, type QuestionSubmissionPayload} from '../components/QuestionCard.tsx';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
+import {JOURNEY_MILESTONES, normalizeJourneyProgress} from '../journey.ts';
 import {buildAdaptiveQuestionSet} from '../math/generators.ts';
 import {dataService} from '../services/dataService.ts';
 import type {
@@ -43,11 +44,36 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
     [user.uid, tick],
   );
 
+  // Unlock practice clusters progressively based on reached milestones; full free practice unlocks after Mốc 10
+  const journey = React.useMemo(() => normalizeJourneyProgress(user.journey), [user.journey]);
+  const freePracticeUnlocked = Boolean(
+    journey.completedAt || journey.passedMoc.includes(10) || user.role !== 'student',
+  );
+  const unlockedClusterSet = React.useMemo(() => {
+    if (freePracticeUnlocked) return new Set<SkillCluster>(SKILL_CLUSTER_LIST);
+    const set = new Set<SkillCluster>(['NEN']);
+    for (const m of JOURNEY_MILESTONES) {
+      if (m.id <= journey.currentMoc || journey.passedMoc.includes(m.id)) {
+        for (const c of m.clusters) set.add(c);
+      }
+    }
+    return set;
+  }, [freePracticeUnlocked, journey.currentMoc, journey.passedMoc]);
+
+  const firstMocForCluster = (cluster: SkillCluster): number =>
+    JOURNEY_MILESTONES.find((m) => m.clusters.includes(cluster))?.id ?? 1;
+
   const startSession = () => {
     const bank = dataService.getQuestions();
+    const targetClusters: SkillCluster[] =
+      selectedCluster === 'ALL'
+        ? Array.from(unlockedClusterSet)
+        : unlockedClusterSet.has(selectedCluster)
+          ? [selectedCluster]
+          : Array.from(unlockedClusterSet);
     const list = buildAdaptiveQuestionSet({
       count,
-      clusters: selectedCluster === 'ALL' ? undefined : [selectedCluster],
+      clusters: targetClusters,
       levelFilter,
       bank,
       allowPending: dataService.shouldAllowPendingForUser(user),
@@ -212,14 +238,27 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
 
         <div className="notebook-card p-5 space-y-5">
           <div>
-            <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
-              Luyện kỹ năng Chương III
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
+                Luyện kỹ năng Chương III
+              </p>
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold ${
+                  freePracticeUnlocked
+                    ? 'bg-[#E6F6F3] text-[#1F7A6B] border border-[#2E9C8A]'
+                    : 'bg-[#FFF4D6] text-[#8A5108] border border-[#E0A93B]'
+                }`}
+              >
+                {freePracticeUnlocked
+                  ? 'Luyện tự do toàn Chương III (Mức 1–4) đã mở ✓'
+                  : `Đang mở ${unlockedClusterSet.size}/6 cụm theo tiến độ · Qua Mốc 10 mở tự do toàn chương`}
+              </span>
+            </div>
             <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-[#14284A]">
               Chọn bộ câu hỏi luyện tập ngẫu nhiên
             </h1>
             <p className="text-sm text-[#5B6B82] mt-1">
-              Hệ thống ưu tiên các cụm đang luyện/cần ôn lại và tránh lặp câu trong 3 phiên gần nhất.
+              Hệ thống ưu tiên các cụm em đã mở khóa đang cần ôn lại và tránh lặp câu trong 3 phiên gần nhất.
             </p>
           </div>
 
@@ -235,22 +274,30 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
                     : 'bg-white text-[#14284A] border-[#D9C293]'
                 }`}
               >
-                Tổng hợp ưu tiên
+                {freePracticeUnlocked ? 'Luyện tự do toàn Chương III' : 'Tổng hợp cụm đã mở'}
               </button>
-              {SKILL_CLUSTER_LIST.map((code) => (
-                <button
-                  key={code}
-                  type="button"
-                  onClick={() => setSelectedCluster(code)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold border-2 ${
-                    selectedCluster === code
-                      ? 'bg-[#2E9C8A] text-white border-[#1F7A6B]'
-                      : 'bg-white text-[#14284A] border-[#D9C293]'
-                  }`}
-                >
-                  {code} · {SKILL_CLUSTERS[code].shortTitle}
-                </button>
-              ))}
+              {SKILL_CLUSTER_LIST.map((code) => {
+                const isUnlocked = unlockedClusterSet.has(code);
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    disabled={!isUnlocked}
+                    onClick={() => setSelectedCluster(code)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold border-2 inline-flex items-center gap-1.5 ${
+                      !isUnlocked
+                        ? 'bg-[#F1F5F9] text-[#94A3B8] border-[#CBD5E1] cursor-not-allowed'
+                        : selectedCluster === code
+                          ? 'bg-[#2E9C8A] text-white border-[#1F7A6B]'
+                          : 'bg-white text-[#14284A] border-[#D9C293]'
+                    }`}
+                  >
+                    {!isUnlocked && <Lock className="w-3.5 h-3.5" />}
+                    {code} · {SKILL_CLUSTERS[code].shortTitle}
+                    {!isUnlocked && ` (Mốc ${firstMocForCluster(code)})`}
+                  </button>
+                );
+              })}
             </div>
           </div>
 

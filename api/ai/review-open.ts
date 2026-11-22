@@ -43,8 +43,9 @@ export async function POST(request: Request): Promise<Response> {
   const ai = getGenAIClient();
   if (!ai) {
     return jsonResponse({
+      aiConfigured: false,
       comment_vi:
-        'Phần giải thích của em đã được ghi nhận để giáo viên đọc trực tiếp. Hãy kiểm tra lại bước lập luận và đơn vị đo nhé.',
+        '1. Điểm em làm đúng: Em đã trình bày lập luận riêng bằng ngôn ngữ của mình.\n2. Chỗ cần xem lại: Kiểm tra lại điều kiện góc (độ DEG), dấu của cos góc tù và đơn vị kết quả.\n3. Gợi ý bước tiếp theo: Hệ thống AI chưa nạp khóa trên máy chủ; bài lập luận đã được lưu để giáo viên góp ý trực tiếp.',
       needs_teacher_review: true,
     });
   }
@@ -52,6 +53,7 @@ export async function POST(request: Request): Promise<Response> {
   const quota = checkAndConsumeQuota(maxDaily);
   if (!quota.ok) {
     return jsonResponse({
+      aiConfigured: true,
       comment_vi:
         'Đã hết lượt gợi ý AI trong ngày. Bài giải thích của em đã được lưu để giáo viên xem.',
       needs_teacher_review: true,
@@ -62,8 +64,11 @@ export async function POST(request: Request): Promise<Response> {
     const response = await ai.models.generateContent({
       model: AI_MODEL,
       contents: [
-        'Bạn là giáo viên Toán lớp 10 thân thiện. Hãy nhận xét NGẮN GỌN (tối đa 2 câu) bằng tiếng Việt về lập luận mở của học viên.',
-        'Nguyên tắc: KHÔNG chê bai, KHÔNG dùng từ yếu/kém/mất gốc, KHÔNG chấm lại đáp án số. Chỉ nêu 1 điểm hợp lý cụ thể và 1 gợi ý kiểm tra nếu thiếu ý.',
+        'Bạn là giáo viên Toán lớp 10 thân thiện. Hãy nhận xét lập luận mở của học sinh bằng tiếng Việt theo ĐÚNG 3 mục ngắn gọn (mỗi mục 1 câu):',
+        '1. Điểm em làm đúng: ...',
+        '2. Chỗ cần xem lại: ...',
+        '3. Gợi ý bước tiếp theo: ...',
+        'Nguyên tắc: KHÔNG chê bai, KHÔNG dùng từ yếu/kém/mất gốc, KHÔNG chấm lại đáp án số.',
         `Đề bài: ${String(stem).slice(0, 600)}`,
         `Gợi ý lời giải chuẩn: ${String(expectedSolution).slice(0, 600)}`,
         `Lập luận học viên: ${explanation}`,
@@ -71,6 +76,7 @@ export async function POST(request: Request): Promise<Response> {
     });
 
     return jsonResponse({
+      aiConfigured: true,
       comment_vi:
         (response.text ?? '').trim() || 'Đã ghi nhận lập luận của em để giáo viên duyệt.',
       needs_teacher_review: true,

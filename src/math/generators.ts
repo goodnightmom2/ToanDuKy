@@ -785,6 +785,7 @@ export function buildAdaptiveQuestionSet(params: {
   const eligibleBank = params.bank.filter((q) => {
     if (!params.allowPending && q.review_status !== 'approved') return false;
     if (q.review_status === 'rejected') return false;
+    if (q.standalone === false) return false;
     if (!targetClusters.includes(q.cluster)) return false;
     if (params.levelFilter && params.levelFilter !== 'all' && q.level !== params.levelFilter) {
       return false;

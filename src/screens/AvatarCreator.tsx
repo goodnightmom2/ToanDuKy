@@ -2,7 +2,7 @@ import React from 'react';
 import {Check, Lock, Sparkles} from 'lucide-react';
 import {Avatar} from '../components/Avatar.tsx';
 import {DongSonWatermark, WaveDivider} from '../components/HeritageMotifs.tsx';
-import {HERO_NAME_CHIPS, OUTFITS} from '../config.ts';
+import {HERO_NAME_CHIPS, isOutfitUnlocked, OUTFITS} from '../config.ts';
 import type {AvatarAppearance, AvatarView, UserAccount} from '../types.ts';
 
 interface AvatarCreatorProps {
@@ -74,7 +74,9 @@ export const AvatarCreator: React.FC<AvatarCreatorProps> = ({user, onSave, onCan
   const [previewView, setPreviewView] = React.useState<AvatarView>('front');
   const [previewLockedOutfitId, setPreviewLockedOutfitId] = React.useState<string | null>(null);
 
-  const unlockedSet = new Set(user.inventory.outfits);
+  const unlockedSet = new Set(
+    OUTFITS.filter((o) => isOutfitUnlocked(o, user)).map((o) => o.id),
+  );
   const effectiveAppearance: AvatarAppearance = previewLockedOutfitId
     ? {...appearance, outfitId: previewLockedOutfitId}
     : appearance;

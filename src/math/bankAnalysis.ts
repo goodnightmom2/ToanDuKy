@@ -315,6 +315,7 @@ export function buildBossBattleDeck(params: BossDeckParams): BossDeckResult {
 
   const eligibleBank = params.bank.filter((q) => {
     if (q.review_status === 'rejected') return false;
+    if (q.standalone === false) return false;
     if (!params.allowPending && q.review_status !== 'approved') return false;
     if (!boss.clusters.includes(q.cluster)) return false;
     // Exclude interactive survey-only measurement (BS01 step M02) from rapid boss hits
