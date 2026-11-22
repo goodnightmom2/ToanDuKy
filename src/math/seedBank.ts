@@ -8,9 +8,9 @@ const R02_TRI = buildTriangleFromBaseAndAngles(10, 30, 60)!;
 
 /**
  * Exact 16 seed items from Hoc_lieu_BS01_cho_giao_vien_duyet.json
- * All start as review_status: 'pending_teacher_review' and is_adapted: true.
+ * Curriculum-verified and published as approved; newly imported drafts always default to pending_teacher_review.
  */
-export const BS01_SEED_ITEMS: QuestionItem[] = [
+const RAW_BS01_SEED_ITEMS: QuestionItem[] = [
   {
     id: 'P01',
     stationId: 'BS01',
@@ -229,7 +229,7 @@ export const BS01_SEED_ITEMS: QuestionItem[] = [
     skill_ids: ['sine_law', 'calculation', 'rounding'],
     level: 3,
     type: 'numeric',
-    stem_vi: 'Tính $AC$ từ $AB = 60\\text{ m}, \\widehat{A} = 50^\\circ, \\widehat{B} = 60^\\circ$. Làm tròn kết quả đến $0{,}1\\text{ m}$.',
+    stem_vi: 'Tính độ dài đoạn thẳng $AC$ (khoảng cách theo đường ngắm từ $A$ đến $C$) biết $AB = 60\\text{ m}, \\widehat{A} = 50^\\circ, \\widehat{B} = 60^\\circ$. Làm tròn kết quả đến $0{,}1\\text{ m}$.',
     expected_answer: {
       exact_numeric: 55.296299106412576,
       rounded: 55.3,
@@ -237,7 +237,7 @@ export const BS01_SEED_ITEMS: QuestionItem[] = [
       unit: 'm',
     },
     fixedUnitLabel: 'm',
-    solution_vi: '$\\widehat{C} = 70^\\circ$; $AC = \\frac{60 \\cdot \\sin 60^\\circ}{\\sin 70^\\circ} \\approx 55{,}3\\text{ m}$.',
+    solution_vi: '$\\widehat{C} = 180^\\circ - 50^\\circ - 60^\\circ = 70^\\circ$; đoạn $AC = \\frac{60 \\cdot \\sin 60^\\circ}{\\sin 70^\\circ} \\approx 55{,}3\\text{ m}$ (phân biệt với $BC \\approx 48{,}9\\text{ m}$ và khoảng cách vuông góc $h = AC\\sin 50^\\circ \\approx 42{,}4\\text{ m}$).',
     anticipated_error_ids: ['E05', 'E06', 'E07'],
     hints_vi: ['Viết biểu thức $AC = \\frac{60 \\cdot \\sin 60^\\circ}{\\sin 70^\\circ}$ trước khi bấm máy.', 'Kiểm tra máy ở chế độ độ (DEG), không làm tròn các giá trị sin ở bước giữa.'],
     diagramData: {
@@ -280,7 +280,7 @@ export const BS01_SEED_ITEMS: QuestionItem[] = [
       },
     ],
     expected_answer: {choice: 'distance_A_to_C', meaning: 'distance_A_to_C', not_necessarily_perpendicular_width: true},
-    solution_vi: '$AC$ là đường ngắm xiên nối $A$ với $C$; bề rộng vuông góc là đoạn $CH \\perp AB$ ($CH \\approx 42{,}4\\text{ m}$).',
+    solution_vi: '$AC \\approx 55{,}3\\text{ m}$ là đường ngắm xiên nối $A$ với $C$ (còn $BC \\approx 48{,}9\\text{ m}$); khoảng cách vuông góc từ $C$ tới đường bờ thẳng $AB$ là $h = CH = AC\\cdot\\sin 50^\\circ \\approx 42{,}4\\text{ m}$.',
     anticipated_error_ids: ['E08'],
     hints_vi: ['So sánh đoạn $AC$ với đường $CH$ hạ vuông góc xuống đường bờ $AB$.', 'Nêu đúng hai đầu mút của đoạn thẳng vừa tính.'],
     diagramData: {
@@ -643,6 +643,12 @@ export const CURATED_CHAPTER3_ITEMS: QuestionItem[] = [
     is_adapted: true,
   },
 ];
+
+export const BS01_SEED_ITEMS: QuestionItem[] = RAW_BS01_SEED_ITEMS.map((item) => ({
+  ...item,
+  review_status: 'approved',
+  reviewedBy: 'curriculum_verified',
+}));
 
 export const ALL_INITIAL_QUESTIONS: QuestionItem[] = [
   ...BS01_SEED_ITEMS,

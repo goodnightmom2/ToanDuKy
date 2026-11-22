@@ -305,7 +305,14 @@ export function gradeQuestion(question: QuestionItem, response: unknown): GradeR
   }
 
   if (question.type === 'measurement') {
-    const r = (response ?? {}) as {AB?: string; A?: string; B?: string};
+    const r = (response ?? {}) as {
+      AB?: string;
+      A?: string;
+      B?: string;
+      unitAB?: string;
+      unitA?: string;
+      unitB?: string;
+    };
     const pAB = parseVietnameseNumber(String(r.AB ?? ''));
     const pA = parseVietnameseNumber(String(r.A ?? ''));
     const pB = parseVietnameseNumber(String(r.B ?? ''));
@@ -316,7 +323,24 @@ export function gradeQuestion(question: QuestionItem, response: unknown): GradeR
       return {
         isCorrect: false,
         errorCode: 'E07',
-        feedback_vi: 'Em hãy dùng công cụ đo và điền đủ 3 số đo AB, góc BAC và góc ABC.',
+        feedback_vi: 'Em hãy dùng công cụ ngắm/đo tương tác và điền đủ 3 số đo AB, góc BAC và góc ABC.',
+      };
+    }
+    if (r.unitAB !== undefined && r.unitAB !== 'm') {
+      return {
+        isCorrect: false,
+        errorCode: 'E07',
+        feedback_vi: 'Độ dài đường đáy AB phải ghi đơn vị mét (m), không dùng đơn vị góc hay km.',
+      };
+    }
+    if (
+      (r.unitA !== undefined && r.unitA !== '°') ||
+      (r.unitB !== undefined && r.unitB !== '°')
+    ) {
+      return {
+        isCorrect: false,
+        errorCode: 'E06',
+        feedback_vi: 'Số đo các góc ngắm ∠BAC và ∠ABC phải ghi đơn vị độ (°).',
       };
     }
     const okAB = Math.abs((pAB.value ?? 0) - expAB) <= 0.1;
@@ -325,7 +349,7 @@ export function gradeQuestion(question: QuestionItem, response: unknown): GradeR
     if (okAB && okA && okB) {
       return {
         isCorrect: true,
-        feedback_vi: `Em đã ghi đúng đầy đủ ba dữ kiện khảo sát: AB = ${expAB} m, góc BAC = ${expA}°, góc ABC = ${expB}°.`,
+        feedback_vi: `Em đã chọn điểm, ngắm tia và ghi đúng đầy đủ ba dữ kiện cùng đơn vị: AB = ${expAB} m, ∠BAC = ${expA}°, ∠ABC = ${expB}°.`,
       };
     }
     const wrongParts: string[] = [];
@@ -335,7 +359,7 @@ export function gradeQuestion(question: QuestionItem, response: unknown): GradeR
     return {
       isCorrect: false,
       errorCode: 'E01',
-      feedback_vi: `Hãy kiểm tra lại số đo ở mục: ${wrongParts.join(', ')} bằng cách đối chiếu hai tia tạo góc trên hình.`,
+      feedback_vi: `Hãy kiểm tra lại số đo ở mục: ${wrongParts.join(', ')} bằng cách xoay tia ngắm tới điểm C và đọc góc trong trên thước đo độ.`,
     };
   }
 

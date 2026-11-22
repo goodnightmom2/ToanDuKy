@@ -4,7 +4,7 @@ import {Avatar} from '../components/Avatar.tsx';
 import {BambooHpBar, BossSvg} from '../components/BossSvg.tsx';
 import {CloudScroll, DongSonWatermark, RedSealStamp, WaveDivider} from '../components/HeritageMotifs.tsx';
 import {QuestionCard, type QuestionSubmissionPayload} from '../components/QuestionCard.tsx';
-import {BOSSES, computeBossHitDamages, OUTFITS, STATIONS_BY_ID} from '../config.ts';
+import {BOSSES, computeBossRemainingHp, OUTFITS, STATIONS_BY_ID} from '../config.ts';
 import {JOURNEY_MILESTONES_BY_ID} from '../journey.ts';
 import {buildBossBattleDeck} from '../math/bankAnalysis.ts';
 import {generateVariantForBossHit} from '../math/generators.ts';
@@ -38,17 +38,21 @@ export const BossBattle: React.FC<BossBattleProps> = ({
   const station = STATIONS_BY_ID[mocDef.stationId ?? stationId];
   const boss = BOSSES[mocDef.bossId ?? station.bossId];
   const settings = dataService.getSettings();
-  const hitDamages = React.useMemo(() => computeBossHitDamages(boss.hitLevels), [boss.hitLevels]);
+  const totalHits = boss.hitLevels.length;
   const usedSupportRef = React.useRef(false);
 
   const [hitIndex, setHitIndex] = React.useState(initialHitIndex);
-  const [bossHp, setBossHp] = React.useState(initialBossHp);
+  // Single source of truth: valid completed hits -> HP is deterministically derived (always 0% on final hit)
+  const [completedHits, setCompletedHits] = React.useState(() =>
+    initialBossHp <= 0.1 ? totalHits : Math.min(totalHits, Math.max(0, initialHitIndex)),
+  );
+  const bossHp = computeBossRemainingHp(boss.hitLevels, completedHits);
   const [deck, setDeck] = React.useState<QuestionItem[]>(() => {
     const prevIds = (user.recentQuestionSessions ?? []).slice(-1).flat();
     const built = buildBossBattleDeck({
       bossId: boss.id,
       bank: dataService.getQuestions(),
-      allowPending: settings.allowPendingInTestMode,
+      allowPending: dataService.shouldAllowPendingForUser(user),
       previousRunIds: prevIds,
     });
     return built.questions;
@@ -119,10 +123,12 @@ export const BossBattle: React.FC<BossBattleProps> = ({
     if (updated) onUserUpdated(updated);
 
     if (payload.isCorrect) {
-      const dmg = hitDamages[hitIndex] ?? 0;
-      const nextHp = hitIndex >= boss.hitLevels.length - 1 ? 0 : Math.max(0, bossHp - dmg);
-      setBossHp(nextHp);
-      setFloatingDmg(`-${Math.round(dmg)}% HP`);
+      const nextCompleted = Math.min(totalHits, Math.max(completedHits, hitIndex + 1));
+      const prevHp = computeBossRemainingHp(boss.hitLevels, completedHits);
+      const nextHp = computeBossRemainingHp(boss.hitLevels, nextCompleted);
+      const exactDelta = Math.max(1, prevHp - nextHp);
+      setCompletedHits(nextCompleted);
+      setFloatingDmg(`-${exactDelta}% HP`);
       setBossRecoiling(true);
       setAvatarFrame('celebrate');
       setHitCleared(true);
@@ -133,7 +139,7 @@ export const BossBattle: React.FC<BossBattleProps> = ({
         setFloatingDmg(null);
       }, 950);
 
-      if (nextHp <= 0.05) {
+      if (nextCompleted >= totalHits) {
         setBattleWon(true);
         soundEngine.playChestOpen();
         const outfit = OUTFITS.find((o) => o.id === boss.rewardOutfitId);
@@ -205,8 +211,8 @@ export const BossBattle: React.FC<BossBattleProps> = ({
       <div className="notebook-card p-3.5 sm:p-5 space-y-3.5 overflow-hidden">
         <BambooHpBar
           hpPercent={bossHp}
-          totalHits={boss.hitLevels.length}
-          completedHits={battleWon ? boss.hitLevels.length : hitIndex + (hitCleared ? 1 : 0)}
+          totalHits={totalHits}
+          completedHits={completedHits}
           bossName={boss.name}
         />
 
@@ -248,11 +254,16 @@ export const BossBattle: React.FC<BossBattleProps> = ({
         <WaveDivider />
 
         <p className="text-xs text-[#4B5B73] text-center">
-          Trả lời đúng đòn {hitIndex + 1}/{boss.hitLevels.length} sẽ trừ{' '}
+          Trả lời đúng đòn {hitIndex + 1}/{totalHits} sẽ giảm{' '}
           <strong className="text-[#99261B] tabular-nums">
-            {Math.round(hitDamages[hitIndex] ?? 0)}% HP
+            {Math.max(
+              1,
+              computeBossRemainingHp(boss.hitLevels, hitIndex) -
+                computeBossRemainingHp(boss.hitLevels, hitIndex + 1),
+            )}
+            % HP
           </strong>{' '}
-          của BOSS. Trả lời sai không trừ XP hay mạng của học viên!
+          (từ {computeBossRemainingHp(boss.hitLevels, hitIndex)}% → {computeBossRemainingHp(boss.hitLevels, hitIndex + 1)}%). Hoàn thành đủ {totalHits}/{totalHits} bước sẽ đưa HP BOSS về đúng 0%.
           {isFinalHit && ' (Đòn kết thúc chạy ở chế độ kiểm chứng không gợi ý.)'}
         </p>
       </div>

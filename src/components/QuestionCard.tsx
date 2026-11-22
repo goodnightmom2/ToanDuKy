@@ -73,11 +73,14 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
   const [measureAB, setMeasureAB] = React.useState('');
   const [measureA, setMeasureA] = React.useState('');
   const [measureB, setMeasureB] = React.useState('');
-  const [measuredSteps, setMeasuredSteps] = React.useState<{ab: boolean; a: boolean; b: boolean}>({
-    ab: false,
-    a: false,
-    b: false,
-  });
+  const [unitAB, setUnitAB] = React.useState('m');
+  const [unitA, setUnitA] = React.useState('°');
+  const [unitB, setUnitB] = React.useState('°');
+  const [surveyPoints, setSurveyPoints] = React.useState<string[]>([]);
+  const [surveyPointWarn, setSurveyPointWarn] = React.useState('');
+  const [tapeSlider, setTapeSlider] = React.useState(20);
+  const [sightRayA, setSightRayA] = React.useState(15);
+  const [sightRayB, setSightRayB] = React.useState(15);
   const [agreeChoice, setAgreeChoice] = React.useState<boolean | null>(null);
   const [agreeAngleC, setAgreeAngleC] = React.useState('');
   const [explanationText, setExplanationText] = React.useState('');
@@ -110,7 +113,14 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
     setMeasureAB('');
     setMeasureA('');
     setMeasureB('');
-    setMeasuredSteps({ab: false, a: false, b: false});
+    setUnitAB('m');
+    setUnitA('°');
+    setUnitB('°');
+    setSurveyPoints([]);
+    setSurveyPointWarn('');
+    setTapeSlider(20);
+    setSightRayA(15);
+    setSightRayB(15);
     setAgreeChoice(null);
     setAgreeAngleC('');
     setExplanationText('');
@@ -140,7 +150,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       case 'fill_relation':
         return {left: fillLeft, right: fillRight};
       case 'measurement':
-        return {AB: measureAB, A: measureA, B: measureB};
+        return {AB: measureAB, A: measureA, B: measureB, unitAB, unitA, unitB};
       case 'agree_explain':
         return {agree: agreeChoice, cAngle: agreeAngleC, explanation: explanationText};
       default:
@@ -258,6 +268,11 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           >
             {mode === 'verify' ? 'Chế độ kiểm chứng (không gợi ý)' : 'Chế độ luyện tập'}
           </span>
+          {switchedToPractice && (
+            <span className="px-2 py-1 rounded-md bg-[#FFF4D6] text-[#8A5108] border border-[#E0A93B]">
+              Đã chuyển sang Luyện tập (có hỗ trợ)
+            </span>
+          )}
           {question.review_status === 'pending_teacher_review' && (
             <span className="px-2 py-1 rounded-md bg-[#FFF3DB] text-[#8A5108] border border-[#D98A1F]">
               TEST · Chờ giáo viên duyệt
@@ -275,6 +290,19 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           Nghe đọc
         </button>
       </div>
+
+      {/* Explicit allowed-tools rule strip distinguishing Practice vs Verify */}
+      <p
+        className={`text-[11px] font-semibold px-3 py-1.5 rounded-xl border ${
+          mode === 'verify'
+            ? 'bg-[#EEF3FA] border-[#B6C8E2] text-[#14284A]'
+            : 'bg-[#F5FBF9] border-[#B8E2D8] text-[#1F7A6B]'
+        }`}
+      >
+        {mode === 'verify'
+          ? 'Quy tắc kiểm chứng: Chỉ dùng máy tính bỏ túi (chế độ độ DEG) và giấy nháp. Không mở gợi ý — nếu mở gợi ý, lượt này tự đổi nhãn sang "Làm được có hỗ trợ" và không tính tự giải độc lập.'
+          : 'Quy tắc luyện tập: Em được xem gợi ý từng bước, bảng công thức và làm bài bổ trợ để hiểu chắc phương pháp.'}
+      </p>
 
       {/* Question stem */}
       <div className="text-[17px] leading-relaxed font-medium text-[#14284A]">
@@ -556,83 +584,280 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
         </div>
       )}
 
-      {question.type === 'measurement' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <button
-              type="button"
-              disabled={solved}
-              onClick={() => {
-                setMeasuredSteps((s) => ({...s, ab: true}));
-                setMeasureAB('60');
-                soundEngine.playStep();
-              }}
-              className="btn-tactile btn-paper text-sm"
-            >
-              Đo đường đáy AB {measuredSteps.ab ? '✓ (60 m)' : ''}
-            </button>
-            <button
-              type="button"
-              disabled={solved}
-              onClick={() => {
-                setMeasuredSteps((s) => ({...s, a: true}));
-                setMeasureA('50');
-                soundEngine.playStep();
-              }}
-              className="btn-tactile btn-paper text-sm"
-            >
-              Ngắm góc tại A {measuredSteps.a ? '✓ (50°)' : ''}
-            </button>
-            <button
-              type="button"
-              disabled={solved}
-              onClick={() => {
-                setMeasuredSteps((s) => ({...s, b: true}));
-                setMeasureB('60');
-                soundEngine.playStep();
-              }}
-              className="btn-tactile btn-paper text-sm"
-            >
-              Ngắm góc tại B {measuredSteps.b ? '✓ (60°)' : ''}
-            </button>
+      {question.type === 'measurement' && (() => {
+        const expAB = Number(question.expected_answer.AB_m ?? 60);
+        const expA = Number(question.expected_answer.BAC_degree ?? 50);
+        const expB = Number(question.expected_answer.ABC_degree ?? 60);
+        const bankSelected = surveyPoints.includes('A') && surveyPoints.includes('B');
+        const tapeAligned = Math.abs(tapeSlider - expAB) <= 2;
+        const rayAAligned = Math.abs(sightRayA - expA) <= 2;
+        const rayBAligned = Math.abs(sightRayB - expB) <= 2;
+
+        const togglePoint = (pt: 'A' | 'B' | 'C') => {
+          if (pt === 'C') {
+            setSurveyPointWarn(
+              'Điểm C nằm bên kia sông nên không thể đi qua đặt thước dây trực tiếp (lỗi E03). Hãy chọn 2 cọc mốc A và B ở cùng bờ!',
+            );
+            soundEngine.playGentleHint();
+            return;
+          }
+          setSurveyPointWarn('');
+          setSurveyPoints((prev) =>
+            prev.includes(pt) ? prev : [...prev, pt],
+          );
+          soundEngine.playStep();
+        };
+
+        return (
+          <div className="space-y-3.5">
+            {/* Step 1: Select accessible survey points on the riverbank */}
+            <div className="p-3.5 rounded-2xl bg-[#FFFBF0] border-2 border-[#D9C293] space-y-2.5">
+              <p className="text-xs font-extrabold uppercase text-[#1F7A6B]">
+                Bước 1 · Chọn 2 điểm đặt thước dây trên bờ (không băng qua sông)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {(['A', 'B', 'C'] as const).map((pt) => {
+                  const chosen = surveyPoints.includes(pt);
+                  return (
+                    <button
+                      key={pt}
+                      type="button"
+                      disabled={solved}
+                      onClick={() => togglePoint(pt)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-extrabold border-2 transition ${
+                        chosen
+                          ? 'bg-[#1D7A6A] text-white border-[#145B4F]'
+                          : 'bg-white text-[#14284A] border-[#CBB17D] hover:bg-[#FFF4D6]'
+                      }`}
+                    >
+                      Điểm {pt} {pt === 'C' ? '(bên kia sông)' : '(trên bờ)'} {chosen ? '✓' : ''}
+                    </button>
+                  );
+                })}
+              </div>
+              {surveyPointWarn && (
+                <p className="text-xs font-semibold text-[#8A5108] bg-[#FFF4D6] border border-[#E0A93B] rounded-xl px-3 py-2">
+                  {surveyPointWarn}
+                </p>
+              )}
+
+              {/* Interactive tape measure along bank AB */}
+              <div className="pt-1 space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-bold text-[#14284A]">
+                  <span>Kéo thước dây từ A đến cọc B:</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-md tabular-nums ${
+                      bankSelected && tapeAligned
+                        ? 'bg-[#E6F6F3] text-[#1F7A6B]'
+                        : 'bg-[#FFF4D6] text-[#8A5108]'
+                    }`}
+                  >
+                    Vạch thước: {tapeSlider} m {bankSelected && tapeAligned ? '· Khớp cọc B ✓' : ''}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={10}
+                  max={100}
+                  step={1}
+                  disabled={solved || !bankSelected}
+                  value={tapeSlider}
+                  onChange={(e) => setTapeSlider(Number(e.target.value))}
+                  className="w-full accent-[#1D7A6A]"
+                />
+                {!bankSelected && (
+                  <p className="text-[11px] text-[#5B6B82]">
+                    Hãy chọn đủ hai điểm A và B trên bờ trước khi kéo thước đo đường đáy.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Step 2 & 3: Interactive sighting protractor rays at A and B */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="p-3.5 rounded-2xl bg-[#FFFBF0] border-2 border-[#D9C293] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-extrabold text-[#1F7A6B]">
+                    Bước 2 · Xoay tia ngắm tại A → mục tiêu C
+                  </p>
+                  <span
+                    className={`text-xs font-extrabold px-2 py-0.5 rounded-md tabular-nums ${
+                      rayAAligned ? 'bg-[#E6F6F3] text-[#1F7A6B]' : 'bg-white text-[#14284A] border border-[#D9C293]'
+                    }`}
+                  >
+                    {rayAAligned ? 'Trúng tâm C ✓' : 'Chưa trúng C'}
+                  </span>
+                </div>
+                <svg viewBox="0 0 180 95" className="w-full h-24 bg-white rounded-xl border border-[#E5D3A8]">
+                  <path d="M 20 82 A 70 70 0 0 1 160 82" fill="#FFF8E6" stroke="#CBB17D" strokeWidth="1.5" />
+                  <line x1="20" y1="82" x2="160" y2="82" stroke="#14284A" strokeWidth="2.5" />
+                  {/* Target C beacon at exact angle expA from A(90,82) */}
+                  {(() => {
+                    const tRad = (expA * Math.PI) / 180;
+                    const tx = 90 + Math.cos(tRad) * 62;
+                    const ty = 82 - Math.sin(tRad) * 62;
+                    const rRad = (sightRayA * Math.PI) / 180;
+                    const rx = 90 + Math.cos(rRad) * 68;
+                    const ry = 82 - Math.sin(rRad) * 68;
+                    return (
+                      <>
+                        <circle cx={tx} cy={ty} r="5.5" fill={rayAAligned ? '#1D7A6A' : '#D93829'} />
+                        <text x={tx + 7} y={ty - 2} fontSize="10" fontWeight="800" fill="#8A2B22">C</text>
+                        <line x1="90" y1="82" x2={rx} y2={ry} stroke="#2E9C8A" strokeWidth="2.5" strokeDasharray="4 3" />
+                        <circle cx="90" cy="82" r="4" fill="#14284A" />
+                        <text x="86" y="93" fontSize="10" fontWeight="800" fill="#14284A">A</text>
+                        <text x="150" y="93" fontSize="10" fontWeight="800" fill="#14284A">B</text>
+                      </>
+                    );
+                  })()}
+                </svg>
+                <input
+                  type="range"
+                  min={10}
+                  max={170}
+                  step={1}
+                  disabled={solved}
+                  value={sightRayA}
+                  onChange={(e) => setSightRayA(Number(e.target.value))}
+                  className="w-full accent-[#2E9C8A]"
+                />
+                <p className="text-[11px] font-semibold text-[#1F3B63] tabular-nums">
+                  Thước đo góc tại A đang chỉ: <strong>{sightRayA}°</strong> (góc ngoài bù: {180 - sightRayA}°) — Hãy tự đọc góc trong ∠BAC và ghi vào ô bên dưới.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-[#FFFBF0] border-2 border-[#D9C293] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-extrabold text-[#3B5F8F]">
+                    Bước 3 · Xoay tia ngắm tại B → mục tiêu C
+                  </p>
+                  <span
+                    className={`text-xs font-extrabold px-2 py-0.5 rounded-md tabular-nums ${
+                      rayBAligned ? 'bg-[#E6F6F3] text-[#1F7A6B]' : 'bg-white text-[#14284A] border border-[#D9C293]'
+                    }`}
+                  >
+                    {rayBAligned ? 'Trúng tâm C ✓' : 'Chưa trúng C'}
+                  </span>
+                </div>
+                <svg viewBox="0 0 180 95" className="w-full h-24 bg-white rounded-xl border border-[#E5D3A8]">
+                  <path d="M 20 82 A 70 70 0 0 1 160 82" fill="#FFF8E6" stroke="#CBB17D" strokeWidth="1.5" />
+                  <line x1="20" y1="82" x2="160" y2="82" stroke="#14284A" strokeWidth="2.5" />
+                  {(() => {
+                    const tRad = ((180 - expB) * Math.PI) / 180;
+                    const tx = 90 + Math.cos(tRad) * 62;
+                    const ty = 82 - Math.sin(tRad) * 62;
+                    const rRad = ((180 - sightRayB) * Math.PI) / 180;
+                    const rx = 90 + Math.cos(rRad) * 68;
+                    const ry = 82 - Math.sin(rRad) * 68;
+                    return (
+                      <>
+                        <circle cx={tx} cy={ty} r="5.5" fill={rayBAligned ? '#1D7A6A' : '#D93829'} />
+                        <text x={tx - 14} y={ty - 2} fontSize="10" fontWeight="800" fill="#8A2B22">C</text>
+                        <line x1="90" y1="82" x2={rx} y2={ry} stroke="#3B5F8F" strokeWidth="2.5" strokeDasharray="4 3" />
+                        <circle cx="90" cy="82" r="4" fill="#14284A" />
+                        <text x="22" y="93" fontSize="10" fontWeight="800" fill="#14284A">A</text>
+                        <text x="86" y="93" fontSize="10" fontWeight="800" fill="#14284A">B</text>
+                      </>
+                    );
+                  })()}
+                </svg>
+                <input
+                  type="range"
+                  min={10}
+                  max={170}
+                  step={1}
+                  disabled={solved}
+                  value={sightRayB}
+                  onChange={(e) => setSightRayB(Number(e.target.value))}
+                  className="w-full accent-[#3B5F8F]"
+                />
+                <p className="text-[11px] font-semibold text-[#1F3B63] tabular-nums">
+                  Thước đo góc tại B: góc trong <strong>{sightRayB}°</strong> · góc ngoài <strong>{180 - sightRayB}°</strong> — Tự ghi góc trong ∠ABC và đơn vị vào bảng.
+                </p>
+              </div>
+            </div>
+
+            {/* Step 4: Manual entry of readings + explicit unit selection */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
+                <label className="text-xs font-bold text-[#1F3B63]">Ghi độ dài đường đáy AB</label>
+                <div className="flex gap-1.5 mt-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Nhập số đo..."
+                    value={measureAB}
+                    onChange={(e) => setMeasureAB(e.target.value)}
+                    disabled={solved}
+                    className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
+                  />
+                  <select
+                    aria-label="Đơn vị AB"
+                    value={unitAB}
+                    onChange={(e) => setUnitAB(e.target.value)}
+                    disabled={solved}
+                    className="px-2 py-2 rounded-xl bg-[#FFF4D6] border-2 border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                  >
+                    <option value="m">m</option>
+                    <option value="km">km</option>
+                    <option value="°">°</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-[#1F3B63]">Ghi số đo góc ∠BAC</label>
+                <div className="flex gap-1.5 mt-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Nhập số đo..."
+                    value={measureA}
+                    onChange={(e) => setMeasureA(e.target.value)}
+                    disabled={solved}
+                    className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
+                  />
+                  <select
+                    aria-label="Đơn vị góc BAC"
+                    value={unitA}
+                    onChange={(e) => setUnitA(e.target.value)}
+                    disabled={solved}
+                    className="px-2 py-2 rounded-xl bg-[#FFF4D6] border-2 border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                  >
+                    <option value="°">°</option>
+                    <option value="rad">rad</option>
+                    <option value="m">m</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-[#1F3B63]">Ghi số đo góc ∠ABC</label>
+                <div className="flex gap-1.5 mt-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Nhập số đo..."
+                    value={measureB}
+                    onChange={(e) => setMeasureB(e.target.value)}
+                    disabled={solved}
+                    className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
+                  />
+                  <select
+                    aria-label="Đơn vị góc ABC"
+                    value={unitB}
+                    onChange={(e) => setUnitB(e.target.value)}
+                    disabled={solved}
+                    className="px-2 py-2 rounded-xl bg-[#FFF4D6] border-2 border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                  >
+                    <option value="°">°</option>
+                    <option value="rad">rad</option>
+                    <option value="m">m</option>
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-2.5">
-            <div>
-              <label className="text-xs font-bold text-[#1F3B63]">AB (m)</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={measureAB}
-                onChange={(e) => setMeasureAB(e.target.value)}
-                disabled={solved}
-                className="w-full mt-1 px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-bold text-[#1F3B63]">∠BAC (°)</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={measureA}
-                onChange={(e) => setMeasureA(e.target.value)}
-                disabled={solved}
-                className="w-full mt-1 px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-bold text-[#1F3B63]">∠ABC (°)</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={measureB}
-                onChange={(e) => setMeasureB(e.target.value)}
-                disabled={solved}
-                className="w-full mt-1 px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] font-bold text-[#14284A]"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {question.type === 'agree_explain' && (
         <div className="space-y-3">

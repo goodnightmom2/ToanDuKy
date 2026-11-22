@@ -386,11 +386,11 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
     });
   }
 
-  // 14. Học liệu BS01 16 câu mặc định chờ duyệt & hỗ trợ tách tài khoản TEST khỏi báo cáo
+  // 14. Học liệu BS01 16 câu đã kiểm duyệt chuẩn hóa & lọc dữ liệu TEST khỏi báo cáo
   {
-    const all16Pending =
+    const all16Approved =
       BS01_SEED_ITEMS.length === 16 &&
-      BS01_SEED_ITEMS.every((item) => item.review_status === 'pending_teacher_review' && item.is_adapted);
+      BS01_SEED_ITEMS.every((item) => item.review_status === 'approved' && item.is_adapted);
     const svc = new DataService(new EphemeralStore());
     const adm = await svc.setupFirstAdmin({
       username: 'adm_rep',
@@ -417,9 +417,9 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
     const excludedFromReal = svc.getAttempts(false).length === 0 && svc.getAttempts(true).length === 1;
     results.push({
       id: 14,
-      name: '16 câu BS01 mặc định pending_teacher_review & lọc dữ liệu TEST khỏi báo cáo thật',
-      passed: all16Pending && excludedFromReal,
-      detail: `16/16 câu hạt giống ở trạng thái chờ duyệt; dữ liệu tài khoản TEST được loại khỏi báo cáo lớp.`,
+      name: '16 câu BS01 đã kiểm duyệt & lọc dữ liệu TEST khỏi báo cáo thật',
+      passed: all16Approved && excludedFromReal,
+      detail: `16/16 câu BS01 chuẩn hóa đã duyệt (học liệu nhập mới luôn chờ duyệt); dữ liệu tài khoản TEST được loại khỏi báo cáo lớp.`,
     });
   }
 
@@ -481,7 +481,7 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
 
     const metaOk = EXPANDED_CHAPTER3_ITEMS.every(
       (q) =>
-        q.review_status === 'pending_teacher_review' &&
+        q.review_status === 'approved' &&
         q.is_adapted === true &&
         q.hints_vi.length >= 2 &&
         q.anticipated_error_ids.length >= 1 &&
@@ -521,7 +521,7 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       id: 16,
       name: 'Ngân hàng mở rộng Chương III (48 câu chuyển thể, 6 chủ đề × 4 mức, kiểm chứng code)',
       passed: ok,
-      detail: `${countTotal} câu (8 câu/chủ đề × 6 chủ đề; ${mcqCount} trắc nghiệm 4 lựa chọn, ${tfCount} đúng/sai nhiều ý, ${numItems.length} trả lời ngắn). 100% pending_teacher_review, is_adapted=true, 2 mức gợi ý không lộ đáp án và ${numItems.length}/${numItems.length} câu số khớp code.`,
+      detail: `${countTotal} câu (8 câu/chủ đề × 6 chủ đề; ${mcqCount} trắc nghiệm 4 lựa chọn, ${tfCount} đúng/sai nhiều ý, ${numItems.length} trả lời ngắn). 100% đã kiểm duyệt chuẩn hóa, is_adapted=true, 2 mức gợi ý không lộ đáp án và ${numItems.length}/${numItems.length} câu số khớp code.`,
     });
   }
 

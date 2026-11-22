@@ -11,10 +11,10 @@ interface AuthScreenProps {
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({onAuthenticated, onBackToIntro}) => {
   const [needsAdminSetup, setNeedsAdminSetup] = React.useState<boolean>(
-    () => !dataService.hasAnyAdmin(),
+    () => !dataService.isSupabaseConfigured() && !dataService.hasAnyAdmin(),
   );
   const [tab, setTab] = React.useState<'setup_admin' | 'login' | 'register'>(() =>
-    !dataService.hasAnyAdmin() ? 'setup_admin' : 'login',
+    !dataService.isSupabaseConfigured() && !dataService.hasAnyAdmin() ? 'setup_admin' : 'login',
   );
 
   const [username, setUsername] = React.useState('');
@@ -120,71 +120,60 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({onAuthenticated, onBackTo
           <h1 className="font-display text-3xl font-extrabold text-[#14284A]">{APP_NAME}</h1>
           <p className="text-sm text-[#5B6B82]">
             {tab === 'setup_admin'
-              ? 'Thiết lập quản trị viên lần đầu (M1b)'
-              : 'Đăng nhập hoặc đăng ký tài khoản học viên'}
+              ? 'Thiết lập tài khoản quản trị viên lần đầu'
+              : 'Đăng nhập hoặc đăng ký tài khoản học sinh'}
           </p>
         </div>
 
-        {/* Mode switcher */}
-        <div className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-[#F7E7B8] border border-[#D5B87E]">
-          {needsAdminSetup ? (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setTab('setup_admin');
-                  setErrorMsg('');
-                }}
-                className={`rounded-xl py-2 text-sm font-bold transition ${
-                  tab === 'setup_admin'
-                    ? 'bg-[#14284A] text-[#FFFBF0]'
-                    : 'text-[#14284A] hover:bg-[#FFFBF0]/60'
-                }`}
-              >
-                Khởi tạo Quản trị (M1b)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTab('register');
-                  setErrorMsg('');
-                }}
-                className={`rounded-xl py-2 text-sm font-bold transition ${
-                  tab === 'register'
-                    ? 'bg-[#1D7A6A] text-white'
-                    : 'text-[#14284A] hover:bg-[#FFFBF0]/60'
-                }`}
-              >
-                Đăng ký Học viên
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setTab('login');
-                  setErrorMsg('');
-                }}
-                className={`rounded-xl py-2 text-sm font-bold transition ${
-                  tab === 'login' ? 'bg-[#14284A] text-[#FFFBF0]' : 'text-[#14284A]'
-                }`}
-              >
-                Đăng nhập
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTab('register');
-                  setErrorMsg('');
-                }}
-                className={`rounded-xl py-2 text-sm font-bold transition ${
-                  tab === 'register' ? 'bg-[#1D7A6A] text-white' : 'text-[#14284A]'
-                }`}
-              >
-                Đăng ký Học viên
-              </button>
-            </>
+        {/* Mode switcher — Login is ALWAYS available on every device */}
+        <div
+          className={`grid gap-2 p-1.5 rounded-2xl bg-[#F7E7B8] border border-[#D5B87E] ${
+            needsAdminSetup ? 'grid-cols-3' : 'grid-cols-2'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setTab('login');
+              setErrorMsg('');
+            }}
+            className={`rounded-xl py-2 text-sm font-bold transition ${
+              tab === 'login'
+                ? 'bg-[#14284A] text-[#FFFBF0]'
+                : 'text-[#14284A] hover:bg-[#FFFBF0]/60'
+            }`}
+          >
+            Đăng nhập
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTab('register');
+              setErrorMsg('');
+            }}
+            className={`rounded-xl py-2 text-sm font-bold transition ${
+              tab === 'register'
+                ? 'bg-[#1D7A6A] text-white'
+                : 'text-[#14284A] hover:bg-[#FFFBF0]/60'
+            }`}
+          >
+            Đăng ký Học sinh
+          </button>
+          {needsAdminSetup && (
+            <button
+              type="button"
+              onClick={() => {
+                setTab('setup_admin');
+                setErrorMsg('');
+              }}
+              className={`rounded-xl py-2 text-xs sm:text-sm font-bold transition ${
+                tab === 'setup_admin'
+                  ? 'bg-[#B9831E] text-white'
+                  : 'text-[#14284A] hover:bg-[#FFFBF0]/60'
+              }`}
+            >
+              Khởi tạo Quản trị
+            </button>
           )}
         </div>
 

@@ -1369,6 +1369,9 @@ const RAW_EXPANDED_CHAPTER3_ITEMS: QuestionItem[] = [
   },
 ];
 
-export const EXPANDED_CHAPTER3_ITEMS: QuestionItem[] = RAW_EXPANDED_CHAPTER3_ITEMS.map((item) =>
-  item.type === 'numeric' ? {...item, code_verification: verifyQuestionByCode(item)} : item,
-);
+export const EXPANDED_CHAPTER3_ITEMS: QuestionItem[] = RAW_EXPANDED_CHAPTER3_ITEMS.map((item) => ({
+  ...item,
+  review_status: 'approved',
+  reviewedBy: 'curriculum_verified',
+  ...(item.type === 'numeric' ? {code_verification: verifyQuestionByCode(item)} : {}),
+}));

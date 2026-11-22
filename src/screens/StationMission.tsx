@@ -93,7 +93,7 @@ export const StationMission: React.FC<StationMissionProps> = ({
       mocId: activeMocId,
       userId: user.uid,
       bank: allBank,
-      allowPending: settings.allowPendingInTestMode,
+      allowPending: dataService.shouldAllowPendingForUser(user),
       skills: user.skills,
       recentSessions: user.recentQuestionSessions,
       nonce: (user.recentQuestionSessions ?? []).length,

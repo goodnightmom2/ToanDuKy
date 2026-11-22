@@ -4,6 +4,7 @@ import {
   createInitialStations,
   DEFAULT_AVATAR,
   DEFAULT_SETTINGS,
+  ERROR_CATALOG,
   OUTFITS,
 } from '../config.ts';
 import {
@@ -42,6 +43,7 @@ import type {
   QuestionItem,
   QuestionMode,
   RebuttalRecord,
+  RemediationAssignment,
   ReviewStatus,
   SkillCluster,
   SkillRecord,
@@ -135,7 +137,13 @@ export function canEditSettingsOrUsers(user: UserAccount | null): boolean {
  */
 export function computeNextSkillRecord(
   current: SkillRecord,
-  attempt: {isCorrect: boolean; mode: QuestionMode; usedHint: boolean; clickedDontKnow: boolean},
+  attempt: {
+    isCorrect: boolean;
+    mode: QuestionMode;
+    usedHint: boolean;
+    clickedDontKnow: boolean;
+    switchedToPractice?: boolean;
+  },
 ): SkillRecord {
   const now = new Date().toISOString();
   const totalAttempts = current.totalAttempts + 1;
@@ -148,7 +156,7 @@ export function computeNextSkillRecord(
     state = current.state === 'Chưa đủ dữ liệu' ? 'Đang luyện' : current.state;
     recentNote = 'Đang tìm hiểu khái niệm cơ bản';
   } else if (attempt.isCorrect) {
-    if (attempt.mode === 'verify' && !attempt.usedHint) {
+    if (attempt.mode === 'verify' && !attempt.usedHint && !attempt.switchedToPractice) {
       verifyCorrect += 1;
       state = 'Tự làm được';
       recentNote = 'Vừa tự giải đúng trong chế độ kiểm chứng (tại thời điểm hiện tại)';
@@ -797,6 +805,55 @@ function mapSupabaseAuthError(err: {message?: string; status?: number} | null | 
   };
 }
 
+function remediationToRow(r: RemediationAssignment): Record<string, unknown> {
+  return {
+    id: r.id,
+    student_uid: r.studentUid,
+    student_code: r.studentCode,
+    student_name: r.studentName,
+    teacher_uid: r.teacherUid,
+    class_id: r.classId,
+    title: r.title,
+    target_error_codes: r.targetErrorCodes,
+    remediation_question_ids: r.remediationQuestionIds,
+    verify_question_id: r.verifyQuestionId,
+    teacher_note: r.teacherNote,
+    status: r.status,
+    remediation_completed_ids: r.remediationCompletedIds,
+    verify_passed: Boolean(r.verifyPassed),
+    created_at: r.createdAt,
+    completed_at: r.completedAt ?? null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function rowToRemediation(row: Record<string, unknown>): RemediationAssignment {
+  return {
+    id: String(row.id),
+    studentUid: String(row.student_uid),
+    studentCode: String(row.student_code ?? ''),
+    studentName: String(row.student_name ?? ''),
+    teacherUid: String(row.teacher_uid),
+    classId: String(row.class_id ?? 'cls_default'),
+    title: String(row.title ?? 'Phiếu bổ trợ Toán 10'),
+    targetErrorCodes: Array.isArray(row.target_error_codes)
+      ? (row.target_error_codes as string[])
+      : [],
+    remediationQuestionIds: Array.isArray(row.remediation_question_ids)
+      ? (row.remediation_question_ids as string[])
+      : [],
+    verifyQuestionId: String(row.verify_question_id ?? ''),
+    teacherNote: String(row.teacher_note ?? ''),
+    status: (row.status as RemediationAssignment['status']) ?? 'assigned',
+    remediationCompletedIds: Array.isArray(row.remediation_completed_ids)
+      ? (row.remediation_completed_ids as string[])
+      : [],
+    verifyPassed: Boolean(row.verify_passed),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    completedAt: row.completed_at ? String(row.completed_at) : undefined,
+  };
+}
+
 export interface StorageSchema {
   users: UserAccount[];
   currentUid: string | null;
@@ -806,6 +863,7 @@ export interface StorageSchema {
   events: LearningEvent[];
   rebuttals: RebuttalRecord[];
   reports: SurveyReportRecord[];
+  remediationAssignments?: RemediationAssignment[];
   settings: AppSettings;
   syncedAttemptIds?: string[];
   syncedRebuttalIds?: string[];
@@ -849,6 +907,7 @@ function createInitialDb(): StorageSchema {
     events: [],
     rebuttals: [],
     reports: [],
+    remediationAssignments: [],
     settings: {...DEFAULT_SETTINGS},
     syncedAttemptIds: [],
     syncedRebuttalIds: [],
@@ -964,6 +1023,9 @@ export class DataService {
         events: Array.isArray(parsed.events) ? parsed.events : [],
         rebuttals: Array.isArray(parsed.rebuttals) ? parsed.rebuttals : [],
         reports: Array.isArray(parsed.reports) ? parsed.reports : [],
+        remediationAssignments: Array.isArray(parsed.remediationAssignments)
+          ? parsed.remediationAssignments
+          : [],
         settings: {...DEFAULT_SETTINGS, ...(parsed.settings ?? {})},
         syncedAttemptIds: Array.isArray(parsed.syncedAttemptIds) ? parsed.syncedAttemptIds : [],
         syncedRebuttalIds: Array.isArray(parsed.syncedRebuttalIds) ? parsed.syncedRebuttalIds : [],
@@ -1000,6 +1062,9 @@ export class DataService {
         this.supabase = client;
         this.supabaseConfigured = true;
         this.adapterMode = 'supabase';
+
+        // Eagerly check setup state on startup so new devices land directly on Login
+        void this.checkFirstAdminSetupAsync();
 
         // Check existing session on startup
         void client.auth.getSession().then(({data}) => {
@@ -1212,13 +1277,14 @@ export class DataService {
       };
 
       const isStaff = user.role === 'admin' || user.role === 'teacher';
-      const [uRes, cRes, aRes, eRes, rebRes, repRes] = await Promise.all([
+      const [uRes, cRes, aRes, eRes, rebRes, repRes, remRes] = await Promise.all([
         isStaff ? sb.from('users').select('*') : Promise.resolve({data: null}),
         sb.from('classes').select('*'),
         sb.from('attempts').select('*'),
         sb.from('learning_events').select('*'),
         sb.from('rebuttals').select('*'),
         sb.from('survey_reports').select('*'),
+        sb.from('remediation_assignments').select('*').order('created_at', {ascending: false}),
       ]);
 
       const syncedAttSet = new Set(this.db.syncedAttemptIds ?? []);
@@ -1254,6 +1320,9 @@ export class DataService {
       const remoteReports = Array.isArray(repRes.data)
         ? repRes.data.map((r) => rowToReport(r as Record<string, unknown>))
         : [];
+      const remoteRemediations = Array.isArray(remRes.data)
+        ? remRes.data.map((r) => rowToRemediation(r as Record<string, unknown>))
+        : [];
 
       const ownUnsyncedAttempts = this.db.attempts.filter(
         (a) => a.userId === user.uid && !syncedAttSet.has(a.id),
@@ -1278,6 +1347,7 @@ export class DataService {
         events: Array.from(evMap.values()),
         rebuttals: mergeById(ownUnsyncedRebuttals, remoteRebuttals),
         reports: mergeById(ownUnsyncedReports, remoteReports),
+        remediationAssignments: remoteRemediations,
         syncedAttemptIds: remoteAttempts.map((a) => a.id),
         syncedRebuttalIds: remoteRebuttals.map((r) => r.id),
         syncedReportIds: remoteReports.map((r) => r.id),
@@ -1292,6 +1362,11 @@ export class DataService {
   hasAnyAdmin(): boolean {
     if (this.remoteSetupExists !== null) {
       return this.remoteSetupExists;
+    }
+    // In cloud Supabase mode, default to true (Login screen) until the server explicitly
+    // confirms zero setup rows — prevents new devices or logged-out browsers from losing Login.
+    if (this.isSupabaseConfigured()) {
+      return true;
     }
     return this.db.users.some((u) => u.role === 'admin');
   }
@@ -1309,9 +1384,14 @@ export class DataService {
           this.notify();
           return this.remoteSetupExists;
         }
+        // Network/RLS error must NOT lock users out of the Login screen
+        return this.remoteSetupExists ?? true;
       } catch {
-        // Fallback to local knowledge if offline
+        return this.remoteSetupExists ?? true;
       }
+    }
+    if (this.isSupabaseConfigured()) {
+      return this.remoteSetupExists ?? true;
     }
     return this.db.users.some((u) => u.role === 'admin');
   }
@@ -2396,6 +2476,7 @@ export class DataService {
         mode: attempt.mode,
         usedHint: attempt.usedHint,
         clickedDontKnow: attempt.clickedDontKnow,
+        switchedToPractice: attempt.switchedToPractice,
       });
       return {
         ...u,
@@ -2535,6 +2616,206 @@ export class DataService {
   getSurveyReports(userId?: string): SurveyReportRecord[] {
     if (!userId) return [...this.db.reports];
     return this.db.reports.filter((r) => r.userId === userId);
+  }
+
+  /**
+   * Real students NEVER see pending_teacher_review questions (enforced on both RLS and client).
+   * Only explicit TEST accounts with setting enabled may preview unapproved drafts.
+   */
+  shouldAllowPendingForUser(user?: UserAccount | null): boolean {
+    if (!user) return false;
+    return Boolean(user.isTestAccount && this.db.settings.allowPendingInTestMode);
+  }
+
+  // ---- INDIVIDUALIZED REMEDIATION WORKSHEETS (TEACHER-APPROVED CLOSED LOOP) ----
+
+  getRemediationAssignments(studentUid?: string): RemediationAssignment[] {
+    const list = this.db.remediationAssignments ?? [];
+    const filtered = studentUid ? list.filter((r) => r.studentUid === studentUid) : list;
+    return [...filtered].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+
+  proposeRemediationForStudent(studentUid: string): {
+    targetErrorCodes: string[];
+    remediationQuestionIds: string[];
+    verifyQuestionId: string;
+    suggestedTitle: string;
+    suggestedNote: string;
+  } {
+    const stu = this.db.users.find((u) => u.uid === studentUid);
+    const wrongAttempts = this.db.attempts.filter(
+      (a) => a.userId === studentUid && !a.isCorrect && a.errorCode,
+    );
+    const errFreq = new Map<string, number>();
+    for (const att of wrongAttempts) {
+      if (att.errorCode) {
+        errFreq.set(att.errorCode, (errFreq.get(att.errorCode) ?? 0) + 1);
+      }
+    }
+    const topErrors = Array.from(errFreq.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([code]) => code);
+    const targetErrorCodes = topErrors.length > 0 ? topErrors : ['E01', 'E04'];
+
+    const approvedBank = this.db.questions.filter((q) => q.review_status === 'approved');
+    const attemptedIds = new Set(
+      this.db.attempts.filter((a) => a.userId === studentUid).map((a) => a.questionId),
+    );
+
+    const matchingRem = approvedBank.filter((q) =>
+      q.anticipated_error_ids.some((e) => targetErrorCodes.includes(e)),
+    );
+    const remPreferred = [
+      ...matchingRem.filter((q) => q.stage === 'remediation' || q.level <= 2),
+      ...matchingRem.filter((q) => q.stage !== 'remediation' && q.level > 2),
+    ];
+    const remediationQuestionIds: string[] = [];
+    for (const q of remPreferred) {
+      if (!remediationQuestionIds.includes(q.id) && remediationQuestionIds.length < 3) {
+        remediationQuestionIds.push(q.id);
+      }
+    }
+    for (const q of approvedBank) {
+      if (!remediationQuestionIds.includes(q.id) && remediationQuestionIds.length < 2) {
+        remediationQuestionIds.push(q.id);
+      }
+    }
+
+    const verifyCandidates = matchingRem.filter(
+      (q) => !remediationQuestionIds.includes(q.id) && q.level >= 2,
+    );
+    const freshVerify =
+      verifyCandidates.find((q) => !attemptedIds.has(q.id)) ??
+      verifyCandidates[0] ??
+      approvedBank.find((q) => !remediationQuestionIds.includes(q.id)) ??
+      approvedBank[0];
+
+    const errorNames = targetErrorCodes
+      .map((code) => `${code} (${ERROR_CATALOG[code]?.subSkill ?? code})`)
+      .join(', ');
+
+    return {
+      targetErrorCodes,
+      remediationQuestionIds,
+      verifyQuestionId: freshVerify?.id ?? 'T01',
+      suggestedTitle: `Phiếu bổ trợ riêng · ${stu?.displayName ?? 'Học sinh'} (${targetErrorCodes.join(', ')})`,
+      suggestedNote: `Khắc phục trọng tâm: ${errorNames}. Em làm lần lượt câu bổ trợ có gợi ý, sau đó tự giải 1 bài kiểm chứng mới (không dùng gợi ý) ở bước cuối.`,
+    };
+  }
+
+  assignRemediationWorksheet(
+    actor: UserAccount,
+    input: {
+      studentUid: string;
+      title: string;
+      targetErrorCodes: string[];
+      remediationQuestionIds: string[];
+      verifyQuestionId: string;
+      teacherNote: string;
+    },
+  ): {ok: boolean; assignment?: RemediationAssignment; error?: string} {
+    if (!canAccessAdmin(actor)) {
+      return {ok: false, error: 'Chỉ Giáo viên hoặc Quản trị viên mới được giao phiếu bổ trợ.'};
+    }
+    const student = this.db.users.find((u) => u.uid === input.studentUid);
+    if (!student) {
+      return {ok: false, error: 'Không tìm thấy tài khoản học sinh.'};
+    }
+    if (
+      actor.role === 'teacher' &&
+      !this.getScopedUsers(actor).some((u) => u.uid === student.uid)
+    ) {
+      return {ok: false, error: 'Bạn chỉ được giao phiếu cho học sinh thuộc lớp mình quản lý.'};
+    }
+
+    const approvedSet = new Set(
+      this.db.questions.filter((q) => q.review_status === 'approved').map((q) => q.id),
+    );
+    const validRemIds = input.remediationQuestionIds.filter((id) => approvedSet.has(id));
+    if (validRemIds.length === 0 || !approvedSet.has(input.verifyQuestionId)) {
+      return {
+        ok: false,
+        error: 'Phiếu bổ trợ chỉ được chọn các câu hỏi đã kiểm duyệt (approved) và phải có ít nhất 1 câu bổ trợ + 1 câu kiểm chứng mới.',
+      };
+    }
+
+    const assignment: RemediationAssignment = {
+      id: generateId('rem'),
+      studentUid: student.uid,
+      studentCode: student.studentCode,
+      studentName: student.displayName,
+      teacherUid: actor.uid,
+      classId: student.classId ?? 'cls_default',
+      title: input.title.trim() || `Phiếu bổ trợ · ${input.targetErrorCodes.join(', ')}`,
+      targetErrorCodes: input.targetErrorCodes,
+      remediationQuestionIds: validRemIds,
+      verifyQuestionId: input.verifyQuestionId,
+      teacherNote: input.teacherNote.trim(),
+      status: 'assigned',
+      remediationCompletedIds: [],
+      verifyPassed: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextList = [assignment, ...(this.db.remediationAssignments ?? [])];
+    this.save({...this.db, remediationAssignments: nextList});
+
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase
+        .from('remediation_assignments')
+        .upsert(remediationToRow(assignment), {onConflict: 'id'});
+    }
+
+    return {ok: true, assignment};
+  }
+
+  recordRemediationProgress(
+    assignmentId: string,
+    params: {completedQuestionId?: string; verifyPassed?: boolean},
+  ): RemediationAssignment | null {
+    const list = this.db.remediationAssignments ?? [];
+    const target = list.find((r) => r.id === assignmentId);
+    if (!target) return null;
+
+    const completedIds = new Set(target.remediationCompletedIds);
+    if (params.completedQuestionId) {
+      completedIds.add(params.completedQuestionId);
+    }
+    const remAllDone = target.remediationQuestionIds.every((id) => completedIds.has(id));
+    const verifyPassed = Boolean(target.verifyPassed || params.verifyPassed);
+    const status: RemediationAssignment['status'] = verifyPassed
+      ? 'verified_passed'
+      : remAllDone
+        ? 'remediation_done'
+        : 'assigned';
+
+    const updated: RemediationAssignment = {
+      ...target,
+      remediationCompletedIds: Array.from(completedIds),
+      verifyPassed,
+      status,
+      completedAt: verifyPassed ? target.completedAt ?? new Date().toISOString() : target.completedAt,
+    };
+
+    this.save({
+      ...this.db,
+      remediationAssignments: list.map((r) => (r.id === assignmentId ? updated : r)),
+    });
+
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase
+        .from('remediation_assignments')
+        .update({
+          remediation_completed_ids: updated.remediationCompletedIds,
+          verify_passed: updated.verifyPassed,
+          status: updated.status,
+          completed_at: updated.completedAt ?? null,
+        })
+        .eq('id', updated.id);
+    }
+
+    return updated;
   }
 
   // ---- QUESTIONS BANK ----

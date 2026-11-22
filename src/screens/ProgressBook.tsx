@@ -1,11 +1,13 @@
 import React from 'react';
-import {Award, BookOpen, CheckCircle2, Compass, TrendingUp} from 'lucide-react';
+import {AlertTriangle, Award, BookOpen, CheckCircle2, Compass, TrendingUp} from 'lucide-react';
 import {
   computeJourneyLevel,
+  ERROR_CATALOG,
   JOURNEY_LEVELS,
   SKILL_CLUSTER_LIST,
   SKILL_CLUSTERS,
 } from '../config.ts';
+import {dataService} from '../services/dataService.ts';
 import type {SkillState, UserAccount} from '../types.ts';
 
 interface ProgressBookProps {
@@ -35,6 +37,29 @@ export const ProgressBook: React.FC<ProgressBookProps> = ({user, onGoToPractice}
     SKILL_CLUSTER_LIST.find((c) => user.skills[c]?.state === 'Đang luyện') ??
     SKILL_CLUSTER_LIST.find((c) => user.skills[c]?.state === 'Chưa đủ dữ liệu') ??
     'SIN';
+
+  // Granular error breakdown (E01–E12) with concrete attempted question IDs as evidence
+  const errorEvidence = React.useMemo(() => {
+    const myWrongs = dataService
+      .getAttempts(true)
+      .filter((a) => a.userId === user.uid && !a.isCorrect && a.errorCode);
+    const map = new Map<string, {count: number; questionIds: string[]}>();
+    for (const att of myWrongs) {
+      const code = att.errorCode!;
+      const prev = map.get(code) ?? {count: 0, questionIds: []};
+      prev.count += 1;
+      if (!prev.questionIds.includes(att.questionId)) {
+        prev.questionIds.push(att.questionId);
+      }
+      map.set(code, prev);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].count - a[1].count);
+  }, [user.uid, user.xp]);
+
+  const myAssignments = React.useMemo(
+    () => dataService.getRemediationAssignments(user.uid),
+    [user.uid, user.xp],
+  );
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-5 space-y-5">
@@ -135,6 +160,50 @@ export const ProgressBook: React.FC<ProgressBookProps> = ({user, onGoToPractice}
             );
           })}
         </div>
+      </div>
+
+      {/* Granular Sub-Skill Error Analysis (E01–E12) with Evidence */}
+      <div className="notebook-card p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-xl font-extrabold text-[#14284A] flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-[#D98A1F]" />
+            Phân tích kỹ năng thành phần &amp; lỗi cụ thể (E01–E12)
+          </h2>
+          {myAssignments.some((a) => a.status !== 'verified_passed') && (
+            <button type="button" onClick={onGoToPractice} className="btn-tactile btn-gold text-xs py-1.5 px-3">
+              Mở phiếu bổ trợ giáo viên giao ({myAssignments.filter((a) => a.status !== 'verified_passed').length})
+            </button>
+          )}
+        </div>
+        {errorEvidence.length === 0 ? (
+          <p className="text-xs text-[#1F7A6B] p-3 rounded-xl bg-[#E6F6F3] border border-[#9CD5CA]">
+            Chưa ghi nhận lỗi sai cụ thể nào. Khi có bước làm nhầm (ghép cạnh–góc, lập tỉ số Sin, đổi độ/rad, làm tròn...), hệ thống sẽ chỉ rõ lỗi cùng mã câu minh chứng tại đây.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {errorEvidence.map(([code, data]) => {
+              const info = ERROR_CATALOG[code];
+              return (
+                <div key={code} className="p-3 rounded-xl bg-[#FFF5E2] border border-[#E0A93B] text-xs space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-extrabold text-[#8A5108]">
+                      {code} · {info?.subSkill ?? info?.label ?? code}
+                    </span>
+                    <span className="font-extrabold text-[#B24A16] tabular-nums">{data.count} lần</span>
+                  </div>
+                  <p className="text-[11px] text-[#5C3A06]">
+                    <strong>Minh chứng bài làm:</strong> Câu {data.questionIds.slice(0, 5).join(', ')}
+                  </p>
+                  {info?.stepHint && (
+                    <p className="text-[11px] text-[#1F3B63]">
+                      <strong>Cách khắc phục:</strong> {info.stepHint}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Journey Level Ladder (separate from skill mastery) */}

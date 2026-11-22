@@ -3,8 +3,11 @@ import {
   AlertTriangle,
   BarChart3,
   BookOpen,
+  ClipboardCheck,
   Compass,
   FastForward,
+  Printer,
+  Send,
   ShieldCheck,
   Sparkles,
   UserPlus,
@@ -41,6 +44,13 @@ export const TeacherClassMap: React.FC<TeacherClassMapProps> = ({
   const [selectedMocId, setSelectedMocId] = React.useState<MocId>(1);
   const [inspectStudentUid, setInspectStudentUid] = React.useState<string | null>(null);
   const [noticeMsg, setNoticeMsg] = React.useState('');
+  const [remDraftOpen, setRemDraftOpen] = React.useState(false);
+  const [remTitle, setRemTitle] = React.useState('');
+  const [remNote, setRemNote] = React.useState('');
+  const [remTargetErrors, setRemTargetErrors] = React.useState<string[]>([]);
+  const [remQuestionIds, setRemQuestionIds] = React.useState<string[]>([]);
+  const [remVerifyId, setRemVerifyId] = React.useState('');
+  const [remFeedback, setRemFeedback] = React.useState('');
 
   React.useEffect(() => {
     return dataService.subscribe(() => setTick((t) => t + 1));
@@ -465,7 +475,11 @@ export const TeacherClassMap: React.FC<TeacherClassMapProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setInspectStudentUid(null)}
+                  onClick={() => {
+                    setInspectStudentUid(null);
+                    setRemDraftOpen(false);
+                    setRemFeedback('');
+                  }}
                   className="p-1.5 rounded-lg hover:bg-[#FFF4D6]"
                 >
                   <X className="w-5 h-5 text-[#14284A]" />
@@ -589,6 +603,195 @@ export const TeacherClassMap: React.FC<TeacherClassMapProps> = ({
                   </div>
                 </div>
               )}
+              {/* 4. Closed-loop Teacher-Approved Individualized Remediation Worksheet */}
+              {(() => {
+                const approvedQs = questions.filter((q) => q.review_status === 'approved');
+                const studentRemList = dataService.getRemediationAssignments(inspectedStudent.uid);
+                return (
+                  <div className="space-y-3 pt-2 border-t-2 border-[#E5D3A8]">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="font-display text-base font-extrabold text-[#14284A] flex items-center gap-1.5">
+                        <ClipboardCheck className="w-4 h-4 text-[#1F7A6B]" />
+                        4. Cá nhân hóa có Giáo viên duyệt: Giao phiếu bổ trợ &amp; kiểm chứng mới
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const prop = dataService.proposeRemediationForStudent(inspectedStudent.uid);
+                          setRemTargetErrors(prop.targetErrorCodes);
+                          setRemQuestionIds(prop.remediationQuestionIds);
+                          setRemVerifyId(prop.verifyQuestionId);
+                          setRemTitle(prop.suggestedTitle);
+                          setRemNote(prop.suggestedNote);
+                          setRemFeedback('');
+                          setRemDraftOpen(true);
+                        }}
+                        className="btn-tactile btn-gold text-xs py-1.5 px-3"
+                      >
+                        Đề xuất phiếu bổ trợ theo lỗi
+                      </button>
+                    </div>
+
+                    {remFeedback && (
+                      <p className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B]">
+                        {remFeedback}
+                      </p>
+                    )}
+
+                    {remDraftOpen && (
+                      <div className="p-4 rounded-2xl bg-[#FFFBF0] border-2 border-[#2E9C8A] space-y-3 text-xs">
+                        <p className="font-extrabold text-[#1F7A6B]">
+                          Quy trình: Xem lỗi → Hệ thống đề xuất → Giáo viên sửa &amp; duyệt → Giao hoặc in phiếu → Học sinh nộp &amp; tự giải bài mới
+                        </p>
+                        <div className="space-y-1">
+                          <label className="font-bold text-[#14284A]">Tiêu đề phiếu bổ trợ</label>
+                          <input
+                            type="text"
+                            value={remTitle}
+                            onChange={(e) => setRemTitle(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="font-bold text-[#14284A]">Lời dặn của Giáo viên (có thể chỉnh sửa)</label>
+                          <textarea
+                            rows={2}
+                            value={remNote}
+                            onChange={(e) => setRemNote(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <p className="font-bold text-[#14284A]">
+                            Chọn câu hỏi bổ trợ đã kiểm duyệt ({remQuestionIds.length} câu):
+                          </p>
+                          <div className="max-h-36 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 p-2 rounded-xl bg-white border border-[#E5D3A8]">
+                            {approvedQs.slice(0, 30).map((q) => {
+                              const checked = remQuestionIds.includes(q.id);
+                              return (
+                                <label
+                                  key={q.id}
+                                  className="flex items-start gap-2 p-1.5 rounded-lg hover:bg-[#FFF8E6] cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() =>
+                                      setRemQuestionIds((prev) =>
+                                        prev.includes(q.id)
+                                          ? prev.filter((id) => id !== q.id)
+                                          : [...prev, q.id],
+                                      )
+                                    }
+                                    className="mt-0.5"
+                                  />
+                                  <span className="text-[11px] leading-snug text-[#14284A]">
+                                    <strong>{q.id}</strong> ({q.cluster} · M{q.level} ·{' '}
+                                    {q.anticipated_error_ids.join(',')})
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="font-bold text-[#14284A]">
+                            Câu kiểm chứng mới ở bước cuối (chế độ không gợi ý):
+                          </label>
+                          <select
+                            value={remVerifyId}
+                            onChange={(e) => setRemVerifyId(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                          >
+                            {approvedQs.map((q) => (
+                              <option key={q.id} value={q.id}>
+                                {q.id} · Cụm {q.cluster} · Mức {q.level} ({q.anticipated_error_ids.join(', ')})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = dataService.assignRemediationWorksheet(user, {
+                                studentUid: inspectedStudent.uid,
+                                title: remTitle,
+                                targetErrorCodes: remTargetErrors,
+                                remediationQuestionIds: remQuestionIds,
+                                verifyQuestionId: remVerifyId,
+                                teacherNote: remNote,
+                              });
+                              if (!res.ok) {
+                                setRemFeedback(res.error ?? 'Chưa thể giao phiếu.');
+                              } else {
+                                setRemFeedback(
+                                  `Đã duyệt và giao phiếu "${res.assignment?.title}" trực tiếp tới học sinh ${inspectedStudent.displayName} (đã đồng bộ máy chủ).`,
+                                );
+                                setRemDraftOpen(false);
+                              }
+                            }}
+                            className="btn-tactile btn-jade text-xs py-2 px-3.5"
+                          >
+                            <Send className="w-3.5 h-3.5" /> Duyệt &amp; Giao phiếu cho học sinh
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => window.print()}
+                            className="btn-tactile btn-paper text-xs py-2 px-3"
+                          >
+                            <Printer className="w-3.5 h-3.5" /> In / Xuất phiếu PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRemDraftOpen(false)}
+                            className="text-xs font-bold text-[#5B6B82] underline px-2"
+                          >
+                            Đóng khung soạn
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Assigned Worksheets Status List */}
+                    {studentRemList.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-bold text-[#4B5B73]">
+                          Phiếu bổ trợ đã giao cho {inspectedStudent.displayName} ({studentRemList.length}):
+                        </p>
+                        {studentRemList.map((rem) => (
+                          <div
+                            key={rem.id}
+                            className="p-2.5 rounded-xl bg-white border border-[#E5D3A8] flex flex-wrap items-center justify-between gap-2 text-xs"
+                          >
+                            <div>
+                              <p className="font-bold text-[#14284A]">{rem.title}</p>
+                              <p className="text-[11px] text-[#5B6B82]">
+                                Câu bổ trợ: {rem.remediationQuestionIds.join(', ')} · Kiểm chứng mới: {rem.verifyQuestionId}
+                              </p>
+                            </div>
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold ${
+                                rem.status === 'verified_passed'
+                                  ? 'bg-[#E6F6F3] text-[#1F7A6B] border border-[#2E9C8A]'
+                                  : rem.status === 'remediation_done'
+                                    ? 'bg-[#E8F3FA] text-[#1F3B63]'
+                                    : 'bg-[#FFF3DB] text-[#8A5108]'
+                              }`}
+                            >
+                              {rem.status === 'verified_passed'
+                                ? 'Đạt kiểm chứng tự giải ✓'
+                                : rem.status === 'remediation_done'
+                                  ? 'Đã xong bổ trợ · Chờ bài kiểm chứng'
+                                  : `Đang làm (${rem.remediationCompletedIds.length}/${rem.remediationQuestionIds.length})`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );

@@ -67,15 +67,22 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             {user.displayName}
           </h1>
           <p className="text-xs text-[#5B6B82]">
-            Tên đăng nhập: <strong>{user.username}</strong> · Mã nội bộ: <strong>{user.studentCode}</strong> · Lớp: <strong>{user.classCode}</strong>
+            Tên đăng nhập: <strong>{user.username}</strong>
+            {!isStaff && (
+              <>
+                {' '}· Mã học sinh: <strong>{user.studentCode}</strong> · Lớp: <strong>{user.classCode}</strong>
+              </>
+            )}
           </p>
           <div className="flex flex-wrap justify-center sm:justify-start gap-2 pt-1">
-            <button type="button" onClick={onEditAvatar} className="btn-tactile btn-gold text-sm">
-              <Palette className="w-4 h-4" /> Chỉnh sửa nhân vật
-            </button>
+            {!isStaff && (
+              <button type="button" onClick={onEditAvatar} className="btn-tactile btn-gold text-sm">
+                <Palette className="w-4 h-4" /> Chỉnh sửa nhân vật
+              </button>
+            )}
             {isStaff && (
               <button type="button" onClick={onOpenAdmin} className="btn-tactile btn-ink text-sm">
-                <ShieldCheck className="w-4 h-4 text-[#E0A93B]" /> Mở khu Quản trị (M11)
+                <ShieldCheck className="w-4 h-4 text-[#E0A93B]" /> Mở khu Quản trị lớp &amp; Câu hỏi
               </button>
             )}
           </div>
@@ -171,22 +178,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </div>
       </div>
 
-      {/* Cloud Firestore & LocalAdapter Sync Status + Logout */}
+      {/* Cloud Sync Status + Logout */}
       <div className="notebook-card-warm p-4 space-y-2.5 text-xs text-[#5B6B82]">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="font-bold text-[#14284A]">
-            Trạng thái lưu trữ:{' '}
+            Trạng thái đồng bộ dữ liệu:{' '}
             <span
               className={
                 syncStatus === 'saved' ? 'text-[#1F7A6B]' : 'text-[#8A5108]'
               }
             >
               {getSyncStatusLabel(syncStatus)}
-            </span>{' '}
-            · Chế độ:{' '}
-            {dataService.adapterMode === 'supabase'
-              ? 'SupabaseAdapter (PostgreSQL)'
-              : 'LocalAdapter (dự phòng trên máy này)'}
+            </span>
+            {isStaff && (
+              <>
+                {' '}· Chế độ:{' '}
+                {dataService.adapterMode === 'supabase'
+                  ? 'Máy chủ đám mây (Supabase)'
+                  : 'Lưu cục bộ dự phòng'}
+              </>
+            )}
             {pendingCount > 0 ? ` · ${pendingCount} mục chưa đồng bộ` : ''}
           </p>
         </div>
@@ -200,9 +211,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             {syncMsg}
           </p>
         )}
-        <p>
-          Tính năng giai đoạn sau (Đang phát triển): Nhận dạng giọng nói · Cổng phụ huynh · Cảnh khám phá 3D.
-        </p>
         <div className="flex flex-wrap gap-2 pt-2">
           <button
             type="button"
@@ -211,11 +219,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             className="btn-tactile btn-jade text-xs py-2 px-3.5"
           >
             <CloudUpload className="w-4 h-4" />
-            {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ dữ liệu trên máy lên máy chủ'}
+            {syncBusy ? 'Đang đồng bộ...' : 'Đồng bộ tiến độ lên máy chủ'}
           </button>
-          <button type="button" onClick={onOpenSelfTest} className="btn-tactile btn-paper text-xs py-2 px-3">
-            Chạy Tự kiểm tra (#/selftest)
-          </button>
+          {isStaff && (
+            <button type="button" onClick={onOpenSelfTest} className="btn-tactile btn-paper text-xs py-2 px-3">
+              Kiểm tra hệ thống
+            </button>
+          )}
           <button type="button" onClick={onLogout} className="btn-tactile btn-amber text-xs py-2 px-3.5">
             <LogOut className="w-4 h-4" /> Đăng xuất
           </button>

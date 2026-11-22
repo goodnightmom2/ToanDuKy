@@ -22,7 +22,7 @@ export const B_SLIDE_MAX = 100;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   helpAfterWrong: DEFAULT_HELP_AFTER_WRONG,
-  allowPendingInTestMode: true,
+  allowPendingInTestMode: false,
   aiEnabled: true,
   aiDailyQuotaLimit: 50,
   audioDefaultOn: false,
@@ -128,8 +128,8 @@ export const JOURNEY_LEVELS: JourneyLevelDef[] = [
     level: 6,
     name: 'Kiến tạo',
     minXp: 240,
-    minIndependentClusters: 5,
-    description: 'Kiểm chứng, phản biện lập luận và xây dựng phương án khảo sát.',
+    minIndependentClusters: 6,
+    description: 'Tự giải độc lập đủ 6/6 cụm kỹ năng Chương III, kiểm chứng và phản biện lập luận.',
   },
 ];
 
@@ -151,65 +151,77 @@ export function computeJourneyLevel(
 
 export const ERROR_CATALOG: Record<
   string,
-  {code: string; label: string; stepHint: string}
+  {code: string; subSkill: string; label: string; stepHint: string}
 > = {
   E01: {
     code: 'E01',
+    subSkill: 'Ghép cặp cạnh – góc đối diện',
     label: 'Nhầm cặp cạnh – góc đối diện',
     stepHint: 'Hãy chạm vào hai đầu mút của cạnh trước, đỉnh còn lại chính là góc đối diện.',
   },
   E02: {
     code: 'E02',
+    subSkill: 'Tính góc theo tổng 3 góc 180°',
     label: 'Chưa cộng/trừ đúng tổng 3 góc 180°',
     stepHint: 'Kiểm tra lại tổng ba góc trong tam giác luôn bằng 180°, rồi trừ hai góc đã biết.',
   },
   E03: {
     code: 'E03',
+    subSkill: 'Chọn dữ kiện đo thực địa hợp lệ',
     label: 'Chọn dữ kiện không thể đo trực tiếp',
     stepHint: 'Kiểm tra xem học viên có thể đi tới điểm nào trên bờ mà không băng qua vật cản.',
   },
   E04: {
     code: 'E04',
+    subSkill: 'Lập tỉ số Định lý Sin',
     label: 'Lập chưa đúng tỉ số định lý Sin',
     stepHint: 'Mỗi tỉ số phải ghép đúng một cạnh với sin của góc đối diện chính cạnh đó.',
   },
   E05: {
     code: 'E05',
+    subSkill: 'Biến đổi đại số tỉ số lượng giác',
     label: 'Biến đổi đại số tỉ số chưa khớp',
     stepHint: 'Nhân hai vế với mẫu số chứa ẩn, kiểm tra phép nhân và chia trước khi bấm máy.',
   },
   E06: {
     code: 'E06',
+    subSkill: 'Giá trị lượng giác & chế độ độ (DEG)',
     label: 'Nhầm giá trị lượng giác hoặc đơn vị góc (độ/rad)',
     stepHint: 'Kiểm tra máy tính đang ở chế độ độ (DEG) và đối chiếu lại bảng giá trị 0°–180°.',
   },
   E07: {
     code: 'E07',
+    subSkill: 'Làm tròn số & ghi đơn vị đo',
     label: 'Làm tròn chưa đúng chữ số hoặc thiếu đơn vị',
     stepHint: 'Giữ nguyên giá trị trung gian, chỉ làm tròn ở kết quả cuối theo đúng hàng yêu cầu và ghi rõ đơn vị.',
   },
   E08: {
     code: 'E08',
+    subSkill: 'Diễn giải ý nghĩa hình học (AC vs h)',
     label: 'Diễn giải chưa khớp ý nghĩa hình học',
-    stepHint: 'Đối chiếu đoạn vừa tính với hai đầu mút trên hình: đường ngắm xiên khác với đường vuông góc.',
+    stepHint: 'Đối chiếu đoạn vừa tính với hai đầu mút trên hình: đường ngắm xiên AC khác với bề rộng vuông góc CH.',
   },
   E09: {
     code: 'E09',
+    subSkill: 'Dấu & hệ số 2 trong Định lý Côsin',
     label: 'Quên dấu trừ hoặc hệ số 2 trong định lý Côsin',
     stepHint: 'Kiểm tra lại công thức $a^2 = b^2 + c^2 - 2bc\\cos A$, chú ý dấu trừ và số 2.',
   },
   E10: {
     code: 'E10',
+    subSkill: 'Khai căn bậc hai khi tính cạnh',
     label: 'Quên khai căn bậc hai khi tính cạnh',
     stepHint: 'Giá trị vừa tính đang là bình phương độ dài cạnh ($a^2$), cần lấy căn bậc hai.',
   },
   E11: {
     code: 'E11',
+    subSkill: 'Nửa chu vi p & hệ số 1/2 diện tích',
     label: 'Nhầm nửa chu vi p hoặc thiếu hệ số 1/2 diện tích',
     stepHint: 'Kiểm tra nửa chu vi $p = \\frac{a+b+c}{2}$ và hệ số $\\frac{1}{2}$ trong $S = \\frac{1}{2}ab\\sin C$.',
   },
   E12: {
     code: 'E12',
+    subSkill: 'Phân biệt đường kính 2R và bán kính R',
     label: 'Nhầm đường kính 2R với bán kính R',
     stepHint: 'Định lý Sin cho $\\frac{a}{\\sin A} = 2R$; muốn tìm bán kính $R$ cần chia đôi kết quả.',
   },
@@ -277,6 +289,21 @@ export function computeBossHitDamages(levels: Array<1 | 2 | 3 | 4>): number[] {
   const sum = levels.reduce((acc, lv) => acc + lv, 0);
   if (sum <= 0) return [];
   return levels.map((lv) => (100 * lv) / sum);
+}
+
+/**
+ * Computes Boss displayed HP purely from valid completed steps (single source of truth).
+ * Guarantees HP = 100 at 0 hits and HP = 0 on exact completion of all hits (zero leftover HP).
+ */
+export function computeBossRemainingHp(
+  levels: Array<1 | 2 | 3 | 4>,
+  completedHits: number,
+): number {
+  const totalWeight = levels.reduce((acc, lv) => acc + lv, 0);
+  if (totalWeight <= 0 || completedHits >= levels.length) return 0;
+  if (completedHits <= 0) return 100;
+  const dealtWeight = levels.slice(0, completedHits).reduce((acc, lv) => acc + lv, 0);
+  return Math.max(0, Math.round((100 * (totalWeight - dealtWeight)) / totalWeight));
 }
 
 export const STATIONS: StationDefinition[] = [
@@ -554,7 +581,11 @@ export const SKILL_CARDS = [
   {id: 'sk_cos_side', title: 'Định lý Côsin (Tìm cạnh)', formula: '$a^2 = b^2 + c^2 - 2bc\\cos A$'},
   {id: 'sk_cos_law', title: 'Định lý Côsin (Tìm góc)', formula: '$\\cos A = \\frac{b^2 + c^2 - a^2}{2bc}$'},
   {id: 'sk_sin_law', title: 'Định lý Sin & Ngoại tiếp R', formula: '$\\frac{a}{\\sin A} = \\frac{b}{\\sin B} = \\frac{c}{\\sin C} = 2R$'},
-  {id: 'sk_indirect_bs01', title: 'Đo khoảng cách gián tiếp', formula: '$AC = \\frac{AB \\cdot \\sin B}{\\sin(180^\\circ - A - B)}$'},
+  {
+    id: 'sk_indirect_bs01',
+    title: 'Đo khoảng cách gián tiếp (AC vs h)',
+    formula: 'Đoạn ngắm $AC = \\frac{AB \\cdot \\sin B}{\\sin(180^\\circ - A - B)}$; bề rộng vuông góc $h = AC \\cdot \\sin A$',
+  },
   {id: 'sk_area_sas', title: 'Diện tích (cạnh–góc–cạnh)', formula: '$S = \\frac{1}{2}bc\\sin A$'},
   {id: 'sk_heron', title: 'Heron, S = pr & S = abc/4R', formula: '$S = \\sqrt{p(p-a)(p-b)(p-c)},\\ p=\\frac{a+b+c}{2}$'},
   {id: 'sk_modeling', title: 'Tổng hợp & Mô hình hóa', formula: 'Chọn định lý Sin / Côsin / Diện tích theo dữ kiện'},

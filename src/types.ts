@@ -442,6 +442,25 @@ export interface StationDefinition {
   narrativeIntro: string;
 }
 
+export interface RemediationAssignment {
+  id: string;
+  studentUid: string;
+  studentCode: string;
+  studentName: string;
+  teacherUid: string;
+  classId: string;
+  title: string;
+  targetErrorCodes: string[];
+  remediationQuestionIds: string[];
+  verifyQuestionId: string;
+  teacherNote: string;
+  status: 'assigned' | 'remediation_done' | 'verified_passed';
+  remediationCompletedIds: string[];
+  verifyPassed: boolean;
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface GradeResult {
   isCorrect: boolean;
   feedback_vi: string;

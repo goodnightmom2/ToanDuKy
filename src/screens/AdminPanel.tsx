@@ -284,7 +284,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       <div className="notebook-card p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
-            Khu Quản trị & Duyệt học liệu (M11) · {user.role === 'admin' ? 'Quản trị viên' : 'Giáo viên'}
+            Khu Quản trị &amp; Duyệt học liệu · {user.role === 'admin' ? 'Quản trị viên' : 'Giáo viên'}
           </p>
           <h1 className="font-display text-2xl font-extrabold text-[#14284A]">
             Bảng điều hành Toán Du Ký — {user.displayName}

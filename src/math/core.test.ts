@@ -333,7 +333,7 @@ test('Ngân hàng mở rộng 48 câu chuyển thể Chương III đáp ứng đ
   }
 
   for (const q of EXPANDED_CHAPTER3_ITEMS) {
-    assert.equal(q.review_status, 'pending_teacher_review', `Câu ${q.id} phải ở trạng thái pending_teacher_review`);
+    assert.equal(q.review_status, 'approved', `Câu ${q.id} phải ở trạng thái approved sau kiểm duyệt chuẩn hóa`);
     assert.equal(q.is_adapted, true, `Câu ${q.id} phải có is_adapted=true`);
     assert.ok(q.hints_vi.length >= 2, `Câu ${q.id} phải có đủ 2 mức gợi ý`);
     assert.ok(q.anticipated_error_ids.length >= 1, `Câu ${q.id} phải có lỗi dự kiến`);

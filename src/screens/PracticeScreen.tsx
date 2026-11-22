@@ -1,10 +1,16 @@
 import React from 'react';
-import {CheckCircle2, Dumbbell, RefreshCw} from 'lucide-react';
+import {CheckCircle2, ClipboardCheck, Dumbbell, RefreshCw} from 'lucide-react';
 import {QuestionCard, type QuestionSubmissionPayload} from '../components/QuestionCard.tsx';
-import {SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
+import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
 import {buildAdaptiveQuestionSet} from '../math/generators.ts';
 import {dataService} from '../services/dataService.ts';
-import type {QuestionItem, QuestionMode, SkillCluster, UserAccount} from '../types.ts';
+import type {
+  QuestionItem,
+  QuestionMode,
+  RemediationAssignment,
+  SkillCluster,
+  UserAccount,
+} from '../types.ts';
 
 interface PracticeScreenProps {
   user: UserAccount;
@@ -19,11 +25,23 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
   const [sessionMode, setSessionMode] = React.useState<QuestionMode>('practice');
 
   const [questions, setQuestions] = React.useState<QuestionItem[] | null>(null);
+  const [activeAssignment, setActiveAssignment] = React.useState<RemediationAssignment | null>(null);
+  const [verifyRetryNotice, setVerifyRetryNotice] = React.useState('');
   const [qIdx, setQIdx] = React.useState(0);
   const [currentCleared, setCurrentCleared] = React.useState(false);
   const [resultsLog, setResultsLog] = React.useState<
     Array<{id: string; cluster: SkillCluster; isCorrect: boolean; mode: QuestionMode}>
   >([]);
+  const [tick, setTick] = React.useState(0);
+
+  React.useEffect(() => {
+    return dataService.subscribe(() => setTick((t) => t + 1));
+  }, []);
+
+  const myAssignments = React.useMemo(
+    () => dataService.getRemediationAssignments(user.uid),
+    [user.uid, tick],
+  );
 
   const startSession = () => {
     const bank = dataService.getQuestions();
@@ -32,7 +50,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
       clusters: selectedCluster === 'ALL' ? undefined : [selectedCluster],
       levelFilter,
       bank,
-      allowPending: settings.allowPendingInTestMode,
+      allowPending: dataService.shouldAllowPendingForUser(user),
       skills: user.skills,
       recentSessions: user.recentQuestionSessions,
     });
@@ -40,7 +58,26 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
       user.uid,
       list.map((q) => q.id),
     );
+    setActiveAssignment(null);
+    setVerifyRetryNotice('');
     setQuestions(list);
+    setQIdx(0);
+    setCurrentCleared(false);
+    setResultsLog([]);
+  };
+
+  const startRemediationAssignment = (assignment: RemediationAssignment) => {
+    const byId = new Map(dataService.getQuestions().map((q) => [q.id, q]));
+    const remQs = assignment.remediationQuestionIds
+      .map((id) => byId.get(id))
+      .filter((q): q is QuestionItem => Boolean(q && q.review_status === 'approved'));
+    const verifyQ = byId.get(assignment.verifyQuestionId);
+    const fullList = verifyQ && verifyQ.review_status === 'approved' ? [...remQs, verifyQ] : remQs;
+    if (fullList.length === 0) return;
+
+    setActiveAssignment(assignment);
+    setVerifyRetryNotice('');
+    setQuestions(fullList);
     setQIdx(0);
     setCurrentCleared(false);
     setResultsLog([]);
@@ -67,6 +104,29 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
     if (updated) onUserUpdated(updated);
 
     if (payload.isCorrect) {
+      if (activeAssignment) {
+        const isFinalVerify = payload.question.id === activeAssignment.verifyQuestionId && questions && qIdx === questions.length - 1;
+        if (isFinalVerify) {
+          const independentPass =
+            payload.mode === 'verify' && !payload.usedHint && !payload.switchedToPractice;
+          if (independentPass) {
+            const nextRem = dataService.recordRemediationProgress(activeAssignment.id, {
+              verifyPassed: true,
+            });
+            if (nextRem) setActiveAssignment(nextRem);
+            setVerifyRetryNotice('');
+          } else {
+            setVerifyRetryNotice(
+              'Em vừa hoàn thành câu cuối có dùng hỗ trợ nên chưa tính là "Tự giải độc lập". Em vẫn có thể kết thúc hoặc mở lại phiếu này để tự giải câu kiểm chứng không gợi ý.',
+            );
+          }
+        } else {
+          const nextRem = dataService.recordRemediationProgress(activeAssignment.id, {
+            completedQuestionId: payload.question.id,
+          });
+          if (nextRem) setActiveAssignment(nextRem);
+        }
+      }
       setCurrentCleared(true);
       setResultsLog((prev) => [
         ...prev,
@@ -83,6 +143,73 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
   if (!questions) {
     return (
       <div className="max-w-3xl mx-auto px-4 py-5 space-y-4">
+        {/* Teacher-approved individualized remediation worksheets */}
+        {myAssignments.length > 0 && (
+          <div className="notebook-card p-5 space-y-3 border-2 border-[#2E9C8A]">
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="w-5 h-5 text-[#1F7A6B]" />
+              <h2 className="font-display text-xl font-extrabold text-[#14284A]">
+                Phiếu bổ trợ riêng từ Giáo viên ({myAssignments.length})
+              </h2>
+            </div>
+            <p className="text-xs text-[#5B6B82]">
+              Giáo viên đã xem lỗi cụ thể của em, duyệt câu bổ trợ phù hợp và đính kèm 1 bài kiểm chứng mới (không gợi ý) ở bước cuối.
+            </p>
+            <div className="space-y-2.5">
+              {myAssignments.map((rem) => {
+                const isDone = rem.status === 'verified_passed';
+                return (
+                  <div
+                    key={rem.id}
+                    className={`p-3.5 rounded-2xl border-2 space-y-2 ${
+                      isDone
+                        ? 'bg-[#E6F6F3] border-[#2E9C8A]'
+                        : 'bg-[#FFFBF0] border-[#E0A93B]'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-extrabold text-sm text-[#14284A]">{rem.title}</p>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold ${
+                          isDone
+                            ? 'bg-[#1F7A6B] text-white'
+                            : 'bg-[#FFF3DB] text-[#8A5108] border border-[#D98A1F]'
+                        }`}
+                      >
+                        {isDone
+                          ? 'Đã vượt qua kiểm chứng tự giải ✓'
+                          : `${rem.remediationCompletedIds.length}/${rem.remediationQuestionIds.length} câu bổ trợ + 1 câu kiểm chứng`}
+                      </span>
+                    </div>
+                    {rem.targetErrorCodes.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {rem.targetErrorCodes.map((code) => (
+                          <span
+                            key={code}
+                            className="px-2 py-0.5 rounded-md bg-white border border-[#D9C293] text-[11px] font-bold text-[#8A5108]"
+                          >
+                            {code}: {ERROR_CATALOG[code]?.subSkill ?? code}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {rem.teacherNote && (
+                      <p className="text-xs text-[#1F3B63]">{rem.teacherNote}</p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => startRemediationAssignment(rem)}
+                      className={`btn-tactile text-xs py-2 px-4 ${isDone ? 'btn-paper' : 'btn-jade'}`}
+                    >
+                      {isDone ? 'Làm lại phiếu bổ trợ' : 'Bắt đầu làm phiếu bổ trợ ngay →'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="notebook-card p-5 space-y-5">
           <div>
             <p className="text-xs font-extrabold uppercase text-[#2E9C8A]">
@@ -203,28 +330,54 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
 
   const finished = qIdx >= questions.length;
   const currentQ = questions[qIdx];
+  const isRemVerifyStep = Boolean(
+    activeAssignment && currentQ && qIdx === questions.length - 1 && currentQ.id === activeAssignment.verifyQuestionId,
+  );
+  const effectiveInitialMode: QuestionMode = activeAssignment
+    ? isRemVerifyStep
+      ? 'verify'
+      : 'practice'
+    : sessionMode;
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-4 space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="font-display text-xl font-extrabold text-[#14284A]">
-          Luyện kỹ năng · Câu {Math.min(qIdx + 1, questions.length)}/{questions.length}
-        </h1>
+        <div>
+          <h1 className="font-display text-xl font-extrabold text-[#14284A]">
+            {activeAssignment
+              ? isRemVerifyStep
+                ? 'Phiếu bổ trợ · Bước cuối: Tự giải kiểm chứng (không gợi ý)'
+                : `${activeAssignment.title} · Câu ${Math.min(qIdx + 1, questions.length)}/${questions.length}`
+              : `Luyện kỹ năng · Câu ${Math.min(qIdx + 1, questions.length)}/${questions.length}`}
+          </h1>
+          {activeAssignment?.teacherNote && (
+            <p className="text-xs text-[#1F7A6B] font-semibold mt-0.5">{activeAssignment.teacherNote}</p>
+          )}
+        </div>
         <button
           type="button"
-          onClick={() => setQuestions(null)}
-          className="btn-tactile btn-paper text-xs py-2 px-3"
+          onClick={() => {
+            setQuestions(null);
+            setActiveAssignment(null);
+          }}
+          className="btn-tactile btn-paper text-xs py-2 px-3 shrink-0"
         >
-          Đổi cấu hình
+          {activeAssignment ? 'Về danh sách' : 'Đổi cấu hình'}
         </button>
       </div>
+
+      {verifyRetryNotice && (
+        <div className="p-3 rounded-xl bg-[#FFF4D6] border-2 border-[#E0A93B] text-xs font-semibold text-[#8A5108]">
+          {verifyRetryNotice}
+        </div>
+      )}
 
       {!finished && currentQ ? (
         <>
           <div className="flex gap-1.5">
             {questions.map((q, i) => (
               <div
-                key={q.id}
+                key={`${q.id}-${i}`}
                 className={`h-2.5 flex-1 rounded-full ${
                   i < qIdx ? 'bg-[#2E9C8A]' : i === qIdx ? 'bg-[#E0A93B]' : 'bg-[#F7E7B8]'
                 }`}
@@ -233,7 +386,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
           </div>
           <QuestionCard
             question={currentQ}
-            initialMode={sessionMode}
+            initialMode={effectiveInitialMode}
             helpAfterWrong={settings.helpAfterWrong}
             onComplete={handleComplete}
             onPause={() => setQuestions(null)}
