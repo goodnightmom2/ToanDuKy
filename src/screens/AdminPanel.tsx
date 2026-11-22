@@ -40,6 +40,15 @@ import {
   dataService,
   generateId,
 } from '../services/dataService.ts';
+import {
+  DEFAULT_BULK_STUDENT_PASSWORD,
+  downloadStudentTemplateXlsx,
+  exportStudentAccountsXlsx,
+  generateStudentUsername,
+  parseStudentExcelFile,
+  type BulkCreatedStudentRow,
+  type BulkStudentDraftRow,
+} from '../services/studentExcel.ts';
 import type {
   QuestionItem,
   ReviewStatus,
@@ -110,11 +119,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [teacherPassword, setTeacherPassword] = React.useState('');
   const [creatingTeacher, setCreatingTeacher] = React.useState(false);
   const [showCreateStudent, setShowCreateStudent] = React.useState(false);
+  const [studentProvisionMode, setStudentProvisionMode] = React.useState<'single' | 'bulk_excel'>('bulk_excel');
   const [stuDisplayName, setStuDisplayName] = React.useState('');
   const [stuUsername, setStuUsername] = React.useState('');
-  const [stuPassword, setStuPassword] = React.useState('');
+  const [stuPassword, setStuPassword] = React.useState(DEFAULT_BULK_STUDENT_PASSWORD);
   const [stuClassId, setStuClassId] = React.useState<string>(() => classes[0]?.id ?? '');
   const [creatingStudent, setCreatingStudent] = React.useState(false);
+  const [bulkDraftRows, setBulkDraftRows] = React.useState<BulkStudentDraftRow[]>([]);
+  const [bulkParsing, setBulkParsing] = React.useState(false);
+  const [bulkCreating, setBulkCreating] = React.useState(false);
+  const [bulkError, setBulkError] = React.useState('');
+  const [lastBulkCreated, setLastBulkCreated] = React.useState<BulkCreatedStudentRow[]>([]);
+  const [issuedPassByUid, setIssuedPassByUid] = React.useState<Record<string, string>>({});
   const [testAccMsg, setTestAccMsg] = React.useState('');
   const [resetTargetUid, setResetTargetUid] = React.useState<string | null>(null);
   const [resetNewPass, setResetNewPass] = React.useState('');
@@ -477,6 +493,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  const targetCls =
+                    userClassFilter !== 'ALL'
+                      ? classes.find((c) => c.id === userClassFilter)
+                      : classes.find((c) => c.id === stuClassId) ?? classes[0];
+                  const classStudents = users.filter(
+                    (u) =>
+                      u.role === 'student' &&
+                      !u.isTestAccount &&
+                      (userClassFilter === 'ALL' ||
+                        u.classId === userClassFilter ||
+                        u.classCode === targetCls?.code),
+                  );
+                  const exportRows: BulkCreatedStudentRow[] = classStudents.map((u, idx) => ({
+                    stt: idx + 1,
+                    studentCode: u.studentCode,
+                    displayName: u.displayName,
+                    className: classNameById.get(u.classId ?? '') ?? u.classCode,
+                    classCode: u.classCode,
+                    username: u.username,
+                    password:
+                      issuedPassByUid[u.uid] ?? `${DEFAULT_BULK_STUDENT_PASSWORD} (mặc định nếu chưa đổi)`,
+                    status: 'created',
+                  }));
+                  if (exportRows.length === 0) {
+                    setTestAccMsg('Chưa có học sinh nào trong bộ lọc lớp hiện tại để xuất Excel.');
+                    return;
+                  }
+                  exportStudentAccountsXlsx(
+                    exportRows,
+                    targetCls?.name ?? 'Tat_ca_lop',
+                    targetCls?.code ?? 'TOAN10',
+                  );
+                }}
+                className="btn-tactile btn-gold text-xs py-2 px-3"
+              >
+                <Download className="w-4 h-4" /> Xuất Excel tài khoản (.xlsx)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   const csv = [
                     'studentCode,username,displayName,role,classCode,xp,isTestAccount,locked',
                     ...users.map(
@@ -495,7 +551,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
           {showCreateStudent && (
             <div className="p-4 rounded-2xl bg-[#FFF4D6] border-2 border-[#E0A93B] space-y-3">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-display text-base font-extrabold text-[#14284A]">
                   Cấp tài khoản Học sinh &amp; đưa trực tiếp vào lớp bạn quản lý
                 </h3>
@@ -520,79 +576,376 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <Plus className="w-3.5 h-3.5" /> Đi tới tạo lớp ngay
                   </button>
                 </div>
-              ) : (
-                <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                    <select
-                      value={stuClassId}
-                      onChange={(e) => setStuClassId(e.target.value)}
-                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-bold text-[#14284A]"
-                    >
-                      {classes.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          Lớp {c.name} ({c.code})
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      value={stuDisplayName}
-                      onChange={(e) => setStuDisplayName(e.target.value)}
-                      placeholder="Tên/Biệt danh HS (vd: Minh Anh 10A1)"
-                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
-                    />
-                    <input
-                      type="text"
-                      value={stuUsername}
-                      onChange={(e) => setStuUsername(e.target.value)}
-                      placeholder="Tên đăng nhập (vd: hs_minhanh)"
-                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
-                    />
-                    <input
-                      type="password"
-                      value={stuPassword}
-                      onChange={(e) => setStuPassword(e.target.value)}
-                      placeholder="Mật khẩu cấp cho HS (≥ 8 ký tự)"
-                      className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
-                    />
+              ) : (() => {
+                const selectedCls = classes.find((c) => c.id === stuClassId) ?? classes[0];
+                return (
+                  <div className="space-y-3">
+                    {/* Sub-mode switcher: Bulk Excel vs Single */}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="inline-flex rounded-xl bg-white p-1 border border-[#D5B87E] gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setStudentProvisionMode('bulk_excel')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition ${
+                            studentProvisionMode === 'bulk_excel'
+                              ? 'bg-[#14284A] text-[#FFFBF0]'
+                              : 'text-[#14284A] hover:bg-[#FFF4D6]'
+                          }`}
+                        >
+                          Cấp hàng loạt từ Excel (.xlsx)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setStudentProvisionMode('single')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition ${
+                            studentProvisionMode === 'single'
+                              ? 'bg-[#14284A] text-[#FFFBF0]'
+                              : 'text-[#14284A] hover:bg-[#FFF4D6]'
+                          }`}
+                        >
+                          Cấp từng học sinh
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="font-bold text-[#14284A]">Lớp nhận học sinh:</span>
+                        <select
+                          value={selectedCls.id}
+                          onChange={(e) => {
+                            const nextClsId = e.target.value;
+                            setStuClassId(nextClsId);
+                            const nextCls = classes.find((c) => c.id === nextClsId);
+                            if (nextCls && bulkDraftRows.length > 0) {
+                              const taken = new Set(users.map((u) => u.username.toLowerCase()));
+                              setBulkDraftRows((prev) =>
+                                prev.map((r) => ({
+                                  ...r,
+                                  classId: nextCls.id,
+                                  className: nextCls.name,
+                                  classCode: nextCls.code,
+                                  username: generateStudentUsername(r.displayName, nextCls.code, taken),
+                                })),
+                              );
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                        >
+                          {classes.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              Lớp {c.name} ({c.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {studentProvisionMode === 'bulk_excel' ? (
+                      <div className="p-3.5 rounded-2xl bg-white border border-[#D9C293] space-y-3 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <p className="font-extrabold text-[#14284A]">
+                              Nhập file Excel danh sách học sinh Lớp {selectedCls.name} (Mã lớp: {selectedCls.code})
+                            </p>
+                            <p className="text-[11px] text-[#5B6B82]">
+                              Tự động tạo tên đăng nhập theo <strong>Tên HS + Mã lớp</strong>, mật khẩu mặc định{' '}
+                              <strong className="text-[#1F7A6B]">{DEFAULT_BULK_STUDENT_PASSWORD}</strong> (hỗ trợ cả file mẫu và file xuất từ vnEdu/SMAS có cột Họ đệm + Tên).
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => downloadStudentTemplateXlsx(selectedCls.name, selectedCls.code)}
+                              className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                            >
+                              <Download className="w-3.5 h-3.5" /> Tải file Excel mẫu (.xlsx)
+                            </button>
+                            <label className="btn-tactile btn-jade text-xs py-1.5 px-3 cursor-pointer">
+                              <FileUp className="w-3.5 h-3.5" />
+                              {bulkParsing ? 'Đang đọc file...' : 'Chọn file Excel (.xlsx/.csv)'}
+                              <input
+                                type="file"
+                                accept=".xlsx,.xls,.csv"
+                                className="hidden"
+                                onChange={async (e) => {
+                                  const file = e.target.files?.[0];
+                                  e.target.value = '';
+                                  if (!file) return;
+                                  setBulkParsing(true);
+                                  setBulkError('');
+                                  const parsed = await parseStudentExcelFile(
+                                    file,
+                                    selectedCls,
+                                    users.map((u) => u.username),
+                                  );
+                                  setBulkParsing(false);
+                                  if (parsed.error) {
+                                    setBulkError(parsed.error);
+                                    setBulkDraftRows([]);
+                                  } else {
+                                    setBulkDraftRows(parsed.rows);
+                                  }
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+
+                        {bulkError && (
+                          <p className="p-2.5 rounded-xl bg-[#FCE8E6] border border-[#C8392B] text-[#99261B] font-semibold">
+                            {bulkError}
+                          </p>
+                        )}
+
+                        {bulkDraftRows.length > 0 && (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-extrabold text-[#1F7A6B]">
+                                Xem trước {bulkDraftRows.length} học sinh sẵn sàng cấp vào Lớp {selectedCls.name} ({selectedCls.code}):
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setBulkDraftRows([])}
+                                className="text-[11px] font-bold text-[#B24A16] underline"
+                              >
+                                Xóa danh sách xem trước
+                              </button>
+                            </div>
+                            <div className="max-h-56 overflow-y-auto rounded-xl border border-[#E5D3A8]">
+                              <table className="w-full text-left text-xs border-collapse">
+                                <thead className="bg-[#FFF8E6] sticky top-0">
+                                  <tr className="border-b border-[#D5B87E] text-[#5B6B82]">
+                                    <th className="py-1.5 px-2">STT</th>
+                                    <th className="py-1.5 px-2">Họ và tên học sinh</th>
+                                    <th className="py-1.5 px-2">Tên đăng nhập (tự tạo)</th>
+                                    <th className="py-1.5 px-2">Mật khẩu</th>
+                                    <th className="py-1.5 px-2 text-right">Bỏ</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-[#EFE3C4]">
+                                  {bulkDraftRows.map((row, idx) => (
+                                    <tr key={`${row.stt}-${idx}`}>
+                                      <td className="py-1.5 px-2 font-bold tabular-nums">{idx + 1}</td>
+                                      <td className="py-1.5 px-2 font-semibold text-[#14284A]">
+                                        <input
+                                          type="text"
+                                          value={row.displayName}
+                                          onChange={(e) =>
+                                            setBulkDraftRows((prev) =>
+                                              prev.map((r, i) =>
+                                                i === idx ? {...r, displayName: e.target.value} : r,
+                                              ),
+                                            )
+                                          }
+                                          className="w-full px-2 py-1 rounded border border-[#E5D3A8] text-xs font-semibold"
+                                        />
+                                      </td>
+                                      <td className="py-1.5 px-2">
+                                        <input
+                                          type="text"
+                                          value={row.username}
+                                          onChange={(e) =>
+                                            setBulkDraftRows((prev) =>
+                                              prev.map((r, i) =>
+                                                i === idx
+                                                  ? {...r, username: e.target.value.trim().toLowerCase()}
+                                                  : r,
+                                              ),
+                                            )
+                                          }
+                                          className="w-full px-2 py-1 rounded border border-[#E5D3A8] font-mono text-xs text-[#1F7A6B]"
+                                        />
+                                      </td>
+                                      <td className="py-1.5 px-2 font-mono font-bold text-[#14284A]">
+                                        {row.password}
+                                      </td>
+                                      <td className="py-1.5 px-2 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setBulkDraftRows((prev) => prev.filter((_, i) => i !== idx))
+                                          }
+                                          className="text-[#B24A16] hover:underline font-bold"
+                                        >
+                                          ×
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={bulkCreating}
+                                onClick={async () => {
+                                  setBulkCreating(true);
+                                  setBulkError('');
+                                  const res = await dataService.staffBulkCreateStudents(user, {
+                                    classId: selectedCls.id,
+                                    students: bulkDraftRows.map((r) => ({
+                                      displayName: r.displayName,
+                                      username: r.username,
+                                      password: r.password,
+                                    })),
+                                  });
+                                  setBulkCreating(false);
+                                  if (!res.ok) {
+                                    setBulkError(res.error ?? 'Chưa thể cấp tài khoản hàng loạt.');
+                                    return;
+                                  }
+                                  const createdMap: Record<string, string> = {};
+                                  for (const item of res.results) {
+                                    if (item.status === 'created' && item.uid) {
+                                      createdMap[item.uid] = item.password;
+                                    }
+                                  }
+                                  setIssuedPassByUid((prev) => ({...prev, ...createdMap}));
+                                  setLastBulkCreated(res.results);
+                                  setBulkDraftRows([]);
+                                  setTestAccMsg(
+                                    `Đã cấp thành công ${res.createdCount}/${res.results.length} tài khoản học sinh vào Lớp ${selectedCls.name} (${selectedCls.code})${res.failedCount > 0 ? ` · ${res.failedCount} dòng lỗi` : ''}. Bấm "Xuất bảng Excel tài khoản & mật khẩu" bên dưới để lưu gửi lớp!`,
+                                  );
+                                  refresh();
+                                }}
+                                className="btn-tactile btn-jade text-xs py-2 px-4"
+                              >
+                                <UserPlus className="w-4 h-4" />
+                                {bulkCreating
+                                  ? `Đang cấp ${bulkDraftRows.length} tài khoản lên máy chủ...`
+                                  : `Xác nhận cấp hàng loạt (${bulkDraftRows.length} học sinh)`}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {lastBulkCreated.length > 0 && (
+                          <div className="p-3 rounded-xl bg-[#E6F6F3] border-2 border-[#2E9C8A] space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-extrabold text-[#145B4F]">
+                                Kết quả vừa cấp: {lastBulkCreated.filter((r) => r.status === 'created').length}/{lastBulkCreated.length} tài khoản thành công
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  exportStudentAccountsXlsx(
+                                    lastBulkCreated,
+                                    lastBulkCreated[0]?.className ?? selectedCls.name,
+                                    lastBulkCreated[0]?.classCode ?? selectedCls.code,
+                                  )
+                                }
+                                className="btn-tactile btn-gold text-xs py-1.5 px-3"
+                              >
+                                <Download className="w-3.5 h-3.5" /> Xuất bảng Excel tài khoản &amp; mật khẩu (.xlsx)
+                              </button>
+                            </div>
+                            <div className="max-h-40 overflow-y-auto bg-white rounded-lg border border-[#9CD5CA]">
+                              <table className="w-full text-left text-[11px] border-collapse">
+                                <thead className="bg-[#F0FAF8] sticky top-0">
+                                  <tr className="border-b border-[#9CD5CA] text-[#145B4F]">
+                                    <th className="py-1 px-2">STT</th>
+                                    <th className="py-1 px-2">Họ tên</th>
+                                    <th className="py-1 px-2">Tên đăng nhập</th>
+                                    <th className="py-1 px-2">Mật khẩu</th>
+                                    <th className="py-1 px-2">Kết quả</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-[#E2F2EE]">
+                                  {lastBulkCreated.map((r) => (
+                                    <tr key={`${r.stt}-${r.username}`}>
+                                      <td className="py-1 px-2 tabular-nums">{r.stt}</td>
+                                      <td className="py-1 px-2 font-semibold">{r.displayName}</td>
+                                      <td className="py-1 px-2 font-mono font-bold text-[#14284A]">{r.username}</td>
+                                      <td className="py-1 px-2 font-mono">{r.password}</td>
+                                      <td className="py-1 px-2 font-bold">
+                                        {r.status === 'created' ? (
+                                          <span className="text-[#1F7A6B]">Đã cấp ✓</span>
+                                        ) : (
+                                          <span className="text-[#B24A16]">{r.error ?? 'Lỗi'}</span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input
+                            type="text"
+                            value={stuDisplayName}
+                            onChange={(e) => {
+                              const nextVal = e.target.value;
+                              setStuDisplayName(nextVal);
+                              if (nextVal.trim().length >= 2) {
+                                const taken = new Set(users.map((u) => u.username.toLowerCase()));
+                                setStuUsername(generateStudentUsername(nextVal, selectedCls.code, taken));
+                              }
+                            }}
+                            placeholder="Họ và tên học sinh (vd: Nguyễn Văn An)"
+                            className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={stuUsername}
+                            onChange={(e) => setStuUsername(e.target.value)}
+                            placeholder="Tên đăng nhập (tự tạo theo tên + mã lớp)"
+                            className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-mono"
+                          />
+                          <input
+                            type="text"
+                            value={stuPassword}
+                            onChange={(e) => setStuPassword(e.target.value)}
+                            placeholder={`Mật khẩu mặc định ${DEFAULT_BULK_STUDENT_PASSWORD}`}
+                            className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs font-mono"
+                          />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={creatingStudent}
+                            onClick={async () => {
+                              setCreatingStudent(true);
+                              const chosenPass = stuPassword.trim() || DEFAULT_BULK_STUDENT_PASSWORD;
+                              const res = await dataService.staffCreateStudent(user, {
+                                displayName: stuDisplayName,
+                                username: stuUsername,
+                                password: chosenPass,
+                                classId: selectedCls.id,
+                              });
+                              setCreatingStudent(false);
+                              if (res.ok && res.user) {
+                                setIssuedPassByUid((prev) => ({...prev, [res.user!.uid]: chosenPass}));
+                                const clsName = classNameById.get(res.user.classId ?? '') ?? res.user.classCode;
+                                setTestAccMsg(
+                                  `Đã cấp tài khoản cho "${res.user.displayName}" vào Lớp ${clsName} — Tên đăng nhập: ${res.user.username} | Mật khẩu: ${chosenPass}`,
+                                );
+                                setStuDisplayName('');
+                                setStuUsername('');
+                                setStuPassword(DEFAULT_BULK_STUDENT_PASSWORD);
+                                refresh();
+                              } else {
+                                setTestAccMsg(res.error ?? 'Không thể cấp tài khoản học sinh.');
+                              }
+                            }}
+                            className="btn-tactile btn-jade text-xs py-2 px-4"
+                          >
+                            {creatingStudent ? 'Đang tạo...' : 'Xác nhận cấp tài khoản'}
+                          </button>
+                          <span className="text-[11px] text-[#5C3A06]">
+                            Tự động gợi ý tên đăng nhập theo Tên + Mã lớp và đặt mật khẩu mặc định <strong>{DEFAULT_BULK_STUDENT_PASSWORD}</strong>.
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={creatingStudent}
-                      onClick={async () => {
-                        setCreatingStudent(true);
-                        const chosenPass = stuPassword;
-                        const res = await dataService.staffCreateStudent(user, {
-                          displayName: stuDisplayName,
-                          username: stuUsername,
-                          password: chosenPass,
-                          classId: stuClassId || classes[0].id,
-                        });
-                        setCreatingStudent(false);
-                        if (res.ok && res.user) {
-                          const clsName = classNameById.get(res.user.classId ?? '') ?? res.user.classCode;
-                          setTestAccMsg(
-                            `Đã cấp tài khoản cho "${res.user.displayName}" vào Lớp ${clsName} — Tên đăng nhập: ${res.user.username} | Mật khẩu: ${chosenPass}`,
-                          );
-                          setStuDisplayName('');
-                          setStuUsername('');
-                          setStuPassword('');
-                          refresh();
-                        } else {
-                          setTestAccMsg(res.error ?? 'Không thể cấp tài khoản học sinh.');
-                        }
-                      }}
-                      className="btn-tactile btn-jade text-xs py-2 px-4"
-                    >
-                      {creatingStudent ? 'Đang tạo...' : 'Xác nhận cấp tài khoản'}
-                    </button>
-                    <span className="text-[11px] text-[#5C3A06]">
-                      Học sinh được thêm thẳng vào lớp đã chọn và xuất hiện ngay trên Bản đồ lớp của bạn.
-                    </span>
-                  </div>
-                </>
-              )}
+                );
+              })()}
             </div>
           )}
 

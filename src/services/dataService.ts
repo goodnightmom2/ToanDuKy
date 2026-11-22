@@ -3503,6 +3503,232 @@ export class DataService {
     return {ok: true, user: studentUser};
   }
 
+  async staffBulkCreateStudents(
+    actor: UserAccount,
+    params: {
+      classId: string;
+      students: Array<{displayName: string; username: string; password: string}>;
+    },
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    createdCount: number;
+    failedCount: number;
+    results: Array<{
+      stt: number;
+      studentCode: string;
+      displayName: string;
+      className: string;
+      classCode: string;
+      username: string;
+      password: string;
+      status: 'created' | 'failed';
+      error?: string;
+      uid?: string;
+    }>;
+  }> {
+    if (!canAccessAdmin(actor)) {
+      return {
+        ok: false,
+        error: 'Chỉ Quản trị viên hoặc Giáo viên mới có quyền cấp tài khoản hàng loạt.',
+        createdCount: 0,
+        failedCount: params.students.length,
+        results: [],
+      };
+    }
+
+    const cls = this.db.classes.find((c) => c.id === params.classId);
+    if (!cls) {
+      return {
+        ok: false,
+        error: 'Không tìm thấy lớp học đã chọn.',
+        createdCount: 0,
+        failedCount: params.students.length,
+        results: [],
+      };
+    }
+    if (actor.role === 'teacher' && !this.isManagedByTeacher(actor, cls.id, cls.teacherUid)) {
+      return {
+        ok: false,
+        error: 'Giáo viên chỉ được cấp học sinh vào các lớp mình phụ trách.',
+        createdCount: 0,
+        failedCount: params.students.length,
+        results: [],
+      };
+    }
+
+    const initialProfile = {
+      avatar: {...DEFAULT_AVATAR},
+      skills: createInitialSkills(),
+      inventory: {
+        outfits: ['hoc_vien'],
+        tools: ['tool_ruler', 'tool_protractor'],
+        heroCards: [],
+        landmarkCards: [],
+        skillCards: ['sk_angle_sum'],
+        upgradeShards: 0,
+        openedChests: [],
+      },
+      stations: createInitialStations(),
+      journey: createInitialJourneyProgress(),
+      preferences: {
+        audioEnabled: this.db.settings.audioDefaultOn,
+        reduceMotion: false,
+        easyMove: false,
+      },
+    };
+
+    // 1. Supabase mode: use dedicated server API (Auth Admin API -> zero public signup rate limits)
+    if (this.isSupabaseConfigured() && this.supabase && this.isOnline) {
+      try {
+        const token = await this.getAccessToken();
+        const resp = await fetch('/api/admin/bulk-create-students', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? {Authorization: `Bearer ${token}`} : {}),
+          },
+          body: JSON.stringify({
+            classId: cls.id,
+            students: params.students,
+            initialProfile,
+          }),
+        });
+        const data = (await resp.json()) as {
+          ok?: boolean;
+          error?: string;
+          createdCount?: number;
+          failedCount?: number;
+          results?: Array<{
+            stt: number;
+            studentCode: string;
+            displayName: string;
+            className: string;
+            classCode: string;
+            username: string;
+            password: string;
+            status: 'created' | 'failed';
+            error?: string;
+            userRow?: Record<string, unknown>;
+          }>;
+        };
+
+        if (!resp.ok || !data.ok || !Array.isArray(data.results)) {
+          return {
+            ok: false,
+            error: data.error ?? 'Không thể cấp tài khoản hàng loạt trên máy chủ.',
+            createdCount: 0,
+            failedCount: params.students.length,
+            results: [],
+          };
+        }
+
+        const newUsers: UserAccount[] = [];
+        const cleanResults = data.results.map((r) => {
+          let uid: string | undefined;
+          if (r.status === 'created' && r.userRow) {
+            const mapped = rowToUser(r.userRow);
+            if (mapped.uid) {
+              uid = mapped.uid;
+              newUsers.push(mapped);
+            }
+          }
+          return {
+            stt: r.stt,
+            studentCode: r.studentCode,
+            displayName: r.displayName,
+            className: r.className,
+            classCode: r.classCode,
+            username: r.username,
+            password: r.password,
+            status: r.status,
+            error: r.error,
+            uid,
+          };
+        });
+
+        if (newUsers.length > 0) {
+          const newUidSet = new Set(newUsers.map((u) => u.uid));
+          this.save({
+            ...this.db,
+            users: [...this.db.users.filter((u) => !newUidSet.has(u.uid)), ...newUsers],
+          });
+        }
+
+        return {
+          ok: true,
+          createdCount: data.createdCount ?? newUsers.length,
+          failedCount: data.failedCount ?? 0,
+          results: cleanResults,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `Lỗi kết nối máy chủ khi cấp hàng loạt: ${err instanceof Error ? err.message : 'Lỗi mạng'}.`,
+          createdCount: 0,
+          failedCount: params.students.length,
+          results: [],
+        };
+      }
+    }
+
+    // 2. LocalAdapter fallback (offline / local mode)
+    const results: Array<{
+      stt: number;
+      studentCode: string;
+      displayName: string;
+      className: string;
+      classCode: string;
+      username: string;
+      password: string;
+      status: 'created' | 'failed';
+      error?: string;
+      uid?: string;
+    }> = [];
+    let createdCount = 0;
+    for (let i = 0; i < params.students.length; i++) {
+      const s = params.students[i];
+      const res = await this.staffCreateStudent(actor, {
+        displayName: s.displayName,
+        username: s.username,
+        password: s.password,
+        classId: cls.id,
+      });
+      if (res.ok && res.user) {
+        createdCount += 1;
+        results.push({
+          stt: i + 1,
+          studentCode: res.user.studentCode,
+          displayName: res.user.displayName,
+          className: cls.name,
+          classCode: cls.code,
+          username: res.user.username,
+          password: s.password,
+          status: 'created',
+          uid: res.user.uid,
+        });
+      } else {
+        results.push({
+          stt: i + 1,
+          studentCode: '',
+          displayName: s.displayName,
+          className: cls.name,
+          classCode: cls.code,
+          username: s.username,
+          password: s.password,
+          status: 'failed',
+          error: res.error ?? 'Chưa tạo được',
+        });
+      }
+    }
+    return {
+      ok: true,
+      createdCount,
+      failedCount: results.length - createdCount,
+      results,
+    };
+  }
+
   adminSetUserRole(actor: UserAccount, targetUid: string, role: UserRole): boolean {
     if (!canEditSettingsOrUsers(actor)) return false;
     this.updateUser(targetUid, (u) => ({...u, role}), {adminFullSync: true});
