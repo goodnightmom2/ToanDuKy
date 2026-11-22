@@ -8,7 +8,6 @@ import {
   Flag,
   Map as MapIcon,
   Swords,
-  Volume2,
 } from 'lucide-react';
 import {renderAvatarToCanvas} from '../components/Avatar.tsx';
 import {BOSSES, STATIONS_BY_ID} from '../config.ts';
@@ -16,7 +15,6 @@ import {JOURNEY_MILESTONES_BY_ID} from '../journey.ts';
 import {dataService} from '../services/dataService.ts';
 import type {AvatarFrame, AvatarView, MocId, StationId, UserAccount} from '../types.ts';
 import {soundEngine} from '../utils/audio.ts';
-import {speakVietnamese} from '../utils/speech.ts';
 
 interface StationSceneProps {
   user: UserAccount;
@@ -186,7 +184,6 @@ export const StationScene: React.FC<StationSceneProps> = ({
     if (nearbySpot.id === 'NPC') {
       const line = `Mẹo từ ${sceneTheme.npcTitle}: Em có thể đi vòng phía dưới Cổng Toán hoặc giải câu hỏi nhanh để mở cổng. Sai không bao giờ bị trừ điểm!`;
       setNpcDialogue(line);
-      speakVietnamese(line);
     } else if (nearbySpot.id === 'A' || nearbySpot.id === 'B') {
       onStartMission();
     } else if (nearbySpot.id === 'BOSS') {
@@ -490,14 +487,6 @@ export const StationScene: React.FC<StationSceneProps> = ({
         <div className="lg:col-span-7 notebook-card p-3.5 space-y-3">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm text-[#14284A] leading-relaxed font-medium">{npcDialogue}</p>
-            <button
-              type="button"
-              onClick={() => speakVietnamese(npcDialogue)}
-              className="shrink-0 p-2 rounded-xl bg-[#FFF4D6] border border-[#D5B87E] text-[#14284A]"
-              aria-label="Nghe đọc lời hướng dẫn"
-            >
-              <Volume2 className="w-4 h-4" />
-            </button>
           </div>
 
           <div className="flex flex-wrap gap-2">

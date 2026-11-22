@@ -5,12 +5,10 @@ import {
   Lightbulb,
   MessageSquareWarning,
   Pause,
-  Volume2,
 } from 'lucide-react';
 import {gradeQuestion, shouldOfferHelp} from '../math/grader.ts';
 import type {GradeResult, QuestionItem, QuestionMode} from '../types.ts';
 import {soundEngine} from '../utils/audio.ts';
-import {speakVietnamese} from '../utils/speech.ts';
 import {MathText} from './MathText.tsx';
 import {TriangleDiagram} from './TriangleDiagram.tsx';
 
@@ -256,7 +254,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
 
   return (
     <div className="notebook-card p-4 sm:p-5 space-y-4">
-      {/* Top metadata row: Mode + TEST status + TTS */}
+      {/* Top metadata row: Mode + TEST status */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#E5D3A8]">
         <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
           <span
@@ -275,20 +273,10 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           )}
           {question.review_status === 'pending_teacher_review' && (
             <span className="px-2 py-1 rounded-md bg-[#FFF3DB] text-[#8A5108] border border-[#D98A1F]">
-              TEST · Chờ giáo viên duyệt
+              TEST · Chờ Admin duyệt
             </span>
           )}
         </div>
-
-        <button
-          type="button"
-          onClick={() => speakVietnamese(question.stem_vi)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FFF4D6] border border-[#D5B87E] text-[#14284A] text-xs font-bold !min-h-[38px]"
-          aria-label="Nghe đọc đề bài bằng tiếng Việt"
-        >
-          <Volume2 className="w-4 h-4 text-[#2E9C8A]" />
-          Nghe đọc
-        </button>
       </div>
 
       {/* Explicit allowed-tools rule strip distinguishing Practice vs Verify */}
