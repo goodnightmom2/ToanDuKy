@@ -1,8 +1,10 @@
 import {GoogleGenAI} from '@google/genai';
 
 export const AI_MODEL = 'gemini-3.1-flash-lite';
+export const AI_HARD_PAGE_MODEL = 'gemini-2.5-pro';
 export const AI_FALLBACK_MODEL = 'gemini-4-hydrogen';
 export const DAILY_QUOTA_DEFAULT = 50;
+export const PROMPT_VERSION = 'v2.0';
 
 let quotaDate = new Date().toISOString().slice(0, 10);
 let dailyUsed = 0;
@@ -57,6 +59,11 @@ export function checkAndConsumeQuota(maxDaily?: number): {
   }
   dailyUsed += 1;
   return {ok: true, used: dailyUsed, limit, date: quotaDate};
+}
+
+export function refundQuota(): {used: number; date: string} {
+  if (dailyUsed > 0) dailyUsed -= 1;
+  return {used: dailyUsed, date: quotaDate};
 }
 
 export function getGenAIClient(): GoogleGenAI | null {

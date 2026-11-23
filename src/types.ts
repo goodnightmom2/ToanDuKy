@@ -229,6 +229,73 @@ export interface MathVerificationParams {
   target?: 'a' | 'b' | 'c';
 }
 
+export type QuestionFlag =
+  | 'formula_uncertain'
+  | 'figure_missing'
+  | 'cut_off_at_page_end'
+  | 'cut_off_at_page_start'
+  | 'no_image'
+  | 'out_of_chapter'
+  | 'answer_mismatch'
+  | 'unverifiable_by_code'
+  | 'missing_answer'
+  | 'proposed_new_pattern';
+
+export type VerifiedByCodeStatus = 'pass' | 'fail' | 'n/a';
+
+export interface FigureBBox {
+  page: number;
+  x: number; // 0..1 normalized
+  y: number; // 0..1 normalized
+  w: number; // 0..1 normalized
+  h: number; // 0..1 normalized
+}
+
+export interface FigureSpec {
+  vertices?: [string, string, string];
+  sides?: {a?: number; b?: number; c?: number; AB?: string; BC?: string; AC?: string};
+  angles?: {A?: number; B?: number; C?: number};
+  labels?: Record<string, string>;
+  description?: string;
+}
+
+export interface StructuredGivens {
+  a?: number;
+  b?: number;
+  c?: number;
+  A_deg?: number;
+  B_deg?: number;
+  C_deg?: number;
+  R?: number;
+  r?: number;
+  S?: number;
+  d?: number;
+  alpha_deg?: number;
+  beta_deg?: number;
+  trig_fn?: 'sin' | 'cos' | 'tan' | 'cot';
+  trig_value?: number;
+  quadrant?: 'acute' | 'obtuse';
+  target?: string;
+  unit?: string;
+  decimal_places?: number;
+  v1?: number;
+  v2?: number;
+  t?: number;
+  value?: number;
+  fromUnit?: string;
+  toUnit?: string;
+}
+
+export interface SourceRefMeta {
+  file_name: string;
+  file_sha256?: string;
+  drive_file_id?: string;
+  page_pdf?: number;
+  page_print?: string;
+  question_number?: string;
+  part?: 'I' | 'II' | 'III' | null;
+}
+
 export interface QuestionItem {
   id: string;
   stationId?: StationId;
@@ -310,6 +377,26 @@ export interface QuestionItem {
   ai_reason?: string;
   math_params?: MathVerificationParams;
   code_verification?: CodeVerificationResult;
+  // Extended PDF import pipeline & taxonomy metadata (100% backward-compatible)
+  pattern_id?: string | null;
+  proposed_pattern?: string;
+  source_pattern_label?: string;
+  source_ref?: SourceRefMeta;
+  part?: 'I' | 'II' | 'III' | null;
+  question_number?: string;
+  needs_figure?: boolean;
+  figure_spec?: FigureSpec;
+  figure_bbox?: FigureBBox;
+  figure_crop?: string; // Private compressed JPEG dataURL <= 150 KB, saved only when Admin opts in
+  figure_crop_private?: boolean;
+  givens?: StructuredGivens;
+  verified_by_code?: VerifiedByCodeStatus;
+  import_batch_id?: string;
+  fingerprint?: string;
+  flags?: QuestionFlag[];
+  suggested_stations?: MocId[];
+  approved_by?: string;
+  approved_at?: string;
 }
 
 export interface AttemptRecord {
@@ -422,6 +509,9 @@ export interface AppSettings {
   mapBackgroundDataUrl?: string;
   mapBackgroundHasBakedLabels?: boolean;
   mapPinOverrides?: Partial<Record<MocId, MapPinCoords>>;
+  aiModel?: string;
+  aiHardPageModel?: string;
+  autoApproveConfidenceThreshold?: number;
 }
 
 export interface BossDefinition {
@@ -471,6 +561,155 @@ export interface RemediationAssignment {
   createdAt: string;
   completedAt?: string;
 }
+
+export type TaxonomyTopic = SkillCluster | 'OUT';
+
+export interface TaxonomyPattern {
+  id: string;
+  topic: TaxonomyTopic;
+  name: string;
+  typical_levels: Array<1 | 2 | 3 | 4>;
+  suggested_mocs: MocId[];
+  has_solver: boolean;
+  solver_hint: string;
+  sort_order: number;
+  status: 'active' | 'proposed' | 'hidden';
+  proposed_by?: string;
+  proposed_by_uid?: string;
+  merged_into?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type PageSendMode = 'text_only' | 'image_and_text' | 'image_only';
+
+export type ImportPageStatus = 'pending' | 'read' | 'image_used' | 'extracted' | 'error';
+
+export interface ImportPageState {
+  pagePdf: number;
+  pagePrinted?: string;
+  status: ImportPageStatus;
+  sendMode: PageSendMode;
+  textLength: number;
+  mathGarbledReasons: string[];
+  hasFigureCue: boolean;
+  hasAnswerKeyCue: boolean;
+  errorMessage?: string;
+  questionCount?: number;
+  confidenceAvg?: number;
+  usedHardModel?: boolean;
+}
+
+export interface AnswerKeyEntry {
+  number: string;
+  part?: 'I' | 'II' | 'III' | null;
+  examCode?: string;
+  answer: string;
+  solution_vi?: string;
+  pagePdf?: number;
+}
+
+export type ClassificationMode = 'web_taxonomy' | 'document_patterns';
+
+export interface ImportBatchRecord {
+  id: string;
+  ownerUid: string;
+  ownerName: string;
+  fileName: string;
+  fileSha256: string;
+  driveFileId?: string;
+  totalPages: number;
+  startPage: number;
+  endPage: number;
+  classificationMode: ClassificationMode;
+  customPatternList?: string[];
+  status: 'pending' | 'reading' | 'extracting' | 'reviewing' | 'completed' | 'cancelled' | 'error';
+  aiCallsUsed: number;
+  pagesState: ImportPageState[];
+  extractedItems: QuestionItem[];
+  answerKeys: AnswerKeyEntry[];
+  patternMappings: Record<string, string>; // source_pattern_label -> taxonomy pattern_id
+  summary?: {
+    added?: number;
+    updated?: number;
+    skippedDuplicates?: number;
+    needsReview?: number;
+    outOfChapter?: number;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type MissionSlotRole = 'warmup' | 'main' | 'practice' | 'boss_hit' | 'transfer';
+export type MissionSlotMode = 'fixed' | 'random';
+export type MissionSetStatus = 'draft' | 'pending_admin_review' | 'published';
+
+export interface MissionSlotFilter {
+  clusters?: SkillCluster[];
+  patternIds?: string[];
+  minLevel?: 1 | 2 | 3 | 4;
+  maxLevel?: 1 | 2 | 3 | 4;
+  types?: QuestionType[];
+}
+
+export interface MissionSlot {
+  id: string;
+  role: MissionSlotRole;
+  label: string;
+  mode: MissionSlotMode;
+  count: number;
+  levelMin: 1 | 2 | 3 | 4;
+  levelMax: 1 | 2 | 3 | 4;
+  requiredToPass: boolean;
+  verifyMode: boolean;
+  fixedQuestionIds: string[];
+  filter?: MissionSlotFilter;
+}
+
+export interface MissionSetRecord {
+  id: string; // e.g. "ms_moc_1_ALL" or "ms_moc_1_<classId>"
+  mocId: MocId;
+  stationId: StationId;
+  classId: string; // 'ALL' or specific classId
+  status: MissionSetStatus;
+  version: number;
+  slots: MissionSlot[];
+  bossSlots: MissionSlot[];
+  notes: string;
+  createdBy: string;
+  createdByUid: string;
+  publishedBy?: string;
+  publishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MissionSetVersionRecord {
+  id: string;
+  missionSetId: string;
+  mocId: MocId;
+  stationId: StationId;
+  classId: string;
+  version: number;
+  slots: MissionSlot[];
+  bossSlots: MissionSlot[];
+  notes: string;
+  publishedBy: string;
+  publishedAt: string;
+}
+
+export interface AuditLogRecord {
+  id: string;
+  actorUid: string;
+  actorName: string;
+  actorRole: UserRole;
+  action: string;
+  entityType: 'question' | 'taxonomy' | 'import_batch' | 'mission_set';
+  entityId: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+
 
 export interface GradeResult {
   isCorrect: boolean;

@@ -20,6 +20,11 @@ import {
 } from '../journey.ts';
 import {ALL_INITIAL_QUESTIONS} from '../math/seedBank.ts';
 import {
+  computeQuestionFingerprint,
+  DEFAULT_TAXONOMY_PATTERNS,
+  findDuplicateMatch,
+} from '../math/taxonomy.ts';
+import {
   createEphemeralSupabaseClient,
   defaultSupabaseConfig,
   initSupabaseClient,
@@ -32,12 +37,16 @@ import type {
   AccountStatus,
   AppSettings,
   AttemptRecord,
+  AuditLogRecord,
   AvatarAppearance,
   BossId,
   ClassRoom,
+  ImportBatchRecord,
   JourneyProgress,
   LearningEvent,
   MapPinCoords,
+  MissionSetRecord,
+  MissionSetVersionRecord,
   MocId,
   PausedSession,
   QuestionItem,
@@ -52,6 +61,7 @@ import type {
   SurveyReportRecord,
   SyncResult,
   SyncStatus,
+  TaxonomyPattern,
   UserAccount,
   UserRole,
 } from '../types.ts';
@@ -859,6 +869,204 @@ function rowToRemediation(row: Record<string, unknown>): RemediationAssignment {
   };
 }
 
+function taxonomyToRow(t: TaxonomyPattern): Record<string, unknown> {
+  return {
+    id: t.id,
+    topic: t.topic,
+    name: t.name,
+    typical_levels: t.typical_levels,
+    suggested_mocs: t.suggested_mocs,
+    has_solver: Boolean(t.has_solver),
+    solver_hint: t.solver_hint ?? '',
+    sort_order: t.sort_order ?? 100,
+    status: t.status ?? 'active',
+    proposed_by: t.proposed_by ?? null,
+    proposed_by_uid: t.proposed_by_uid ?? null,
+    merged_into: t.merged_into ?? null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function rowToTaxonomy(row: Record<string, unknown>): TaxonomyPattern {
+  return {
+    id: String(row.id),
+    topic: String(row.topic) as TaxonomyPattern['topic'],
+    name: String(row.name),
+    typical_levels: Array.isArray(row.typical_levels)
+      ? (row.typical_levels.map(Number) as Array<1 | 2 | 3 | 4>)
+      : [1, 2],
+    suggested_mocs: Array.isArray(row.suggested_mocs) ? (row.suggested_mocs.map(Number) as MocId[]) : [],
+    has_solver: Boolean(row.has_solver),
+    solver_hint: String(row.solver_hint ?? ''),
+    sort_order: Number(row.sort_order ?? 100),
+    status: (row.status as TaxonomyPattern['status']) ?? 'active',
+    proposed_by: row.proposed_by ? String(row.proposed_by) : undefined,
+    proposed_by_uid: row.proposed_by_uid ? String(row.proposed_by_uid) : undefined,
+    merged_into: row.merged_into ? String(row.merged_into) : undefined,
+    created_at: row.created_at ? String(row.created_at) : undefined,
+    updated_at: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+function importBatchToRow(b: ImportBatchRecord): Record<string, unknown> {
+  // Never store large private crops or binary images inside import_batches
+  const cleanItems = (b.extractedItems ?? []).map((q) => {
+    const {figure_crop: _fc, ...rest} = q;
+    return rest;
+  });
+  return {
+    id: b.id,
+    owner_uid: b.ownerUid,
+    owner_name: b.ownerName,
+    file_name: b.fileName,
+    file_sha256: b.fileSha256,
+    drive_file_id: b.driveFileId ?? null,
+    total_pages: b.totalPages,
+    start_page: b.startPage,
+    end_page: b.endPage,
+    classification_mode: b.classificationMode,
+    status: b.status,
+    ai_calls_used: b.aiCallsUsed,
+    pages_state: b.pagesState ?? [],
+    extracted_items: cleanItems,
+    answer_keys: b.answerKeys ?? [],
+    pattern_mappings: b.patternMappings ?? {},
+    summary: b.summary ?? {},
+    created_at: b.createdAt,
+    updated_at: b.updatedAt,
+  };
+}
+
+function rowToImportBatch(row: Record<string, unknown>): ImportBatchRecord {
+  return {
+    id: String(row.id),
+    ownerUid: String(row.owner_uid),
+    ownerName: String(row.owner_name ?? ''),
+    fileName: String(row.file_name ?? ''),
+    fileSha256: String(row.file_sha256 ?? ''),
+    driveFileId: row.drive_file_id ? String(row.drive_file_id) : undefined,
+    totalPages: Number(row.total_pages ?? 0),
+    startPage: Number(row.start_page ?? 1),
+    endPage: Number(row.end_page ?? 1),
+    classificationMode: (row.classification_mode as ImportBatchRecord['classificationMode']) ?? 'web_taxonomy',
+    status: (row.status as ImportBatchRecord['status']) ?? 'pending',
+    aiCallsUsed: Number(row.ai_calls_used ?? 0),
+    pagesState: Array.isArray(row.pages_state) ? (row.pages_state as ImportBatchRecord['pagesState']) : [],
+    extractedItems: Array.isArray(row.extracted_items) ? (row.extracted_items as QuestionItem[]) : [],
+    answerKeys: Array.isArray(row.answer_keys) ? (row.answer_keys as ImportBatchRecord['answerKeys']) : [],
+    patternMappings:
+      row.pattern_mappings && typeof row.pattern_mappings === 'object'
+        ? (row.pattern_mappings as Record<string, string>)
+        : {},
+    summary:
+      row.summary && typeof row.summary === 'object'
+        ? (row.summary as ImportBatchRecord['summary'])
+        : undefined,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: String(row.updated_at ?? new Date().toISOString()),
+  };
+}
+
+function missionSetToRow(ms: MissionSetRecord): Record<string, unknown> {
+  return {
+    id: ms.id,
+    moc_id: ms.mocId,
+    station_id: ms.stationId,
+    class_id: ms.classId || 'ALL',
+    status: ms.status,
+    version: ms.version,
+    slots: ms.slots,
+    boss_slots: ms.bossSlots,
+    notes: ms.notes ?? '',
+    created_by: ms.createdBy,
+    created_by_uid: ms.createdByUid,
+    published_by: ms.publishedBy ?? null,
+    published_at: ms.publishedAt ?? null,
+    created_at: ms.createdAt,
+    updated_at: ms.updatedAt,
+  };
+}
+
+function rowToMissionSet(row: Record<string, unknown>): MissionSetRecord {
+  return {
+    id: String(row.id),
+    mocId: Number(row.moc_id) as MocId,
+    stationId: String(row.station_id) as StationId,
+    classId: String(row.class_id ?? 'ALL'),
+    status: (row.status as MissionSetRecord['status']) ?? 'draft',
+    version: Number(row.version ?? 1),
+    slots: Array.isArray(row.slots) ? (row.slots as MissionSetRecord['slots']) : [],
+    bossSlots: Array.isArray(row.boss_slots) ? (row.boss_slots as MissionSetRecord['bossSlots']) : [],
+    notes: String(row.notes ?? ''),
+    createdBy: String(row.created_by ?? ''),
+    createdByUid: String(row.created_by_uid ?? ''),
+    publishedBy: row.published_by ? String(row.published_by) : undefined,
+    publishedAt: row.published_at ? String(row.published_at) : undefined,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: String(row.updated_at ?? new Date().toISOString()),
+  };
+}
+
+function missionSetVersionToRow(v: MissionSetVersionRecord): Record<string, unknown> {
+  return {
+    id: v.id,
+    mission_set_id: v.missionSetId,
+    moc_id: v.mocId,
+    station_id: v.stationId,
+    class_id: v.classId || 'ALL',
+    version: v.version,
+    slots: v.slots,
+    boss_slots: v.bossSlots,
+    notes: v.notes ?? '',
+    published_by: v.publishedBy,
+    published_at: v.publishedAt,
+  };
+}
+
+function rowToMissionSetVersion(row: Record<string, unknown>): MissionSetVersionRecord {
+  return {
+    id: String(row.id),
+    missionSetId: String(row.mission_set_id),
+    mocId: Number(row.moc_id) as MocId,
+    stationId: String(row.station_id) as StationId,
+    classId: String(row.class_id ?? 'ALL'),
+    version: Number(row.version ?? 1),
+    slots: Array.isArray(row.slots) ? (row.slots as MissionSetVersionRecord['slots']) : [],
+    bossSlots: Array.isArray(row.boss_slots) ? (row.boss_slots as MissionSetVersionRecord['bossSlots']) : [],
+    notes: String(row.notes ?? ''),
+    publishedBy: String(row.published_by ?? ''),
+    publishedAt: String(row.published_at ?? new Date().toISOString()),
+  };
+}
+
+function auditLogToRow(log: AuditLogRecord): Record<string, unknown> {
+  return {
+    id: log.id,
+    actor_uid: log.actorUid,
+    actor_name: log.actorName,
+    actor_role: log.actorRole,
+    action: log.action,
+    entity_type: log.entityType,
+    entity_id: log.entityId,
+    detail: log.detail ?? {},
+    created_at: log.createdAt,
+  };
+}
+
+function rowToAuditLog(row: Record<string, unknown>): AuditLogRecord {
+  return {
+    id: String(row.id),
+    actorUid: String(row.actor_uid),
+    actorName: String(row.actor_name ?? ''),
+    actorRole: (row.actor_role as UserRole) ?? 'teacher',
+    action: String(row.action),
+    entityType: String(row.entity_type) as AuditLogRecord['entityType'],
+    entityId: String(row.entity_id),
+    detail: row.detail && typeof row.detail === 'object' ? (row.detail as Record<string, unknown>) : {},
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
 export interface StorageSchema {
   users: UserAccount[];
   currentUid: string | null;
@@ -869,6 +1077,11 @@ export interface StorageSchema {
   rebuttals: RebuttalRecord[];
   reports: SurveyReportRecord[];
   remediationAssignments?: RemediationAssignment[];
+  taxonomy?: TaxonomyPattern[];
+  importBatches?: ImportBatchRecord[];
+  missionSets?: MissionSetRecord[];
+  missionSetVersions?: MissionSetVersionRecord[];
+  auditLogs?: AuditLogRecord[];
   settings: AppSettings;
   syncedAttemptIds?: string[];
   syncedRebuttalIds?: string[];
@@ -913,6 +1126,11 @@ function createInitialDb(): StorageSchema {
     rebuttals: [],
     reports: [],
     remediationAssignments: [],
+    taxonomy: DEFAULT_TAXONOMY_PATTERNS.map((t) => ({...t})),
+    importBatches: [],
+    missionSets: [],
+    missionSetVersions: [],
+    auditLogs: [],
     settings: {...DEFAULT_SETTINGS},
     syncedAttemptIds: [],
     syncedRebuttalIds: [],
@@ -1378,6 +1596,60 @@ export class DataService {
         syncedRebuttalIds: remoteRebuttals.map((r) => r.id),
         syncedReportIds: remoteReports.map((r) => r.id),
       });
+
+      // 4. Extended collections: taxonomy, import_batches (staff), mission_sets (RLS-scoped), versions & audit_logs
+      try {
+        const [taxRes, msRes, batchRes, verRes, auditRes] = await Promise.all([
+          sb.from('taxonomy').select('*').order('sort_order', {ascending: true}),
+          sb.from('mission_sets').select('*').order('moc_id', {ascending: true}),
+          isStaff
+            ? sb.from('import_batches').select('*').order('updated_at', {ascending: false}).limit(30)
+            : Promise.resolve({data: null}),
+          isStaff
+            ? sb.from('mission_set_versions').select('*').order('published_at', {ascending: false}).limit(60)
+            : Promise.resolve({data: null}),
+          isStaff
+            ? sb.from('audit_logs').select('*').order('created_at', {ascending: false}).limit(100)
+            : Promise.resolve({data: null}),
+        ]);
+
+        const nextTaxonomy =
+          Array.isArray(taxRes.data) && taxRes.data.length > 0
+            ? taxRes.data.map((r) => rowToTaxonomy(r as Record<string, unknown>))
+            : this.db.taxonomy ?? DEFAULT_TAXONOMY_PATTERNS.map((t) => ({...t}));
+
+        const nextMissionSets = Array.isArray(msRes.data)
+          ? msRes.data.map((r) => rowToMissionSet(r as Record<string, unknown>))
+          : this.db.missionSets ?? [];
+
+        const nextBatches = isStaff
+          ? Array.isArray(batchRes.data)
+            ? mergeById(
+                (this.db.importBatches ?? []).filter((b) => b.ownerUid === user.uid),
+                batchRes.data.map((r) => rowToImportBatch(r as Record<string, unknown>)),
+              )
+            : this.db.importBatches ?? []
+          : [];
+
+        const nextVersions = isStaff && Array.isArray(verRes.data)
+          ? verRes.data.map((r) => rowToMissionSetVersion(r as Record<string, unknown>))
+          : this.db.missionSetVersions ?? [];
+
+        const nextAudit = isStaff && Array.isArray(auditRes.data)
+          ? auditRes.data.map((r) => rowToAuditLog(r as Record<string, unknown>))
+          : this.db.auditLogs ?? [];
+
+        this.save({
+          ...this.db,
+          taxonomy: nextTaxonomy,
+          missionSets: nextMissionSets,
+          importBatches: nextBatches,
+          missionSetVersions: nextVersions,
+          auditLogs: nextAudit,
+        });
+      } catch {
+        // Non-blocking if new tables are offline
+      }
     } catch (err) {
       console.error('[Supabase] hydrate collections error:', err);
     }
@@ -4431,6 +4703,491 @@ export class DataService {
       ),
     ];
     return lines.join('\n');
+  }
+
+  // ---- EXTENDED PDF PIPELINE: IDEMPOTENT UPSERT, TAXONOMY, IMPORT BATCHES, MISSION SETS & AUDIT ----
+
+  recordAuditLog(
+    actor: UserAccount,
+    action: string,
+    entityType: AuditLogRecord['entityType'],
+    entityId: string,
+    detail: Record<string, unknown> = {},
+  ): void {
+    if (!canAccessAdmin(actor)) return;
+    const entry: AuditLogRecord = {
+      id: generateId('aud'),
+      actorUid: actor.uid,
+      actorName: actor.displayName,
+      actorRole: actor.role,
+      action,
+      entityType,
+      entityId,
+      detail,
+      createdAt: new Date().toISOString(),
+    };
+    const next = [entry, ...(this.db.auditLogs ?? [])].slice(0, 150);
+    this.save({...this.db, auditLogs: next});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('audit_logs').insert(auditLogToRow(entry));
+    }
+  }
+
+  getAuditLogs(actor: UserAccount): AuditLogRecord[] {
+    if (!canAccessAdmin(actor)) return [];
+    const logs = this.db.auditLogs ?? [];
+    if (actor.role === 'admin') return [...logs];
+    return logs.filter((l) => l.actorUid === actor.uid);
+  }
+
+  /**
+   * Idempotent batch question upsert by `fingerprint` + `(file_sha256, question_number, part)`.
+   * Enforces role permissions: Teachers can ONLY commit `pending_teacher_review`; ONLY Admin can commit `approved`.
+   */
+  upsertImportedQuestions(
+    actor: UserAccount,
+    drafts: QuestionItem[],
+    options?: {
+      targetStatus?: ReviewStatus;
+      duplicateAction?: 'skip' | 'replace' | 'keep_both';
+      note?: string;
+    },
+  ): {
+    added: number;
+    updated: number;
+    skippedDuplicates: number;
+    needsReview: number;
+    savedIds: string[];
+  } {
+    if (!canAccessAdmin(actor)) {
+      return {added: 0, updated: 0, skippedDuplicates: 0, needsReview: 0, savedIds: []};
+    }
+    const isAdminActor = canEditSettingsOrUsers(actor);
+    const effectiveStatus: ReviewStatus = isAdminActor
+      ? (options?.targetStatus ?? 'pending_teacher_review')
+      : 'pending_teacher_review';
+    const dupAction = options?.duplicateAction ?? 'skip';
+    const now = new Date().toISOString();
+
+    let added = 0;
+    let updated = 0;
+    let skippedDuplicates = 0;
+    let needsReview = 0;
+    const savedIds: string[] = [];
+
+    for (const rawItem of drafts) {
+      const fp = rawItem.fingerprint || computeQuestionFingerprint(rawItem);
+      const item: QuestionItem = {
+        ...rawItem,
+        fingerprint: fp,
+        review_status: effectiveStatus,
+        ...(effectiveStatus === 'approved'
+          ? {reviewedBy: actor.displayName, reviewedAt: now, approved_by: actor.displayName, approved_at: now}
+          : {reviewedBy: undefined, reviewedAt: undefined}),
+      };
+      if ((item.flags ?? []).some((f) => ['answer_mismatch', 'figure_missing', 'formula_uncertain', 'missing_answer', 'unverifiable_by_code'].includes(f))) {
+        needsReview += 1;
+      }
+
+      const dup = findDuplicateMatch(item, this.db.questions);
+      if (dup) {
+        if (dup.kind === 'exact' && dup.existingQuestion.stem_vi.trim() === item.stem_vi.trim() && dupAction === 'skip') {
+          skippedDuplicates += 1;
+          continue;
+        }
+        if (dupAction === 'skip') {
+          skippedDuplicates += 1;
+          continue;
+        }
+        if (dupAction === 'replace') {
+          const ok = this.upsertQuestion(
+            actor,
+            {...item, id: dup.existingQuestion.id},
+            options?.note ?? 'Cập nhật phiên bản mới từ lô nhập PDF',
+          );
+          if (ok) {
+            updated += 1;
+            savedIds.push(dup.existingQuestion.id);
+          }
+          continue;
+        }
+        // dupAction === 'keep_both': assign fresh ID so both coexist
+        const freshId = generateId('pdf');
+        const ok = this.upsertQuestion(
+          actor,
+          {...item, id: freshId},
+          options?.note ?? 'Thêm câu mới (giữ cả hai bản gần giống)',
+        );
+        if (ok) {
+          added += 1;
+          savedIds.push(freshId);
+        }
+        continue;
+      }
+
+      const ok = this.upsertQuestion(actor, item, options?.note ?? 'Nhập từ lô PDF');
+      if (ok) {
+        added += 1;
+        savedIds.push(item.id);
+      }
+    }
+
+    if (added > 0 || updated > 0) {
+      this.recordAuditLog(actor, 'import_questions_upsert', 'question', drafts[0]?.import_batch_id ?? 'manual', {
+        added,
+        updated,
+        skippedDuplicates,
+        effectiveStatus,
+      });
+    }
+
+    return {added, updated, skippedDuplicates, needsReview, savedIds};
+  }
+
+  // ---- TAXONOMY CATALOG ----
+
+  getTaxonomy(includeHidden = false): TaxonomyPattern[] {
+    const base =
+      this.db.taxonomy && this.db.taxonomy.length > 0
+        ? this.db.taxonomy
+        : DEFAULT_TAXONOMY_PATTERNS.map((t) => ({...t}));
+    const list = includeHidden ? base : base.filter((t) => t.status !== 'hidden');
+    return [...list].sort((a, b) => (a.sort_order ?? 100) - (b.sort_order ?? 100));
+  }
+
+  proposeTaxonomyPattern(
+    actor: UserAccount,
+    params: {topic: TaxonomyPattern['topic']; name: string; typical_levels?: Array<1 | 2 | 3 | 4>; suggested_mocs?: MocId[]},
+  ): TaxonomyPattern | null {
+    if (!canAccessAdmin(actor) || !params.name.trim()) return null;
+    const isAdminActor = canEditSettingsOrUsers(actor);
+    const id = `${params.topic}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+    const now = new Date().toISOString();
+    const pattern: TaxonomyPattern = {
+      id,
+      topic: params.topic,
+      name: params.name.trim(),
+      typical_levels: params.typical_levels ?? [2, 3],
+      suggested_mocs: params.suggested_mocs ?? [1],
+      has_solver: false,
+      solver_hint: 'Dạng mới đề xuất — cần giáo viên thẩm định',
+      sort_order: 500,
+      status: isAdminActor ? 'active' : 'proposed',
+      proposed_by: actor.displayName,
+      proposed_by_uid: actor.uid,
+      created_at: now,
+      updated_at: now,
+    };
+    const next = [...this.getTaxonomy(true), pattern];
+    this.save({...this.db, taxonomy: next});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('taxonomy').upsert(taxonomyToRow(pattern), {onConflict: 'id'});
+    }
+    this.recordAuditLog(actor, isAdminActor ? 'taxonomy_create' : 'taxonomy_propose', 'taxonomy', id, {
+      name: pattern.name,
+      topic: pattern.topic,
+    });
+    return pattern;
+  }
+
+  adminUpsertTaxonomyPattern(actor: UserAccount, pattern: TaxonomyPattern): boolean {
+    if (!canEditSettingsOrUsers(actor)) return false;
+    const current = this.getTaxonomy(true);
+    const idx = current.findIndex((t) => t.id === pattern.id);
+    const saved: TaxonomyPattern = {...pattern, updated_at: new Date().toISOString()};
+    const next = idx >= 0 ? current.map((t, i) => (i === idx ? saved : t)) : [...current, saved];
+    this.save({...this.db, taxonomy: next});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('taxonomy').upsert(taxonomyToRow(saved), {onConflict: 'id'});
+    }
+    this.recordAuditLog(actor, 'taxonomy_upsert', 'taxonomy', saved.id, {
+      name: saved.name,
+      status: saved.status,
+    });
+    return true;
+  }
+
+  adminMergeTaxonomyPattern(actor: UserAccount, sourceId: string, targetId: string): boolean {
+    if (!canEditSettingsOrUsers(actor) || sourceId === targetId) return false;
+    const current = this.getTaxonomy(true);
+    if (!current.some((t) => t.id === sourceId) || !current.some((t) => t.id === targetId)) return false;
+    const now = new Date().toISOString();
+    const nextTax = current.map((t) =>
+      t.id === sourceId ? {...t, status: 'hidden' as const, merged_into: targetId, updated_at: now} : t,
+    );
+    const updatedQs: QuestionItem[] = [];
+    const nextQuestions = this.db.questions.map((q) => {
+      if (q.pattern_id !== sourceId) return q;
+      const upd = {...q, pattern_id: targetId};
+      updatedQs.push(upd);
+      return upd;
+    });
+    this.save({...this.db, taxonomy: nextTax, questions: nextQuestions});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      const mergedPat = nextTax.find((t) => t.id === sourceId);
+      if (mergedPat) {
+        void this.supabase.from('taxonomy').upsert(taxonomyToRow(mergedPat), {onConflict: 'id'});
+      }
+      if (updatedQs.length > 0) {
+        void this.supabase.from('questions').upsert(updatedQs.map(questionToRow), {onConflict: 'id'});
+      }
+    }
+    this.recordAuditLog(actor, 'taxonomy_merge', 'taxonomy', sourceId, {
+      targetId,
+      migratedQuestions: updatedQs.length,
+    });
+    return true;
+  }
+
+  // ---- IMPORT BATCHES (strictly staff-only; students NEVER read) ----
+
+  getImportBatches(actor: UserAccount): ImportBatchRecord[] {
+    if (!canAccessAdmin(actor)) return [];
+    const all = this.db.importBatches ?? [];
+    if (actor.role === 'admin') return [...all];
+    return all.filter((b) => b.ownerUid === actor.uid);
+  }
+
+  saveImportBatch(actor: UserAccount, batch: ImportBatchRecord): boolean {
+    if (!canAccessAdmin(actor)) return false;
+    if (actor.role === 'teacher' && batch.ownerUid !== actor.uid) return false;
+    const stamped: ImportBatchRecord = {...batch, updatedAt: new Date().toISOString()};
+    const prev = this.db.importBatches ?? [];
+    const idx = prev.findIndex((b) => b.id === stamped.id);
+    const next = idx >= 0 ? prev.map((b, i) => (i === idx ? stamped : b)) : [stamped, ...prev].slice(0, 30);
+    this.save({...this.db, importBatches: next});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('import_batches').upsert(importBatchToRow(stamped), {onConflict: 'id'});
+    }
+    return true;
+  }
+
+  deleteImportBatch(actor: UserAccount, batchId: string): boolean {
+    if (!canAccessAdmin(actor)) return false;
+    const target = (this.db.importBatches ?? []).find((b) => b.id === batchId);
+    if (!target) return false;
+    if (actor.role === 'teacher' && target.ownerUid !== actor.uid) return false;
+    this.save({...this.db, importBatches: (this.db.importBatches ?? []).filter((b) => b.id !== batchId)});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('import_batches').delete().eq('id', batchId);
+    }
+    return true;
+  }
+
+  // ---- MISSION SETS ("Set nhiệm vụ") WITH VERSIONING & ROLLBACK ----
+
+  getMissionSets(actor: UserAccount | null): MissionSetRecord[] {
+    const all = this.db.missionSets ?? [];
+    if (!actor) return [];
+    if (canAccessAdmin(actor)) return [...all];
+    return all.filter(
+      (ms) => ms.status === 'published' && (ms.classId === 'ALL' || ms.classId === actor.classId),
+    );
+  }
+
+  getPublishedMissionSetForMoc(mocId: MocId, classId?: string): MissionSetRecord | null {
+    const published = (this.db.missionSets ?? []).filter(
+      (ms) => ms.mocId === mocId && ms.status === 'published',
+    );
+    if (classId) {
+      const classSpecific = published.find((ms) => ms.classId === classId);
+      if (classSpecific) return classSpecific;
+    }
+    return published.find((ms) => ms.classId === 'ALL') ?? null;
+  }
+
+  getMissionSetVersions(missionSetId: string): MissionSetVersionRecord[] {
+    return (this.db.missionSetVersions ?? [])
+      .filter((v) => v.missionSetId === missionSetId)
+      .sort((a, b) => b.version - a.version);
+  }
+
+  saveMissionSetDraft(
+    actor: UserAccount,
+    ms: Omit<MissionSetRecord, 'status' | 'createdAt' | 'updatedAt' | 'createdBy' | 'createdByUid'> & {
+      status?: MissionSetRecord['status'];
+    },
+  ): {ok: boolean; record?: MissionSetRecord; error?: string} {
+    if (!canAccessAdmin(actor)) {
+      return {ok: false, error: 'Không có quyền lưu bộ nhiệm vụ.'};
+    }
+    const isAdminActor = canEditSettingsOrUsers(actor);
+    const now = new Date().toISOString();
+    const existing = (this.db.missionSets ?? []).find((x) => x.id === ms.id);
+
+    // Teachers cannot directly overwrite a published set — force draft/pending copy
+    let targetId = ms.id;
+    let nextStatus: MissionSetRecord['status'] = ms.status ?? 'draft';
+    if (!isAdminActor) {
+      if (nextStatus === 'published') nextStatus = 'pending_admin_review';
+      if (existing && existing.status === 'published') {
+        targetId = `${ms.id}_draft`;
+      }
+    }
+
+    const record: MissionSetRecord = {
+      id: targetId,
+      mocId: ms.mocId,
+      stationId: ms.stationId,
+      classId: ms.classId || 'ALL',
+      status: nextStatus,
+      version: existing?.version ?? ms.version ?? 1,
+      slots: ms.slots,
+      bossSlots: ms.bossSlots,
+      notes: ms.notes ?? '',
+      createdBy: existing?.createdBy ?? actor.displayName,
+      createdByUid: existing?.createdByUid ?? actor.uid,
+      publishedBy: nextStatus === 'published' ? actor.displayName : existing?.publishedBy,
+      publishedAt: nextStatus === 'published' ? now : existing?.publishedAt,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    const prev = this.db.missionSets ?? [];
+    const idx = prev.findIndex((x) => x.id === record.id);
+    const next = idx >= 0 ? prev.map((x, i) => (i === idx ? record : x)) : [...prev, record];
+    this.save({...this.db, missionSets: next});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('mission_sets').upsert(missionSetToRow(record), {onConflict: 'id'});
+    }
+    this.recordAuditLog(actor, 'mission_set_save_draft', 'mission_set', record.id, {
+      mocId: record.mocId,
+      classId: record.classId,
+      status: record.status,
+      slotCount: record.slots.length,
+    });
+    return {ok: true, record};
+  }
+
+  adminPublishMissionSet(
+    actor: UserAccount,
+    missionSetId: string,
+  ): {ok: boolean; record?: MissionSetRecord; error?: string} {
+    if (!canEditSettingsOrUsers(actor)) {
+      return {ok: false, error: 'Chỉ Quản trị viên (Admin) mới có quyền xuất bản bộ nhiệm vụ.'};
+    }
+    const prev = this.db.missionSets ?? [];
+    const target = prev.find((m) => m.id === missionSetId);
+    if (!target) return {ok: false, error: 'Không tìm thấy bộ nhiệm vụ cần xuất bản.'};
+
+    const now = new Date().toISOString();
+    // If publishing a teacher `_draft` copy, promote onto canonical `ms_moc_${mocId}_${classId}` ID
+    const canonicalId = `ms_moc_${target.mocId}_${target.classId || 'ALL'}`;
+    const existingCanonical = prev.find((m) => m.id === canonicalId);
+    const nextVersion = (existingCanonical?.version ?? (target.status === 'published' ? target.version : 0)) + 1;
+
+    const publishedRecord: MissionSetRecord = {
+      ...target,
+      id: canonicalId,
+      status: 'published',
+      version: nextVersion,
+      publishedBy: actor.displayName,
+      publishedAt: now,
+      updatedAt: now,
+    };
+
+    const versionSnapshot: MissionSetVersionRecord = {
+      id: `${canonicalId}_v${nextVersion}_${Date.now().toString(36)}`,
+      missionSetId: canonicalId,
+      mocId: publishedRecord.mocId,
+      stationId: publishedRecord.stationId,
+      classId: publishedRecord.classId,
+      version: nextVersion,
+      slots: publishedRecord.slots,
+      bossSlots: publishedRecord.bossSlots,
+      notes: publishedRecord.notes,
+      publishedBy: actor.displayName,
+      publishedAt: now,
+    };
+
+    const filtered = prev.filter((m) => m.id !== canonicalId && m.id !== missionSetId);
+    const nextSets = [...filtered, publishedRecord];
+    const nextVersions = [versionSnapshot, ...(this.db.missionSetVersions ?? [])].slice(0, 80);
+
+    this.save({...this.db, missionSets: nextSets, missionSetVersions: nextVersions});
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('mission_sets').upsert(missionSetToRow(publishedRecord), {onConflict: 'id'});
+      void this.supabase.from('mission_set_versions').insert(missionSetVersionToRow(versionSnapshot));
+      if (missionSetId !== canonicalId) {
+        void this.supabase.from('mission_sets').delete().eq('id', missionSetId);
+      }
+    }
+    this.recordAuditLog(actor, 'mission_set_publish', 'mission_set', canonicalId, {
+      mocId: publishedRecord.mocId,
+      classId: publishedRecord.classId,
+      version: nextVersion,
+    });
+    return {ok: true, record: publishedRecord};
+  }
+
+  adminRollbackMissionSet(
+    actor: UserAccount,
+    missionSetId: string,
+    targetVersion: number,
+  ): {ok: boolean; record?: MissionSetRecord; error?: string} {
+    if (!canEditSettingsOrUsers(actor)) {
+      return {ok: false, error: 'Chỉ Quản trị viên (Admin) mới có quyền khôi phục phiên bản.'};
+    }
+    const snap = (this.db.missionSetVersions ?? []).find(
+      (v) => v.missionSetId === missionSetId && v.version === targetVersion,
+    );
+    if (!snap) return {ok: false, error: `Không tìm thấy phiên bản v${targetVersion}.`};
+
+    const prev = this.db.missionSets ?? [];
+    const current = prev.find((m) => m.id === missionSetId);
+    const now = new Date().toISOString();
+    const nextVersion = (current?.version ?? targetVersion) + 1;
+
+    const restored: MissionSetRecord = {
+      id: missionSetId,
+      mocId: snap.mocId,
+      stationId: snap.stationId,
+      classId: snap.classId,
+      status: 'published',
+      version: nextVersion,
+      slots: snap.slots,
+      bossSlots: snap.bossSlots,
+      notes: `Khôi phục từ phiên bản v${targetVersion}${snap.notes ? ` (${snap.notes})` : ''}`,
+      createdBy: current?.createdBy ?? actor.displayName,
+      createdByUid: current?.createdByUid ?? actor.uid,
+      publishedBy: actor.displayName,
+      publishedAt: now,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    const newVerSnap: MissionSetVersionRecord = {
+      id: `${missionSetId}_v${nextVersion}_${Date.now().toString(36)}`,
+      missionSetId,
+      mocId: restored.mocId,
+      stationId: restored.stationId,
+      classId: restored.classId,
+      version: nextVersion,
+      slots: restored.slots,
+      bossSlots: restored.bossSlots,
+      notes: restored.notes,
+      publishedBy: actor.displayName,
+      publishedAt: now,
+    };
+
+    const nextSets = prev.some((m) => m.id === missionSetId)
+      ? prev.map((m) => (m.id === missionSetId ? restored : m))
+      : [...prev, restored];
+
+    this.save({
+      ...this.db,
+      missionSets: nextSets,
+      missionSetVersions: [newVerSnap, ...(this.db.missionSetVersions ?? [])].slice(0, 80),
+    });
+    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+      void this.supabase.from('mission_sets').upsert(missionSetToRow(restored), {onConflict: 'id'});
+      void this.supabase.from('mission_set_versions').insert(missionSetVersionToRow(newVerSnap));
+    }
+    this.recordAuditLog(actor, 'mission_set_rollback', 'mission_set', missionSetId, {
+      fromVersion: targetVersion,
+      newVersion: nextVersion,
+    });
+    return {ok: true, record: restored};
   }
 }
 

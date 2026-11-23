@@ -1,22 +1,44 @@
 import React from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   CheckCircle2,
   Cloud,
+  Crop,
   Edit3,
   FileText,
   FolderOpen,
   HardDriveUpload,
+  History,
+  Layers,
   PenLine,
+  Play,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Sparkles,
+  Square,
   Trash2,
   XCircle,
 } from 'lucide-react';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, STATIONS} from '../config.ts';
-import {verifyQuestionByCode} from '../math/verifier.ts';
+import {verifyQuestionWithSolvers} from '../math/solvers.ts';
+import {
+  computeQuestionFingerprint,
+  computeSuggestedStations,
+  findDuplicateMatch,
+  PROMPT_VERSION,
+  suggestTaxonomyForDocumentLabel,
+} from '../math/taxonomy.ts';
+import {
+  applyAnswerKeysToDrafts,
+  extractAnswerKeysViaAi,
+  extractWindowViaAi,
+  isEligibleForBatchApproval,
+  parseAnswerKeyTableText,
+  stitchAndDedupeExtractedDrafts,
+} from '../services/aiExtractor.ts';
 import {canEditSettingsOrUsers, dataService, generateId} from '../services/dataService.ts';
 import {
   clearDriveToken,
@@ -28,16 +50,30 @@ import {
   type DrivePickedItem,
 } from '../services/drivePicker.ts';
 import {
+  createEmptyImportBatch,
+  estimateAiCallsForRange,
+} from '../services/importBatchService.ts';
+import {
   clusterToDefaultStation,
-  mapAiExtractedItemsToDrafts,
   parseDocxArrayBuffer,
-  parsePdfArrayBuffer,
   parseSection11Json,
-  type PdfExtractedPage,
-  type PdfParseResult,
 } from '../services/materialImport.ts';
+import {
+  cropFigureFromPageDataUrl,
+  getCachedPageImage,
+} from '../services/pageRenderer.ts';
+import {
+  computeSha256Hex,
+  formatPdfStatusSummary,
+  readPdfDocumentRange,
+  type PdfDocumentReadResult,
+  type PdfReadPageResult,
+} from '../services/pdfReader.ts';
 import type {
+  AnswerKeyEntry,
   AppSettings,
+  ClassificationMode,
+  ImportBatchRecord,
   QuestionItem,
   QuestionType,
   ReviewStatus,
@@ -62,17 +98,25 @@ interface MaterialImporterProps {
   existingQuestions: QuestionItem[];
   onQuestionsChanged: () => void;
   onOpenSettingsTab: () => void;
+  onOpenMissionSetsTab?: () => void;
 }
 
+const STEPPER_ITEMS = [
+  {id: 1, label: '1. Tải tệp'},
+  {id: 2, label: '2. Đọc trang'},
+  {id: 3, label: '3. AI trích xuất'},
+  {id: 4, label: '4. Phân dạng'},
+  {id: 5, label: '5. Duyệt'},
+  {id: 6, label: '6. Lưu ngân hàng'},
+  {id: 7, label: '7. Gán trạm'},
+];
+
 const QUESTION_TYPES: Array<{value: QuestionType; label: string}> = [
-  {value: 'numeric', label: 'Trả lời ngắn / số (numeric)'},
   {value: 'mcq', label: 'Trắc nghiệm 4 lựa chọn (mcq)'},
   {value: 'true_false_multi', label: 'Đúng/sai nhiều ý (true_false_multi)'},
+  {value: 'numeric', label: 'Trả lời ngắn / số (numeric)'},
   {value: 'matching', label: 'Ghép cặp (matching)'},
   {value: 'fill_relation', label: 'Điền hệ thức (fill_relation)'},
-  {value: 'tap_diagram', label: 'Chạm hình (tap_diagram)'},
-  {value: 'measurement', label: 'Đo đạc (measurement)'},
-  {value: 'agree_explain', label: 'Đồng ý / giải thích (agree_explain)'},
   {value: 'error_spot', label: 'Tìm lỗi sai (error_spot)'},
 ];
 
@@ -85,31 +129,74 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   existingQuestions,
   onQuestionsChanged,
   onOpenSettingsTab,
+  onOpenMissionSetsTab,
 }) => {
   const isAdmin = canEditSettingsOrUsers(user);
+  const taxonomy = React.useMemo(() => dataService.getTaxonomy(false), [existingQuestions.length]);
+  const savedBatches = React.useMemo(() => dataService.getImportBatches(user), [user, existingQuestions.length]);
+  const confidenceThreshold = settings.autoApproveConfidenceThreshold ?? 0.85;
+  const activeModel = settings.aiModel?.trim() || 'gemini-3.1-flash-lite';
+  const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-2.5-pro';
+
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
+  const [autoRunAfterUpload, setAutoRunAfterUpload] = React.useState(true);
+  const [classificationMode, setClassificationMode] = React.useState<ClassificationMode>('web_taxonomy');
+  const [customPatternsText, setCustomPatternsText] = React.useState('');
+
+  // Source file (kept as original File or cloned Uint8Array — NEVER reuses a detached ArrayBuffer!)
+  const [pdfSourceFile, setPdfSourceFile] = React.useState<File | Uint8Array | null>(null);
   const [sourceName, setSourceName] = React.useState('Tài liệu Chương III');
+  const [sourceSha256, setSourceSha256] = React.useState('');
   const [driveFileId, setDriveFileId] = React.useState<string | undefined>(undefined);
-  const [importText, setImportText] = React.useState('');
-  const [pdfBuffer, setPdfBuffer] = React.useState<ArrayBuffer | null>(null);
+
   const [pdfStartPage, setPdfStartPage] = React.useState(1);
-  const [pdfEndPage, setPdfEndPage] = React.useState(6);
-  const [pdfInfo, setPdfInfo] = React.useState<PdfParseResult | null>(null);
+  const [pdfEndPage, setPdfEndPage] = React.useState(12);
+  const [pdfReadResult, setPdfReadResult] = React.useState<PdfDocumentReadResult | null>(null);
+  const [importText, setImportText] = React.useState('');
+
+  // Batch & Stepper state
+  const [activeBatch, setActiveBatch] = React.useState<ImportBatchRecord | null>(null);
+  const [stepperStep, setStepperStep] = React.useState(1);
+  const [pendingConfirmRun, setPendingConfirmRun] = React.useState<{
+    totalPagesInRange: number;
+    estimatedCalls: number;
+    cachedWindows: number;
+    remainingQuota: number;
+    readResult: PdfDocumentReadResult;
+  } | null>(null);
 
   const [driveConnected, setDriveConnected] = React.useState(hasActiveDriveToken());
-  const [driveFolderName, setDriveFolderName] = React.useState<string>('');
+  const [driveFolderName, setDriveFolderName] = React.useState('');
   const [driveFolderFiles, setDriveFolderFiles] = React.useState<DrivePickedItem[]>([]);
 
   const [busy, setBusy] = React.useState(false);
+  const [busyMessage, setBusyMessage] = React.useState('');
   const [statusMsg, setStatusMsg] = React.useState('');
   const [errorMsg, setErrorMsg] = React.useState('');
   const [showManualFallback, setShowManualFallback] = React.useState(false);
+  const [showSavedBatches, setShowSavedBatches] = React.useState(false);
 
+  // Extracted items, answer keys & review filters
   const [draftItems, setDraftItems] = React.useState<QuestionItem[]>([]);
+  const [answerKeys, setAnswerKeys] = React.useState<AnswerKeyEntry[]>([]);
+  const [examCodes, setExamCodes] = React.useState<string[]>([]);
+  const [selectedExamCode, setSelectedExamCode] = React.useState('');
+  const [patternMappings, setPatternMappings] = React.useState<Record<string, string>>({});
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   const [expandedEditIds, setExpandedEditIds] = React.useState<Record<string, boolean>>({});
+  const [duplicateDecisions, setDuplicateDecisions] = React.useState<Record<string, 'skip' | 'replace' | 'keep_both'>>({});
+  const [reviewBucket, setReviewBucket] = React.useState<'chapter3' | 'out_of_chapter'>('chapter3');
+  const [filterPattern, setFilterPattern] = React.useState<string>('ALL');
+  const [filterFlag, setFilterFlag] = React.useState<'ALL' | 'flagged' | 'pass_only'>('ALL');
+  const [pagePreviewCache, setPagePreviewCache] = React.useState<Record<number, string>>({});
+  const [lastUpsertSummary, setLastUpsertSummary] = React.useState<{
+    added: number;
+    updated: number;
+    skippedDuplicates: number;
+    needsReview: number;
+  } | null>(null);
 
-  // Inline manual fallback form state
+  // Inline manual fallback form
   const [manualStem, setManualStem] = React.useState('');
   const [manualCluster, setManualCluster] = React.useState<SkillCluster>('SIN');
   const [manualStation, setManualStation] = React.useState<StationId>('BS01');
@@ -119,18 +206,19 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const [manualHint1, setManualHint1] = React.useState('');
   const [manualHint2, setManualHint2] = React.useState('');
   const [manualSolution, setManualSolution] = React.useState('');
-  const [manualPagePrinted, setManualPagePrinted] = React.useState('');
-  const [manualPagePdf, setManualPagePdf] = React.useState('');
 
+  const abortRef = React.useRef<AbortController | null>(null);
   const driveConfigured = Boolean(settings.driveClientId?.trim() && settings.driveApiKey?.trim());
 
   const fetchAiStatus = React.useCallback(() => {
-    void dataService.getAccessToken().then((token) => {
-      const headers: Record<string, string> = token ? {Authorization: `Bearer ${token}`} : {};
-      return fetch(`/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`, {
-        headers,
-      });
-    })
+    void dataService
+      .getAccessToken()
+      .then((token) => {
+        const headers: Record<string, string> = token ? {Authorization: `Bearer ${token}`} : {};
+        return fetch(`/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`, {
+          headers,
+        });
+      })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: AiStatusInfo | null) => {
         if (d) setAiStatus(d);
@@ -147,69 +235,586 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     setErrorMsg('');
   };
 
-  // Process any loaded file (from local disk OR Google Drive)
-  const processFileBuffer = async (
+  const persistBatchSnapshot = (patch: Partial<ImportBatchRecord>, base?: ImportBatchRecord | null) => {
+    const current = base ?? activeBatch;
+    if (!current) return;
+    const updated: ImportBatchRecord = {
+      ...current,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    setActiveBatch(updated);
+    dataService.saveImportBatch(user, updated);
+  };
+
+  // Load cached page image previews when draft items or sha change
+  React.useEffect(() => {
+    if (!sourceSha256 || draftItems.length === 0) return;
+    const neededPages = Array.from(
+      new Set(
+        draftItems
+          .map((d) => d.page_pdf ?? d.figure_bbox?.page)
+          .filter((p): p is number => typeof p === 'number' && p > 0),
+      ),
+    );
+    for (const p of neededPages) {
+      if (pagePreviewCache[p]) continue;
+      void getCachedPageImage(sourceSha256, p).then((img) => {
+        if (img?.dataUrl) {
+          setPagePreviewCache((prev) => ({...prev, [p]: img.dataUrl}));
+        }
+      });
+    }
+  }, [sourceSha256, draftItems, pagePreviewCache]);
+
+  const cancelRunningTask = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    setBusyMessage('');
+    persistBatchSnapshot({status: 'cancelled'});
+    setStatusMsg('Đã dừng tiến trình. Các trang đã đọc & trích xuất vẫn được lưu trong lô nhập.');
+  };
+
+  // ---- PHASE 1: ROBUST PDF READING (ZERO DETACHED ARRAYBUFFER) ----
+  const runPdfRead = async (
+    source: File | Uint8Array,
     fileName: string,
-    arrayBuffer: ArrayBuffer,
+    opts?: {startPage?: number; endPage?: number; driveId?: string; promptAutoExtract?: boolean},
+  ) => {
+    clearMessages();
+    setBusy(true);
+    setStepperStep(2);
+    setBusyMessage(`Đang đọc từng trang PDF (${fileName})...`);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    try {
+      const sha = await computeSha256Hex(source);
+      setSourceSha256(sha);
+
+      const readRes = await readPdfDocumentRange(source, {
+        fileName,
+        fileSha256: sha,
+        startPage: opts?.startPage ?? pdfStartPage,
+        endPage: opts?.endPage ?? pdfEndPage,
+        renderImages: true,
+        signal: ctrl.signal,
+        onPageDone: (pg, idx, total) => {
+          setBusyMessage(`Đang đọc trang ${pg.pagePdf} (${idx}/${total})...`);
+          if (pg.cachedImage?.dataUrl) {
+            setPagePreviewCache((prev) => ({...prev, [pg.pagePdf]: pg.cachedImage!.dataUrl}));
+          }
+        },
+      });
+
+      setPdfReadResult(readRes);
+      setPdfStartPage(readRes.startPage);
+      setPdfEndPage(readRes.endPage);
+      setImportText(readRes.combinedText);
+
+      const batch = createEmptyImportBatch({
+        id: generateId('batch'),
+        ownerUid: user.uid,
+        ownerName: user.displayName,
+        fileName,
+        fileSha256: sha,
+        driveFileId: opts?.driveId ?? driveFileId,
+        totalPages: readRes.totalPages,
+        startPage: readRes.startPage,
+        endPage: readRes.endPage,
+        classificationMode,
+      });
+      batch.pagesState = readRes.pages.map((p) => p.state);
+      batch.status = 'reading';
+      setActiveBatch(batch);
+      dataService.saveImportBatch(user, batch);
+
+      setStatusMsg(
+        `${readRes.summaryText_vi}. Tệp PDF gốc và ảnh trang chỉ lưu tạm trên máy để xử lý, KHÔNG ghi vào CSDL.`,
+      );
+
+      // Prepare AI quota confirmation modal if autoRun is enabled
+      const answerKeyPages = readRes.pages
+        .filter((p) => p.state.hasAnswerKeyCue)
+        .map((p) => p.pagePdf);
+      const est = estimateAiCallsForRange({
+        sha256: sha,
+        startPage: readRes.startPage,
+        endPage: readRes.endPage,
+        answerKeyPages,
+        promptVersion: PROMPT_VERSION,
+        model: activeModel,
+        windowSize: 2,
+      });
+
+      const remaining = Math.max(
+        0,
+        (aiStatus?.dailyLimit ?? settings.aiDailyQuotaLimit) - (aiStatus?.dailyUsed ?? 0),
+      );
+
+      if (opts?.promptAutoExtract && autoRunAfterUpload) {
+        setPendingConfirmRun({
+          totalPagesInRange: readRes.endPage - readRes.startPage + 1,
+          estimatedCalls: est.estimatedCalls,
+          cachedWindows: est.cachedWindows,
+          remainingQuota: remaining,
+          readResult: readRes,
+        });
+      }
+    } catch (err) {
+      console.error('[MaterialImporter] PDF read error:', err);
+      setErrorMsg(
+        err instanceof Error && err.message.includes('hủy')
+          ? err.message
+          : 'Không thể đọc tệp PDF này. Vui lòng kiểm tra tệp không bị đặt mật khẩu rồi thử lại.',
+      );
+    } finally {
+      setBusy(false);
+      setBusyMessage('');
+      abortRef.current = null;
+    }
+  };
+
+  // ---- PHASE 2: MULTI-WINDOW AI EXTRACTION + ANSWER-KEY MERGE + MODE B MAPPING ----
+  const executeFullAiExtraction = async (readRes: PdfDocumentReadResult, batchOverride?: ImportBatchRecord) => {
+    clearMessages();
+    setPendingConfirmRun(null);
+    setBusy(true);
+    setStepperStep(3);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    const batchBase = batchOverride ?? activeBatch;
+    const token = await dataService.getAccessToken();
+    const customPatterns = customPatternsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const answerPages = readRes.pages.filter((p) => p.state.hasAnswerKeyCue);
+    const questionPages = readRes.pages.filter((p) => !p.state.hasAnswerKeyCue);
+    const pagesToExtract = questionPages.length > 0 ? questionPages : readRes.pages;
+
+    const updatedPagesState = [...readRes.pages.map((p) => ({...p.state}))];
+    const collectedDrafts: QuestionItem[] = [];
+    const collectedKeys: AnswerKeyEntry[] = [];
+    const detectedExamCodes = new Set<string>();
+    let aiCallsUsed = 0;
+    let cacheHits = 0;
+    let quotaStopped = false;
+
+    try {
+      // 1. Extract question pages in windows of 2 pages (with 1-page overlap when cut off)
+      const WIN_SIZE = 2;
+      let i = 0;
+      while (i < pagesToExtract.length) {
+        if (ctrl.signal.aborted) break;
+        const winPages = pagesToExtract.slice(i, i + WIN_SIZE);
+        const label = winPages.map((p) => p.pagePdf).join('–');
+        setBusyMessage(`Đang trích xuất & phân dạng trang ${label} (${Math.min(pagesToExtract.length, i + WIN_SIZE)}/${pagesToExtract.length})...`);
+
+        const res = await extractWindowViaAi({
+          pages: winPages,
+          fileName: readRes.fileName,
+          fileSha256: readRes.fileSha256,
+          driveFileId,
+          batchId: batchBase?.id,
+          accessToken: token,
+          maxDaily: settings.aiDailyQuotaLimit,
+          aiEnabled: settings.aiEnabled,
+          classificationMode,
+          taxonomy,
+          customPatterns,
+          model: activeModel,
+          signal: ctrl.signal,
+        });
+
+        if (res.quota) {
+          setAiStatus((prev) => ({
+            configured: prev?.configured ?? true,
+            model: res.usedModel || prev?.model || activeModel,
+            dailyUsed: res.quota!.used,
+            dailyLimit: res.quota!.limit,
+            remaining: res.quota!.remaining,
+            date: res.quota!.date,
+          }));
+        }
+
+        if (res.fromCache) {
+          cacheHits += 1;
+        } else if (!res.error) {
+          aiCallsUsed += 1;
+        }
+
+        if (res.quotaExceeded) {
+          quotaStopped = true;
+          setErrorMsg(
+            `Đã hết hạn mức AI hôm nay sau khi đọc xong ${collectedDrafts.length} câu. Tiến độ đã được lưu — bạn có thể tiếp tục vào ngày mai hoặc chuyển sang nhập tay.`,
+          );
+          break;
+        }
+
+        if (res.error) {
+          for (const wp of winPages) {
+            const st = updatedPagesState.find((s) => s.pagePdf === wp.pagePdf);
+            if (st) {
+              st.status = 'error';
+              st.errorMessage = res.error;
+            }
+          }
+        } else {
+          collectedDrafts.push(...res.items);
+          collectedKeys.push(...res.answerKeys);
+          for (const wp of winPages) {
+            const st = updatedPagesState.find((s) => s.pagePdf === wp.pagePdf);
+            const pageItems = res.items.filter((it) => it.page_pdf === wp.pagePdf);
+            if (st) {
+              st.status = 'extracted';
+              st.questionCount = pageItems.length;
+              st.confidenceAvg =
+                pageItems.length > 0
+                  ? pageItems.reduce((acc, q) => acc + (q.confidence ?? 0.75), 0) / pageItems.length
+                  : undefined;
+            }
+          }
+        }
+
+        // Overlap 1 page if last item of this window was cut off at page end
+        const lastItem = res.items[res.items.length - 1];
+        const hasCutOff = Boolean(lastItem?.flags?.includes('cut_off_at_page_end'));
+        i += hasCutOff && winPages.length > 1 ? WIN_SIZE - 1 : WIN_SIZE;
+      }
+
+      // 2. Dedicated Answer-Key extraction call for pages detected as answer/solution tables
+      if (!ctrl.signal.aborted && !quotaStopped && answerPages.length > 0) {
+        setBusyMessage(`Đang đọc bảng đáp án / lời giải (${answerPages.length} trang)...`);
+        const akRes = await extractAnswerKeysViaAi({
+          pages: answerPages,
+          fileSha256: readRes.fileSha256,
+          accessToken: token,
+          maxDaily: settings.aiDailyQuotaLimit,
+          aiEnabled: settings.aiEnabled,
+          model: activeModel,
+          signal: ctrl.signal,
+        });
+        if (akRes.quota) {
+          setAiStatus((prev) => ({
+            configured: prev?.configured ?? true,
+            model: prev?.model ?? activeModel,
+            dailyUsed: akRes.quota!.used,
+            dailyLimit: akRes.quota!.limit,
+            remaining: akRes.quota!.remaining,
+            date: akRes.quota!.date,
+          }));
+        }
+        if (!akRes.fromCache && !akRes.error) aiCallsUsed += 1;
+        collectedKeys.push(...akRes.entries);
+        for (const c of akRes.examCodes) detectedExamCodes.add(c);
+        for (const ap of answerPages) {
+          const st = updatedPagesState.find((s) => s.pagePdf === ap.pagePdf);
+          if (st) st.status = 'extracted';
+        }
+      }
+
+      // 3. Stitch cut-off questions, dedupe overlap windows, and merge answer keys
+      setStepperStep(4);
+      let stitched = stitchAndDedupeExtractedDrafts(collectedDrafts);
+
+      // Also scan all extracted text locally for horizontal tables like "Câu 17 18 19 20"
+      if (collectedKeys.length === 0) {
+        const localTableKeys = parseAnswerKeyTableText(readRes.combinedText);
+        if (localTableKeys.length > 0) collectedKeys.push(...localTableKeys);
+      }
+
+      const codesArr = Array.from(detectedExamCodes);
+      setExamCodes(codesArr);
+      const defaultCode = codesArr[0] ?? '';
+      setSelectedExamCode(defaultCode);
+
+      const merged = applyAnswerKeysToDrafts(stitched, collectedKeys, defaultCode || undefined);
+      stitched = merged.items;
+
+      // Build Mode B pattern mapping suggestions
+      const autoMap: Record<string, string> = {};
+      for (const item of stitched) {
+        if (item.source_pattern_label && !autoMap[item.source_pattern_label]) {
+          autoMap[item.source_pattern_label] =
+            item.pattern_id ?? suggestTaxonomyForDocumentLabel(item.source_pattern_label, taxonomy) ?? '';
+        }
+      }
+      setPatternMappings(autoMap);
+      setAnswerKeys(collectedKeys);
+      setDraftItems(stitched);
+      setSelectedIds(
+        stitched
+          .filter((d) => !(d.flags ?? []).includes('out_of_chapter') && d.pattern_id !== 'OUT-00')
+          .map((d) => d.id),
+      );
+      setStepperStep(5);
+
+      persistBatchSnapshot(
+        {
+          status: quotaStopped ? 'error' : 'reviewing',
+          aiCallsUsed: (batchBase?.aiCallsUsed ?? 0) + aiCallsUsed,
+          pagesState: updatedPagesState,
+          extractedItems: stitched,
+          answerKeys: collectedKeys,
+          patternMappings: autoMap,
+        },
+        batchBase,
+      );
+
+      // Also refresh pdfReadResult page states
+      setPdfReadResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              pages: prev.pages.map((pg) => {
+                const nextSt = updatedPagesState.find((s) => s.pagePdf === pg.pagePdf);
+                return nextSt ? {...pg, state: nextSt} : pg;
+              }),
+            }
+          : prev,
+      );
+
+      const outCount = stitched.filter(
+        (d) => (d.flags ?? []).includes('out_of_chapter') || d.pattern_id === 'OUT-00',
+      ).length;
+      const verifiedCount = stitched.filter((d) => d.verified_by_code === 'pass').length;
+      const failCount = stitched.filter((d) => d.verified_by_code === 'fail').length;
+
+      setStatusMsg(
+        `Hoàn tất tách ${stitched.length} câu hỏi (${stitched.length - outCount} câu Chương III${outCount > 0 ? `, ${outCount} câu Ngoài chương` : ''}). ` +
+          `Ghép đáp án: ${merged.matchedCount} câu · Code kiểm chứng khớp: ${verifiedCount}${failCount > 0 ? `, lệch: ${failCount}` : ''} · ` +
+          `Đã dùng ${aiCallsUsed} lượt AI${cacheHits > 0 ? ` (tái dùng cache ${cacheHits} nhóm = 0 lượt)` : ''}.`,
+      );
+    } finally {
+      setBusy(false);
+      setBusyMessage('');
+      abortRef.current = null;
+    }
+  };
+
+  // Retry a single page (optionally with stronger hard-page model!)
+  const handleRetrySinglePage = async (pagePdf: number, useHardModel = false) => {
+    if (!pdfReadResult) return;
+    clearMessages();
+    setBusy(true);
+    setBusyMessage(
+      `Đang đọc & trích xuất lại trang ${pagePdf}${useHardModel ? ` bằng model mạnh (${hardPageModel})` : ''}...`,
+    );
+
+    try {
+      let targetPage: PdfReadPageResult | undefined = pdfReadResult.pages.find(
+        (p) => p.pagePdf === pagePdf,
+      );
+      if (pdfSourceFile) {
+        const singleRead = await readPdfDocumentRange(pdfSourceFile, {
+          fileName: sourceName,
+          fileSha256: sourceSha256,
+          startPage: pagePdf,
+          endPage: pagePdf,
+          renderImages: true,
+        });
+        if (singleRead.pages[0]) targetPage = singleRead.pages[0];
+      }
+      if (!targetPage) {
+        setErrorMsg(`Không tìm thấy dữ liệu trang ${pagePdf} để thử lại.`);
+        return;
+      }
+
+      const token = await dataService.getAccessToken();
+      const res = await extractWindowViaAi({
+        pages: [targetPage],
+        fileName: sourceName,
+        fileSha256: sourceSha256,
+        driveFileId,
+        batchId: activeBatch?.id,
+        accessToken: token,
+        maxDaily: settings.aiDailyQuotaLimit,
+        aiEnabled: settings.aiEnabled,
+        classificationMode,
+        taxonomy,
+        model: useHardModel ? hardPageModel : activeModel,
+        useHardPageModel: useHardModel,
+        bypassCache: true,
+      });
+
+      if (res.quota) {
+        setAiStatus((prev) => ({
+          configured: prev?.configured ?? true,
+          model: res.usedModel || prev?.model || activeModel,
+          dailyUsed: res.quota!.used,
+          dailyLimit: res.quota!.limit,
+          remaining: res.quota!.remaining,
+          date: res.quota!.date,
+        }));
+      }
+
+      if (res.error) {
+        setErrorMsg(`Trang ${pagePdf}: ${res.error}`);
+        return;
+      }
+
+      const withoutOldPage = draftItems.filter((d) => d.page_pdf !== pagePdf);
+      const mergedDrafts = stitchAndDedupeExtractedDrafts([...withoutOldPage, ...res.items]);
+      const withKeys = applyAnswerKeysToDrafts(mergedDrafts, [...answerKeys, ...res.answerKeys], selectedExamCode || undefined);
+      setDraftItems(withKeys.items);
+      setPdfReadResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              pages: prev.pages.map((pg) =>
+                pg.pagePdf === pagePdf
+                  ? {
+                      ...pg,
+                      state: {
+                        ...pg.state,
+                        status: 'extracted',
+                        errorMessage: undefined,
+                        questionCount: res.items.length,
+                        usedHardModel: useHardModel,
+                      },
+                    }
+                  : pg,
+              ),
+            }
+          : prev,
+      );
+      persistBatchSnapshot({extractedItems: withKeys.items});
+      setStatusMsg(`Đã trích xuất lại trang ${pagePdf}: thu được ${res.items.length} câu hỏi.`);
+    } finally {
+      setBusy(false);
+      setBusyMessage('');
+    }
+  };
+
+  // Manual pasted text extraction (fallback without images -> flags `no_image`)
+  const handleExtractPastedText = async () => {
+    clearMessages();
+    if (!importText.trim()) {
+      setErrorMsg('Hãy dán văn bản đề bài Toán 10 Chương III hoặc tải tệp PDF lên trước.');
+      return;
+    }
+    if (pdfReadResult && pdfReadResult.pages.length > 0) {
+      await executeFullAiExtraction(pdfReadResult);
+      return;
+    }
+
+    setBusy(true);
+    setStepperStep(3);
+    setBusyMessage('Đang trích xuất & phân dạng từ văn bản dán...');
+    try {
+      const token = await dataService.getAccessToken();
+      const sha = await computeSha256Hex(new TextEncoder().encode(importText));
+      const res = await extractWindowViaAi({
+        pages: [],
+        pastedText: importText,
+        fileName: sourceName,
+        fileSha256: sha,
+        driveFileId,
+        accessToken: token,
+        maxDaily: settings.aiDailyQuotaLimit,
+        aiEnabled: settings.aiEnabled,
+        classificationMode,
+        taxonomy,
+        model: activeModel,
+      });
+      if (res.quota) {
+        setAiStatus((prev) => ({
+          configured: prev?.configured ?? true,
+          model: res.usedModel || prev?.model || activeModel,
+          dailyUsed: res.quota!.used,
+          dailyLimit: res.quota!.limit,
+          remaining: res.quota!.remaining,
+          date: res.quota!.date,
+        }));
+      }
+      if (res.error) {
+        setErrorMsg(res.error);
+        setShowManualFallback(true);
+        return;
+      }
+      const merged = applyAnswerKeysToDrafts(res.items, res.answerKeys);
+      setDraftItems(merged.items);
+      setSelectedIds(merged.items.filter((d) => d.pattern_id !== 'OUT-00').map((d) => d.id));
+      setStepperStep(5);
+      setStatusMsg(
+        `Đã trích xuất ${merged.items.length} câu từ văn bản dán (gắn cờ không có ảnh — no_image).`,
+      );
+    } finally {
+      setBusy(false);
+      setBusyMessage('');
+    }
+  };
+
+  // Process uploaded local file OR Google Drive file
+  const processUploadedFile = async (
+    fileName: string,
+    fileOrBytes: File | Uint8Array,
     pickedDriveId?: string,
   ) => {
     clearMessages();
     setSourceName(fileName);
     setDriveFileId(pickedDriveId);
-    setPdfInfo(null);
-    setPdfBuffer(null);
+    setPdfReadResult(null);
+    setPendingConfirmRun(null);
+    setLastUpsertSummary(null);
     const lower = fileName.toLowerCase();
+
+    if (lower.endsWith('.pdf')) {
+      // Keep original File (or fresh Uint8Array) for safe re-reads across any page range
+      setPdfSourceFile(fileOrBytes);
+      setPdfStartPage(1);
+      setPdfEndPage(12);
+      await runPdfRead(fileOrBytes, fileName, {
+        startPage: 1,
+        endPage: 12,
+        driveId: pickedDriveId,
+        promptAutoExtract: true,
+      });
+      return;
+    }
+
+    setPdfSourceFile(null);
+    const buf =
+      fileOrBytes instanceof Uint8Array
+        ? fileOrBytes.slice().buffer
+        : await fileOrBytes.arrayBuffer();
 
     try {
       if (lower.endsWith('.json')) {
-        const text = new TextDecoder('utf-8').decode(arrayBuffer);
-        const parsed = parseSection11Json(text, {
-          sourceFileName: fileName,
-          driveFileId: pickedDriveId,
+        const text = new TextDecoder('utf-8').decode(buf);
+        const parsed = parseSection11Json(text, {sourceFileName: fileName, driveFileId: pickedDriveId});
+        const enriched = parsed.items.map((q) => {
+          const ver = verifyQuestionWithSolvers(q);
+          return {
+            ...q,
+            fingerprint: computeQuestionFingerprint(q),
+            code_verification: ver.code_verification,
+            verified_by_code: ver.verified_by_code,
+          };
         });
-        setDraftItems(parsed.items);
-        setSelectedIds(parsed.items.map((x) => x.id));
-        const mismatchCount = parsed.items.filter(
-          (x) => x.code_verification?.status === 'mismatch_flagged',
-        ).length;
-        const verifiedCount = parsed.items.filter(
-          (x) => x.code_verification?.status === 'verified_match',
-        ).length;
-        setStatusMsg(
-          `Đã đọc ${parsed.items.length} câu từ JSON (${fileName}${parsed.missionId ? ` · trạm ${parsed.missionId}` : ''}). ` +
-            `Code tự giải khớp ${verifiedCount} câu${mismatchCount > 0 ? `, gắn cờ lệch ${mismatchCount} câu` : ''}. Tất cả ở trạng thái chờ duyệt (pending_teacher_review).`,
-        );
+        setDraftItems(enriched);
+        setSelectedIds(enriched.map((x) => x.id));
+        setStepperStep(5);
+        setStatusMsg(`Đã đọc ${enriched.length} câu từ JSON (${fileName}). Tất cả ở trạng thái Chờ Admin duyệt.`);
       } else if (lower.endsWith('.docx')) {
         setBusy(true);
-        const extracted = await parseDocxArrayBuffer(arrayBuffer);
+        const extracted = await parseDocxArrayBuffer(buf);
         setImportText(extracted);
-        setStatusMsg(
-          `Đã tách văn bản từ Word (${fileName}, ${extracted.length} ký tự). Kiểm tra nội dung rồi bấm "Trích xuất câu hỏi bằng AI" hoặc chuyển sang nhập tay.`,
-        );
-      } else if (lower.endsWith('.pdf')) {
-        setBusy(true);
-        setPdfBuffer(arrayBuffer);
-        const parsedPdf = await parsePdfArrayBuffer(arrayBuffer, {
-          startPage: pdfStartPage,
-          endPage: pdfEndPage,
-          maxPages: 8,
-        });
-        setPdfInfo(parsedPdf);
-        setImportText(parsedPdf.combinedText);
-        setStatusMsg(
-          `Đã đọc ${parsedPdf.extractedCount}/${parsedPdf.totalPages} trang PDF bằng pdf.js ` +
-            `(${parsedPdf.scannedCount} trang ảnh quét sẵn sàng gửi Gemini đa phương thức). ` +
-            `Tệp PDF gốc KHÔNG lưu vào CSDL — chỉ lưu tên tệp, số trang in/PDF và đoạn trích ngắn.`,
-        );
+        setStepperStep(2);
+        setStatusMsg(`Đã tách văn bản từ Word (${fileName}, ${extracted.length} ký tự). Bấm "Trích xuất câu hỏi bằng AI" để tách & phân dạng.`);
       } else {
-        const text = new TextDecoder('utf-8').decode(arrayBuffer);
+        const text = new TextDecoder('utf-8').decode(buf);
         setImportText(text);
+        setStepperStep(2);
         setStatusMsg(`Đã nạp văn bản từ ${fileName} (${text.length} ký tự).`);
       }
     } catch (err) {
-      setErrorMsg(
-        `Không thể đọc tệp ${fileName}: ${err instanceof Error ? err.message : 'Định dạng chưa hợp lệ'}.`,
-      );
+      console.error('[MaterialImporter] File parse error:', err);
+      setErrorMsg(`Không thể đọc tệp ${fileName}. Vui lòng kiểm tra định dạng (.pdf, .docx, .json, .txt).`);
     } finally {
       setBusy(false);
     }
@@ -217,43 +822,24 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
   const handleLocalFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const buf = await file.arrayBuffer();
-    await processFileBuffer(file.name, buf, undefined);
     e.target.value = '';
+    if (!file) return;
+    await processUploadedFile(file.name, file, undefined);
   };
 
   const handleReReadPdfRange = async () => {
-    if (!pdfBuffer) return;
-    clearMessages();
-    setBusy(true);
-    try {
-      const parsedPdf = await parsePdfArrayBuffer(pdfBuffer, {
-        startPage: pdfStartPage,
-        endPage: pdfEndPage,
-        maxPages: 8,
-      });
-      setPdfInfo(parsedPdf);
-      setImportText(parsedPdf.combinedText);
-      setStatusMsg(
-        `Đã đọc lại PDF từ trang ${pdfStartPage} đến ${Math.min(pdfEndPage, parsedPdf.totalPages)} ` +
-          `(${parsedPdf.scannedCount} trang ảnh quét).`,
-      );
-    } catch (err) {
-      setErrorMsg(
-        `Lỗi đọc khoảng trang PDF: ${err instanceof Error ? err.message : 'Không xác định'}`,
-      );
-    } finally {
-      setBusy(false);
-    }
+    if (!pdfSourceFile) return;
+    await runPdfRead(pdfSourceFile, sourceName, {
+      startPage: pdfStartPage,
+      endPage: pdfEndPage,
+      promptAutoExtract: false,
+    });
   };
 
   const handleOpenDrivePicker = async () => {
     clearMessages();
     if (!driveConfigured) {
-      setErrorMsg(
-        'Thiếu Google OAuth Client ID hoặc Picker API Key trong Cài đặt Quản trị. Xem hướng dẫn 5 bước bên cạnh.',
-      );
+      setErrorMsg('Chưa cấu hình Google OAuth Client ID hoặc Picker API Key trong Cài đặt Quản trị.');
       return;
     }
     setBusy(true);
@@ -263,28 +849,21 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         apiKey: settings.driveApiKey!.trim(),
       });
       setDriveConnected(true);
-      if (items.length === 0) {
-        setStatusMsg('Đã đóng Google Picker (chưa chọn tệp hoặc thư mục).');
-        return;
-      }
+      if (items.length === 0) return;
       const picked = items[0];
       if (picked.isFolder) {
         const files = await listSupportedFilesInFolder(picked.id, accessToken);
         setDriveFolderName(picked.name);
         setDriveFolderFiles(files);
-        setStatusMsg(
-          `Đã chọn thư mục Google Drive "${picked.name}": tìm thấy ${files.length} tệp hỗ trợ (.json, .docx, .pdf, .txt). Chọn tệp bên dưới để nạp.`,
-        );
+        setStatusMsg(`Đã mở thư mục Google Drive "${picked.name}": ${files.length} tệp hỗ trợ.`);
       } else {
         setDriveFolderName('');
         setDriveFolderFiles([]);
         const buf = await downloadDriveFileArrayBuffer(picked.id, accessToken);
-        await processFileBuffer(picked.name, buf, picked.id);
+        await processUploadedFile(picked.name, new Uint8Array(buf), picked.id);
       }
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Không thể kết nối Google Drive Picker.',
-      );
+      setErrorMsg(err instanceof Error ? err.message : 'Không kết nối được Google Drive.');
     } finally {
       setBusy(false);
     }
@@ -294,14 +873,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     clearMessages();
     const token = getActiveDriveToken();
     if (!token) {
-      setErrorMsg('Phiên Google Drive đã hết hạn trong bộ nhớ. Hãy bấm lại "Chọn từ Google Drive".');
+      setErrorMsg('Phiên Google Drive đã hết hạn. Hãy bấm lại "Chọn từ Google Drive".');
       setDriveConnected(false);
       return;
     }
     setBusy(true);
     try {
       const buf = await downloadDriveFileArrayBuffer(fileItem.id, token);
-      await processFileBuffer(fileItem.name, buf, fileItem.id);
+      await processUploadedFile(fileItem.name, new Uint8Array(buf), fileItem.id);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Lỗi tải tệp từ Google Drive.');
     } finally {
@@ -309,189 +888,134 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     }
   };
 
-  const handleDisconnectDrive = () => {
-    clearDriveToken();
-    setDriveConnected(false);
-    setDriveFolderFiles([]);
-    setDriveFolderName('');
-    setStatusMsg('Đã xóa token Google Drive khỏi bộ nhớ tạm.');
-  };
-
-  const runAiExtract = async () => {
-    clearMessages();
-    const hasPdfPages = Boolean(pdfInfo && pdfInfo.pages.length > 0);
-    if (!importText.trim() && !hasPdfPages) {
-      setErrorMsg('Hãy tải tệp học liệu hoặc dán văn bản Toán 10 Chương III trước khi gọi AI.');
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const pagesPayload: PdfExtractedPage[] = hasPdfPages
-        ? pdfInfo!.pages.map((p) => ({
-            pagePdf: p.pagePdf,
-            pagePrinted: p.pagePrinted,
-            text: p.text,
-            isScanned: p.isScanned,
-            imageBase64: p.imageBase64,
-            mimeType: p.mimeType,
-          }))
-        : [];
-
-      const token = await dataService.getAccessToken();
-      const resp = await fetch('/api/ai/extract', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? {Authorization: `Bearer ${token}`} : {}),
-        },
-        body: JSON.stringify({
-          text: hasPdfPages ? '' : importText,
-          pages: pagesPayload,
-          sourceName,
-          driveFileId,
-          maxDaily: settings.aiDailyQuotaLimit,
-          aiEnabled: settings.aiEnabled,
-        }),
-      });
-
-      const data = (await resp.json()) as {
-        items?: Array<Record<string, unknown>>;
-        error?: string;
-        quotaExceeded?: boolean;
-        fallbackToManual?: boolean;
-        quota?: {used: number; limit: number; remaining: number; date: string};
-      };
-
-      if (data.quota) {
-        setAiStatus((prev) => ({
-          configured: prev?.configured ?? true,
-          model: prev?.model ?? 'gemini-4-hydrogen',
-          dailyUsed: data.quota!.used,
-          dailyLimit: data.quota!.limit,
-          remaining: data.quota!.remaining,
-          date: data.quota!.date,
-        }));
-      }
-
-      if (!resp.ok) {
-        setErrorMsg(data.error ?? 'Trích xuất AI chưa thành công.');
-        if (data.quotaExceeded || data.fallbackToManual) {
-          setShowManualFallback(true);
-        }
-        return;
-      }
-
-      const drafts = mapAiExtractedItemsToDrafts(data.items ?? [], {
-        sourceFileName: sourceName,
-        driveFileId,
-      });
-
-      setDraftItems(drafts);
-      setSelectedIds(drafts.map((d) => d.id));
-      const matched = drafts.filter((d) => d.code_verification?.status === 'verified_match').length;
-      const mismatched = drafts.filter(
-        (d) => d.code_verification?.status === 'mismatch_flagged',
-      ).length;
-
-      setStatusMsg(
-        `AI đã trích xuất ${drafts.length} câu chuyển thể (mặc định pending_teacher_review). ` +
-          `Code tự giải kiểm chứng: khớp ${matched} câu` +
-          (mismatched > 0 ? `, CẢNH BÁO LỆCH ${mismatched} câu!` : '.') +
-          ' Giáo viên hãy đối chiếu bản gốc và duyệt bên dưới.',
-      );
-    } catch {
-      setErrorMsg(
-        'Không kết nối được tới máy chủ AI. Giáo viên có thể chuyển sang nhập tay ngay bên dưới.',
-      );
-      setShowManualFallback(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Live update of any draft field with automatic re-verification by code
+  // Live edit any draft field with automatic solver re-verification
   const updateDraft = (id: string, updater: (prev: QuestionItem) => QuestionItem) => {
     setDraftItems((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item;
-        const updated = updater(item);
+        const next = updater(item);
+        const ver = verifyQuestionWithSolvers(next);
+        const flags = new Set(next.flags ?? []);
+        if (ver.verified_by_code === 'pass') {
+          flags.delete('answer_mismatch');
+          flags.delete('unverifiable_by_code');
+        } else if (ver.verified_by_code === 'fail') {
+          flags.add('answer_mismatch');
+        }
         return {
-          ...updated,
-          code_verification: verifyQuestionByCode(updated),
+          ...next,
+          code_verification: ver.code_verification,
+          verified_by_code: ver.verified_by_code,
+          flags: Array.from(flags),
+          fingerprint: computeQuestionFingerprint(next),
+          suggested_stations: computeSuggestedStations({
+            topic: next.pattern_id === 'OUT-00' ? 'OUT' : next.cluster,
+            patternId: next.pattern_id,
+            level: next.level,
+            taxonomy,
+          }),
         };
       }),
     );
   };
 
-  const applyCodeSolvedAnswer = (id: string) => {
-    updateDraft(id, (item) => {
-      const cv = item.code_verification;
-      if (!cv || cv.roundedCodeValue === undefined) return item;
-      return {
-        ...item,
-        expected_answer: {
-          ...item.expected_answer,
-          rounded: cv.roundedCodeValue,
-          value: cv.roundedCodeValue,
-          exact_numeric: cv.codeValue ?? cv.roundedCodeValue,
-        },
-      };
-    });
+  // Admin opt-in: crop figure_bbox from cached page image (<= 150 KB private)
+  const handleAdminUseCroppedFigure = async (item: QuestionItem) => {
+    if (!isAdmin || !item.figure_bbox) return;
+    const pageNum = item.figure_bbox.page || item.page_pdf;
+    if (!pageNum) return;
+    const pageImg =
+      pagePreviewCache[pageNum] ??
+      (sourceSha256 ? (await getCachedPageImage(sourceSha256, pageNum))?.dataUrl : undefined);
+    if (!pageImg) {
+      setErrorMsg(`Chưa có ảnh trang ${pageNum} trong bộ nhớ tạm. Hãy đọc lại trang PDF để cắt hình.`);
+      return;
+    }
+    const cropped = await cropFigureFromPageDataUrl(pageImg, item.figure_bbox, 150 * 1024);
+    if (!cropped) return;
+    updateDraft(item.id, (prev) => ({
+      ...prev,
+      figure_crop: cropped.dataUrl,
+      figure_crop_private: true,
+      flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing'),
+    }));
+    setStatusMsg(
+      `Đã gắn ảnh cắt nội bộ lớp (${Math.round(cropped.approxBytes / 1024)} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}. Lưu ý chỉ dùng trong phạm vi lớp học.`,
+    );
   };
 
-  const commitDrafts = (targetIds: string[], targetStatus: ReviewStatus) => {
-    const toCommit = draftItems.filter((d) => targetIds.includes(d.id));
-    if (toCommit.length === 0) return;
+  // Commit selected/single drafts into question bank (idempotent upsert + batch-approval guardrails)
+  const commitDrafts = (targetIds: string[], requestedStatus: ReviewStatus, batchApproveGuard = false) => {
+    const rawTargets = draftItems.filter((d) => targetIds.includes(d.id));
+    if (rawTargets.length === 0) return;
 
-    // Teachers can ONLY submit drafts to the Admin approval queue (never approve/reject directly)
-    const effectiveStatus: ReviewStatus = isAdmin ? targetStatus : 'pending_teacher_review';
+    const effectiveStatus: ReviewStatus = isAdmin ? requestedStatus : 'pending_teacher_review';
+    let skippedByGuard = 0;
 
-    const note =
-      effectiveStatus === 'approved'
-        ? 'Nhập học liệu & Admin duyệt trực tiếp'
-        : effectiveStatus === 'rejected'
-          ? 'Nhập học liệu & từ chối'
-          : isAdmin
-            ? 'Nhập học liệu (chờ Admin duyệt)'
-            : 'Giáo viên gửi đề xuất học liệu chờ Admin chấp nhận';
+    const eligibleTargets =
+      batchApproveGuard && effectiveStatus === 'approved'
+        ? rawTargets.filter((q) => {
+            const check = isEligibleForBatchApproval(q, confidenceThreshold);
+            if (!check.eligible) skippedByGuard += 1;
+            return check.eligible;
+          })
+        : rawTargets;
 
-    for (const item of toCommit) {
-      dataService.upsertQuestion(
-        user,
-        {
-          ...item,
-          review_status: effectiveStatus,
-          reviewedBy: effectiveStatus !== 'pending_teacher_review' ? user.displayName : undefined,
-          reviewedAt:
-            effectiveStatus !== 'pending_teacher_review' ? new Date().toISOString() : undefined,
-        },
-        note,
+    if (eligibleTargets.length === 0) {
+      setErrorMsg(
+        `Không có câu nào đủ điều kiện duyệt hàng loạt (${skippedByGuard} câu bị chặn do chưa kiểm chứng code / thiếu hình / lệch đáp án / độ tin cậy < ${Math.round(confidenceThreshold * 100)}%). Hãy duyệt từng câu sau khi kiểm tra.`,
       );
+      return;
     }
 
-    setDraftItems((prev) => prev.filter((d) => !targetIds.includes(d.id)));
-    setSelectedIds((prev) => prev.filter((id) => !targetIds.includes(id)));
+    let added = 0;
+    let updated = 0;
+    let skippedDuplicates = 0;
+    let needsReview = 0;
+    const committedIds = new Set<string>();
+
+    for (const item of eligibleTargets) {
+      const dupAction = duplicateDecisions[item.id] ?? 'skip';
+      const res = dataService.upsertImportedQuestions(user, [item], {
+        targetStatus: effectiveStatus,
+        duplicateAction: dupAction,
+        note:
+          effectiveStatus === 'approved'
+            ? `Admin duyệt từ lô PDF (${sourceName})`
+            : `Gửi Admin duyệt từ lô PDF (${sourceName})`,
+      });
+      added += res.added;
+      updated += res.updated;
+      skippedDuplicates += res.skippedDuplicates;
+      needsReview += res.needsReview;
+      committedIds.add(item.id);
+    }
+
+    setLastUpsertSummary({added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard});
+    setDraftItems((prev) => prev.filter((d) => !committedIds.has(d.id)));
+    setSelectedIds((prev) => prev.filter((id) => !committedIds.has(id)));
+    setStepperStep(6);
+    persistBatchSnapshot({
+      status: draftItems.length - committedIds.size === 0 ? 'completed' : 'reviewing',
+      extractedItems: draftItems.filter((d) => !committedIds.has(d.id)),
+      summary: {added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard},
+    });
     onQuestionsChanged();
 
-    const label =
-      effectiveStatus === 'approved'
-        ? 'Đã DUYỆT (hiển thị ngay cho học viên)'
-        : effectiveStatus === 'rejected'
-          ? 'Đã TỪ CHỐI'
-          : isAdmin
-            ? 'Đã lưu vào Ngân hàng ở trạng thái CHỜ DUYỆT'
-            : 'Đã gửi vào hàng chờ ADMIN DUYỆT (câu hỏi chỉ hiển thị cho học sinh sau khi Admin chấp nhận)';
-    setStatusMsg(`${label}: ${toCommit.length} câu hỏi.`);
+    setStatusMsg(
+      `${effectiveStatus === 'approved' ? 'Admin đã duyệt & lưu vào Ngân hàng' : 'Đã gửi vào hàng chờ Admin duyệt'}: ` +
+        `Đã thêm ${added} câu mới · cập nhật ${updated} câu · bỏ qua ${skippedDuplicates} câu trùng` +
+        `${skippedByGuard > 0 ? ` · giữ lại ${skippedByGuard} câu cần xem lại` : ''}.`,
+    );
   };
 
+  // Manual fallback form submit
   const handleManualAddDraft = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualStem.trim()) return;
     const numericVal = Number(manualNumericAns.replace(',', '.'));
     const hasNum = manualNumericAns.trim() !== '' && Number.isFinite(numericVal);
-
-    const newDraft: QuestionItem = {
+    const draft: QuestionItem = {
       id: generateId('man'),
       stationId: manualStation,
       stage: 'practice',
@@ -501,41 +1025,42 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       type: 'numeric',
       stem_vi: manualStem.trim(),
       expected_answer: hasNum
-        ? {
-            rounded: numericVal,
-            value: numericVal,
-            decimal_places: 1,
-            unit: manualUnit.trim(),
-          }
-        : {value: 0, unit: manualUnit.trim()},
+        ? {rounded: numericVal, value: numericVal, decimal_places: 1, unit: manualUnit.trim()}
+        : {},
       fixedUnitLabel: manualUnit.trim() || undefined,
-      solution_vi: manualSolution.trim() || 'Thay dữ kiện vào công thức Chương III rồi tính theo đơn vị độ.',
+      solution_vi: manualSolution.trim() || 'Áp dụng công thức Chương III rồi tính theo đơn vị độ (DEG).',
       anticipated_error_ids: ['E05'],
       hints_vi: [
         manualHint1.trim() || 'Xác định các cạnh và góc đã cho trong tam giác.',
-        manualHint2.trim() || 'Lập hệ thức liên hệ giữa cạnh và góc đối diện rồi thay số.',
+        manualHint2.trim() || 'Lập hệ thức liên hệ rồi thay số cẩn thận.',
       ],
       review_status: 'pending_teacher_review',
       source_refs: [sourceName],
       is_adapted: true,
       source_file_name: sourceName,
-      drive_file_id: driveFileId,
-      page_pdf: manualPagePdf ? Number(manualPagePdf) : undefined,
-      page_printed: manualPagePrinted.trim() || undefined,
-      source_excerpt: importText.trim().slice(0, 220) || manualStem.trim().slice(0, 180),
       confidence: 1,
-      ai_reason: 'Giáo viên nhập tay trực tiếp (không dùng lượt AI).',
+      ai_reason: 'Nhập tay dự phòng (không dùng lượt AI).',
+      flags: ['no_image'],
     };
-    newDraft.code_verification = verifyQuestionByCode(newDraft);
+    const ver = verifyQuestionWithSolvers(draft);
+    draft.code_verification = ver.code_verification;
+    draft.verified_by_code = ver.verified_by_code;
+    draft.fingerprint = computeQuestionFingerprint(draft);
+    draft.suggested_stations = computeSuggestedStations({
+      topic: manualCluster,
+      level: manualLevel,
+      taxonomy,
+    });
 
-    setDraftItems((prev) => [newDraft, ...prev]);
-    setSelectedIds((prev) => [newDraft.id, ...prev]);
+    setDraftItems((prev) => [draft, ...prev]);
+    setSelectedIds((prev) => [draft.id, ...prev]);
     setManualStem('');
     setManualNumericAns('');
     setManualHint1('');
     setManualHint2('');
     setManualSolution('');
-    setStatusMsg('Đã thêm 1 câu nhập tay vào danh sách đối chiếu (trạng thái pending_teacher_review).');
+    setStepperStep(5);
+    setStatusMsg('Đã thêm 1 câu nhập tay vào danh sách đối chiếu (Chờ Admin duyệt).');
   };
 
   const quotaUsed = aiStatus?.dailyUsed ?? 0;
@@ -543,32 +1068,94 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const quotaPct = quotaLimit > 0 ? Math.min(100, Math.round((quotaUsed / quotaLimit) * 100)) : 0;
   const quotaExhausted = quotaUsed >= quotaLimit;
 
-  const mismatchDraftsCount = draftItems.filter(
-    (d) => d.code_verification?.status === 'mismatch_flagged',
-  ).length;
-  const verifiedDraftsCount = draftItems.filter(
-    (d) => d.code_verification?.status === 'verified_match',
-  ).length;
+  const chapter3Drafts = draftItems.filter(
+    (d) => !(d.flags ?? []).includes('out_of_chapter') && d.pattern_id !== 'OUT-00',
+  );
+  const outOfChapterDrafts = draftItems.filter(
+    (d) => (d.flags ?? []).includes('out_of_chapter') || d.pattern_id === 'OUT-00',
+  );
+
+  const visibleDrafts = (reviewBucket === 'chapter3' ? chapter3Drafts : outOfChapterDrafts)
+    .filter((d) => filterPattern === 'ALL' || (d.pattern_id ?? 'UNMAPPED') === filterPattern)
+    .filter((d) => {
+      if (filterFlag === 'pass_only') return d.verified_by_code === 'pass';
+      if (filterFlag === 'flagged') {
+        return (
+          d.verified_by_code !== 'pass' ||
+          (d.flags ?? []).some((f) => ['answer_mismatch', 'figure_missing', 'formula_uncertain', 'missing_answer'].includes(f))
+        );
+      }
+      return true;
+    });
+
+  const uniqueDocLabels = Array.from(
+    new Set(draftItems.map((d) => d.source_pattern_label).filter((s): s is string => Boolean(s))),
+  );
 
   return (
     <div className="space-y-4">
-      {/* TOP HEADER + AI QUOTA MONITOR */}
+      {/* 7-STEP PIPELINE STEPPER */}
+      <div className="notebook-card p-3.5">
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+          {STEPPER_ITEMS.map((st, idx) => {
+            const done = stepperStep > st.id;
+            const current = stepperStep === st.id;
+            return (
+              <React.Fragment key={st.id}>
+                <div
+                  className={`shrink-0 px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold border flex items-center gap-1 ${
+                    current
+                      ? 'bg-[#14284A] text-[#FFFBF0] border-[#14284A]'
+                      : done
+                        ? 'bg-[#E6F6F3] text-[#145B4F] border-[#2E9C8A]'
+                        : 'bg-[#FFFBF0] text-[#5B6B82] border-[#E5D3A8]'
+                  }`}
+                >
+                  {done && <Check className="w-3 h-3" />}
+                  {st.label}
+                </div>
+                {idx < STEPPER_ITEMS.length - 1 && (
+                  <ArrowRight className="w-3.5 h-3.5 text-[#CBB17D] shrink-0" />
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* TOP HEADER + CONTROLS + AI QUOTA MONITOR */}
       <div className="notebook-card p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
+          <div className="space-y-1.5 flex-1 min-w-[260px]">
             <h2 className="font-display text-xl font-extrabold text-[#14284A]">
-              Nhập học liệu Chương III (Google Drive / Máy tính / Dán văn bản + Gemini)
+              Nhập học liệu 1 chạm: PDF → AI tách câu &amp; phân dạng → Kiểm chứng code → Ngân hàng
             </h2>
             <p className="text-xs text-[#5B6B82]">
-              Hỗ trợ <strong>.json</strong>, <strong>.docx</strong>,{' '}
-              <strong>.pdf</strong> (có hỗ trợ trích xuất tự động). Mọi học liệu mới hoặc chỉnh sửa đều vào trạng thái{' '}
-              <strong>Chờ Admin duyệt</strong>; chỉ câu đã được <strong>Admin chấp nhận</strong> mới hiển thị với học sinh. Không lưu nguyên tệp PDF vào cơ sở dữ liệu.
+              Hỗ trợ <strong>.pdf</strong> (đọc từng trang + gửi ảnh khi lớp chữ lỗi công thức/có hình),{' '}
+              <strong>.docx</strong>, <strong>.json</strong>, <strong>.txt</strong>. Mọi câu giáo viên gửi lên đều vào hàng chờ{' '}
+              <strong>Admin duyệt</strong>; chỉ câu đã duyệt mới hiện với học viên. Không lưu tệp PDF gốc vào CSDL.
             </p>
-            {!isAdmin && (
-              <p className="text-xs font-bold text-[#8A5108] bg-[#FFF5E2] border border-[#D98A1F] rounded-xl px-3 py-2 mt-1">
-                Lưu ý phân quyền Giáo viên: Tất cả câu hỏi/tài liệu bạn tải lên, chỉnh sửa hoặc thay thế sẽ được gửi vào hàng chờ để Quản trị viên (Admin) kiểm duyệt và chấp nhận trước khi áp dụng cho học sinh.
-              </p>
-            )}
+            <div className="flex flex-wrap items-center gap-3 pt-1 text-xs">
+              <label className="inline-flex items-center gap-1.5 font-bold text-[#14284A] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoRunAfterUpload}
+                  onChange={(e) => setAutoRunAfterUpload(e.target.checked)}
+                  className="accent-[#2E9C8A] w-4 h-4"
+                />
+                Tự động chạy sau khi tải lên (hiện hộp xác nhận lượt AI trước khi chạy)
+              </label>
+              {savedBatches.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowSavedBatches((v) => !v)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#D5B87E] font-bold text-[#14284A]"
+                >
+                  <History className="w-3.5 h-3.5 text-[#2E9C8A]" />
+                  Lô nhập đã lưu ({savedBatches.length})
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="min-w-[260px] p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] space-y-1.5">
@@ -587,7 +1174,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
             <div className="flex items-center justify-between gap-3 text-[11px] text-[#5B6B82]">
               <span className="truncate">
                 {aiStatus?.configured
-                  ? `Model: ${aiStatus.model}`
+                  ? `Model: ${activeModel} (${PROMPT_VERSION})`
                   : 'Chưa cấu hình GEMINI_API_KEY'}
               </span>
               <button
@@ -601,10 +1188,109 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           </div>
         </div>
 
-        {/* 3-COLUMN INPUT SOURCES */}
+        {/* Saved Import Batches drawer (resume after F5 / offline) */}
+        {showSavedBatches && savedBatches.length > 0 && (
+          <div className="p-3 rounded-2xl bg-[#FFFBF0] border border-[#D5B87E] space-y-2 text-xs">
+            <p className="font-extrabold text-[#14284A]">Tiếp tục lô nhập gần đây (đã lưu trạng thái):</p>
+            <div className="space-y-1.5 max-h-44 overflow-y-auto">
+              {savedBatches.map((b) => (
+                <div
+                  key={b.id}
+                  className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-xl bg-white border border-[#E5D3A8]"
+                >
+                  <div>
+                    <p className="font-bold text-[#14284A]">
+                      {b.fileName} · Trang {b.startPage}–{b.endPage}/{b.totalPages} · {b.extractedItems.length} câu ·{' '}
+                      <span className="text-[#1F7A6B]">{b.status}</span>
+                    </p>
+                    <p className="text-[11px] text-[#5B6B82]">
+                      {new Date(b.updatedAt).toLocaleString('vi-VN')} · Đã dùng {b.aiCallsUsed} lượt AI
+                    </p>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveBatch(b);
+                        setSourceName(b.fileName);
+                        setSourceSha256(b.fileSha256);
+                        setPdfStartPage(b.startPage);
+                        setPdfEndPage(b.endPage);
+                        setClassificationMode(b.classificationMode);
+                        setDraftItems(b.extractedItems);
+                        setAnswerKeys(b.answerKeys);
+                        setPatternMappings(b.patternMappings ?? {});
+                        setSelectedIds(b.extractedItems.filter((x) => x.pattern_id !== 'OUT-00').map((x) => x.id));
+                        setStepperStep(b.extractedItems.length > 0 ? 5 : 2);
+                        setShowSavedBatches(false);
+                        setStatusMsg(`Đã khôi phục lô nhập "${b.fileName}" (${b.extractedItems.length} câu).`);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white font-bold"
+                    >
+                      Mở lại
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        dataService.deleteImportBatch(user, b.id);
+                        onQuestionsChanged();
+                      }}
+                      className="px-2 py-1 rounded-lg bg-[#FCE8E6] text-[#99261B] font-bold"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* CLASSIFICATION MODE SELECTOR (Mode A vs Mode B) */}
+        <div className="p-3.5 rounded-2xl bg-[#FFFBF0] border border-[#D9C293] space-y-2 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-extrabold text-[#14284A] inline-flex items-center gap-1.5">
+              <Layers className="w-4 h-4 text-[#2E9C8A]" />
+              Chế độ phân dạng bài khi trích xuất:
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <label className="inline-flex items-center gap-1.5 font-bold cursor-pointer">
+                <input
+                  type="radio"
+                  name="classificationMode"
+                  checked={classificationMode === 'web_taxonomy'}
+                  onChange={() => setClassificationMode('web_taxonomy')}
+                  className="accent-[#2E9C8A]"
+                />
+                Chế độ A: Theo danh mục dạng của web (mặc định)
+              </label>
+              <label className="inline-flex items-center gap-1.5 font-bold cursor-pointer">
+                <input
+                  type="radio"
+                  name="classificationMode"
+                  checked={classificationMode === 'document_patterns'}
+                  onChange={() => setClassificationMode('document_patterns')}
+                  className="accent-[#2E9C8A]"
+                />
+                Chế độ B: Theo dạng của tài liệu / giáo viên (có bảng ánh xạ)
+              </label>
+            </div>
+          </div>
+          {classificationMode === 'document_patterns' && (
+            <textarea
+              rows={2}
+              value={customPatternsText}
+              onChange={(e) => setCustomPatternsText(e.target.value)}
+              placeholder="(Tùy chọn) Dán sẵn danh sách dạng bài riêng của bạn, mỗi dạng 1 dòng (vd: Dạng 1. Tính cạnh bằng định lí Côsin). Nếu để trống, AI tự lấy tiêu đề 'Dạng n...' trong PDF."
+              className="w-full p-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+            />
+          )}
+        </div>
+
+        {/* 3 INPUT SOURCES */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* LEFT: LOCAL UPLOAD + PASTE TEXT (7 cols) */}
           <div className="lg:col-span-7 space-y-3">
+            {/* 1. Local Upload */}
             <div className="p-3.5 rounded-2xl bg-[#FFFBF0] border border-[#D9C293] space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label
@@ -612,36 +1298,41 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   className="text-xs font-extrabold text-[#14284A] inline-flex items-center gap-1.5"
                 >
                   <HardDriveUpload className="w-4 h-4 text-[#2E9C8A]" />
-                  1. Tải từ máy (.json, .docx, .pdf, .txt)
+                  1. Tải tệp từ máy (.pdf, .docx, .json, .txt)
                 </label>
                 <span className="text-[11px] text-[#5B6B82]">
-                  Nguồn hiện tại: <strong>{sourceName}</strong>
-                  {driveFileId ? ` (Drive ID: ${driveFileId.slice(0, 10)}…)` : ''}
+                  Nguồn: <strong>{sourceName}</strong>
                 </span>
               </div>
 
               <input
                 id="local-material-upload"
                 type="file"
-                accept=".json,.docx,.pdf,.txt"
+                accept=".pdf,.docx,.json,.txt"
                 onChange={handleLocalFileChange}
                 className="block w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:bg-[#14284A] file:text-[#FFFBF0] file:font-bold file:cursor-pointer"
               />
 
-              {/* PDF Page Range Controls when a PDF is loaded */}
-              {pdfInfo && (
-                <div className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]/40 space-y-2 text-xs">
+              {/* PDF Range Controls & Consistent Status Line */}
+              {pdfReadResult && (
+                <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]/50 space-y-2.5 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-bold text-[#14284A]">
-                      PDF {pdfInfo.totalPages} trang · Đã đọc {pdfInfo.extractedCount} trang ·{' '}
-                      {pdfInfo.scannedCount} trang ảnh quét
+                    <span className="font-extrabold text-[#14284A]">
+                      {formatPdfStatusSummary({
+                        totalPages: pdfReadResult.totalPages,
+                        startPage: pdfReadResult.startPage,
+                        endPage: pdfReadResult.endPage,
+                        readCount: pdfReadResult.readCount,
+                        imageUsedCount: pdfReadResult.imageUsedCount,
+                        errorCount: pdfReadResult.errorCount,
+                      })}
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-[11px] font-bold">Trang PDF từ</label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <label className="text-[11px] font-bold">Trang</label>
                       <input
                         type="number"
                         min={1}
-                        max={pdfInfo.totalPages}
+                        max={pdfReadResult.totalPages}
                         value={pdfStartPage}
                         onChange={(e) => setPdfStartPage(Math.max(1, Number(e.target.value)))}
                         className="w-14 px-2 py-1 rounded-lg bg-white border border-[#CBB17D] text-xs font-bold"
@@ -650,14 +1341,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                       <input
                         type="number"
                         min={pdfStartPage}
-                        max={pdfInfo.totalPages}
+                        max={pdfReadResult.totalPages}
                         value={pdfEndPage}
                         onChange={(e) => setPdfEndPage(Math.max(pdfStartPage, Number(e.target.value)))}
                         className="w-14 px-2 py-1 rounded-lg bg-white border border-[#CBB17D] text-xs font-bold"
                       />
                       <button
                         type="button"
-                        onClick={handleReReadPdfRange}
+                        onClick={() => void handleReReadPdfRange()}
                         disabled={busy}
                         className="px-2.5 py-1 rounded-lg bg-[#14284A] text-white font-bold !min-h-[30px]"
                       >
@@ -665,13 +1356,87 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                       </button>
                     </div>
                   </div>
-                  <p className="text-[11px] text-[#1F7A6B]">
-                    Trang có ít chữ sẽ tự động chuyển thành ảnh gửi Gemini đa phương thức. Không lưu tệp PDF gốc vào CSDL.
-                  </p>
+
+                  {/* Page Thumbnail Strip with per-page status & Retry */}
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {pdfReadResult.pages.map((pg) => (
+                      <div
+                        key={pg.pagePdf}
+                        className={`shrink-0 w-28 p-1.5 rounded-xl border text-[10px] space-y-1 bg-white ${
+                          pg.state.status === 'error'
+                            ? 'border-[#C8392B] bg-[#FCE8E6]'
+                            : pg.state.status === 'extracted'
+                              ? 'border-[#2E9C8A]'
+                              : 'border-[#D5B87E]'
+                        }`}
+                      >
+                        {pg.cachedImage?.thumbDataUrl ? (
+                          <img
+                            src={pg.cachedImage.thumbDataUrl}
+                            alt={`Trang ${pg.pagePdf}`}
+                            className="w-full h-24 object-contain rounded border border-[#EFE0BC] bg-white"
+                          />
+                        ) : (
+                          <div className="w-full h-24 rounded border border-dashed border-[#D5B87E] flex items-center justify-center text-[#5B6B82]">
+                            Trang {pg.pagePdf}
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between font-extrabold text-[#14284A]">
+                          <span>Tr. {pg.pagePdf}</span>
+                          <span
+                            className={
+                              pg.state.status === 'error'
+                                ? 'text-[#C8392B]'
+                                : pg.state.status === 'extracted'
+                                  ? 'text-[#1F7A6B]'
+                                  : 'text-[#8A5108]'
+                            }
+                          >
+                            {pg.state.status === 'error'
+                              ? 'Lỗi'
+                              : pg.state.status === 'extracted'
+                                ? `${pg.state.questionCount ?? 0} câu`
+                                : pg.state.sendMode !== 'text_only'
+                                  ? 'Ảnh+Chữ'
+                                  : 'Chữ'}
+                          </span>
+                        </div>
+                        {pg.state.hasAnswerKeyCue && (
+                          <span className="block px-1 py-0.5 rounded bg-[#FFF4D6] text-[#8A5108] font-bold text-center">
+                            Bảng đáp án
+                          </span>
+                        )}
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleRetrySinglePage(pg.pagePdf, false)}
+                            className="flex-1 px-1 py-0.5 rounded bg-[#FFFBF0] border border-[#CBB17D] font-bold text-[#14284A] hover:bg-[#FFF4D6]"
+                            title="Thử lại trang này"
+                          >
+                            Thử lại
+                          </button>
+                          {(pg.state.status === 'error' ||
+                            (pg.state.confidenceAvg !== undefined && pg.state.confidenceAvg < 0.8)) && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleRetrySinglePage(pg.pagePdf, true)}
+                              className="px-1 py-0.5 rounded bg-[#14284A] text-white font-bold"
+                              title={`Đọc lại bằng model mạnh (${hardPageModel})`}
+                            >
+                              Pro
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
 
+            {/* 2. Manual Pasted Text Fallback */}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label
@@ -679,59 +1444,91 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   className="text-xs font-extrabold text-[#14284A] inline-flex items-center gap-1.5"
                 >
                   <FileText className="w-4 h-4 text-[#2E9C8A]" />
-                  2. Dán văn bản đề bài Chương III (hoặc chỉnh nội dung đã tách từ Word/PDF)
+                  2. Dán văn bản đề bài (dự phòng thủ công khi không dùng PDF)
                 </label>
                 <input
                   type="text"
                   value={sourceName}
                   onChange={(e) => setSourceName(e.target.value)}
-                  aria-label="Tên nguồn học liệu"
-                  placeholder="Tên tài liệu / SGK / SBT..."
-                  className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] text-xs font-semibold w-52"
+                  placeholder="Tên tài liệu..."
+                  className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] text-xs font-semibold w-48"
                 />
               </div>
 
               <textarea
                 id="paste-material-textarea"
-                rows={6}
+                rows={4}
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
-                placeholder="Dán đoạn bài tập Toán 10 Chương III (Tổng góc, Giá trị lượng giác 0°–180°, Định lý Côsin, Định lý Sin, Diện tích tam giác, Đo đạc thực tế) vào đây..."
-                className="w-full p-3 rounded-xl bg-white border-2 border-[#CBB17D] text-xs leading-relaxed"
+                placeholder="Dán nội dung đề Toán 10 Chương III vào đây nếu muốn trích xuất thủ công không cần ảnh..."
+                className="w-full p-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-xs leading-relaxed"
               />
 
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  disabled={busy || (!importText.trim() && !pdfInfo) || quotaExhausted}
-                  onClick={() => void runAiExtract()}
+                  disabled={busy || (!importText.trim() && !pdfReadResult) || quotaExhausted}
+                  onClick={() => {
+                    if (pdfReadResult) {
+                      const answerKeyPages = pdfReadResult.pages
+                        .filter((p) => p.state.hasAnswerKeyCue)
+                        .map((p) => p.pagePdf);
+                      const est = estimateAiCallsForRange({
+                        sha256: pdfReadResult.fileSha256,
+                        startPage: pdfReadResult.startPage,
+                        endPage: pdfReadResult.endPage,
+                        answerKeyPages,
+                        promptVersion: PROMPT_VERSION,
+                        model: activeModel,
+                        windowSize: 2,
+                      });
+                      setPendingConfirmRun({
+                        totalPagesInRange: pdfReadResult.endPage - pdfReadResult.startPage + 1,
+                        estimatedCalls: est.estimatedCalls,
+                        cachedWindows: est.cachedWindows,
+                        remainingQuota: Math.max(0, quotaLimit - quotaUsed),
+                        readResult: pdfReadResult,
+                      });
+                    } else {
+                      void handleExtractPastedText();
+                    }
+                  }}
                   className="btn-tactile btn-jade text-xs py-2.5 px-4 flex-1 min-w-[220px]"
                 >
                   <Sparkles className="w-4 h-4" />
                   {busy
-                    ? 'Đang trích xuất & chuyển thể bằng Gemini...'
+                    ? busyMessage || 'Đang xử lý...'
                     : quotaExhausted
                       ? 'Đã hết lượt AI hôm nay'
-                      : 'Trích xuất câu hỏi bằng AI (Chờ duyệt)'}
+                      : 'Trích xuất & phân dạng bằng AI (Chờ duyệt)'}
                 </button>
+                {busy && (
+                  <button
+                    type="button"
+                    onClick={cancelRunningTask}
+                    className="btn-tactile btn-amber text-xs py-2.5 px-3.5"
+                  >
+                    <Square className="w-3.5 h-3.5" /> Hủy
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowManualFallback((v) => !v)}
                   className="btn-tactile btn-paper text-xs py-2.5 px-3.5"
                 >
                   <PenLine className="w-4 h-4" />
-                  {showManualFallback ? 'Ẩn form nhập tay' : 'Chuyển sang nhập tay'}
+                  {showManualFallback ? 'Ẩn nhập tay' : 'Chuyển sang nhập tay'}
                 </button>
               </div>
             </div>
           </div>
 
-          {/* RIGHT: GOOGLE DRIVE PICKER + 5-STEP GUIDE (5 cols) */}
+          {/* 3. Google Drive Picker */}
           <div className="lg:col-span-5 p-4 rounded-2xl bg-[#FFF4D6] border border-[#D5B87E] space-y-3 text-xs text-[#1B2A41]">
             <div className="flex items-center justify-between gap-2">
               <strong className="text-sm text-[#14284A] inline-flex items-center gap-1.5">
                 <Cloud className="w-4 h-4 text-[#2E9C8A]" />
-                3. Google Drive Picker (drive.readonly)
+                3. Google Drive Picker (chỉ đọc)
               </strong>
               <span
                 className={`px-2 py-0.5 rounded font-bold text-[11px] ${
@@ -740,20 +1537,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     : 'bg-[#FFFBF0] text-[#8A5108] border border-[#D98A1F]'
                 }`}
               >
-                {driveConfigured
-                  ? driveConnected
-                    ? 'Đã kết nối'
-                    : 'Sẵn sàng'
-                  : 'Chưa điền khóa'}
+                {driveConfigured ? (driveConnected ? 'Đã kết nối' : 'Sẵn sàng') : 'Chưa cấu hình'}
               </span>
             </div>
 
             {driveConfigured ? (
               <div className="space-y-2.5">
                 <p className="text-[#5B6B82]">
-                  Đã đọc Client ID và Picker API Key từ <strong>Cài đặt Quản trị</strong> (không hard-code). Hỗ trợ chọn{' '}
-                  <strong>tệp đơn lẻ</strong> hoặc <strong>cả thư mục</strong> trên Google Drive (quyền chỉ đọc{' '}
-                  <code>drive.readonly</code>, token chỉ giữ trong RAM).
+                  Chọn tệp PDF/Word/JSON hoặc cả thư mục từ Google Drive (chỉ quyền đọc, token chỉ lưu trong RAM).
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -762,38 +1553,35 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     onClick={() => void handleOpenDrivePicker()}
                     className="btn-tactile btn-gold text-xs py-2 px-3.5 flex-1"
                   >
-                    <FolderOpen className="w-4 h-4" />
-                    Chọn tệp / thư mục từ Google Drive
+                    <FolderOpen className="w-4 h-4" /> Chọn từ Google Drive
                   </button>
                   {driveConnected && (
                     <button
                       type="button"
-                      onClick={handleDisconnectDrive}
+                      onClick={() => {
+                        clearDriveToken();
+                        setDriveConnected(false);
+                        setDriveFolderFiles([]);
+                      }}
                       className="btn-tactile btn-paper text-xs py-2 px-3"
                     >
                       Ngắt Drive
                     </button>
                   )}
                 </div>
-
                 {driveFolderFiles.length > 0 && (
-                  <div className="p-2.5 rounded-xl bg-white border border-[#D9C293] space-y-1.5 max-h-48 overflow-y-auto">
+                  <div className="p-2.5 rounded-xl bg-white border border-[#D9C293] space-y-1.5 max-h-44 overflow-y-auto">
                     <p className="font-bold text-[#14284A]">
-                      Tệp trong thư mục &ldquo;{driveFolderName}&rdquo; ({driveFolderFiles.length}):
+                      Thư mục &ldquo;{driveFolderName}&rdquo; ({driveFolderFiles.length} tệp):
                     </p>
                     {driveFolderFiles.map((f) => (
-                      <div
-                        key={f.id}
-                        className="flex items-center justify-between gap-2 py-1 border-b border-[#EFE0BC] last:border-0"
-                      >
-                        <span className="truncate font-semibold text-[#14284A]" title={f.name}>
-                          {f.name}
-                        </span>
+                      <div key={f.id} className="flex items-center justify-between gap-2 py-1 border-b border-[#EFE0BC] last:border-0">
+                        <span className="truncate font-semibold text-[#14284A]">{f.name}</span>
                         <button
                           type="button"
                           disabled={busy}
                           onClick={() => void handleLoadDriveFolderFile(f)}
-                          className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white font-bold shrink-0 !min-h-[28px]"
+                          className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white font-bold shrink-0"
                         >
                           Nạp
                         </button>
@@ -803,29 +1591,21 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 )}
               </div>
             ) : (
-              <div className="space-y-2.5">
-                <p className="text-[#8A5108] font-semibold">
-                  Chưa có <strong>Google OAuth Client ID</strong> hoặc <strong>Picker API Key</strong> trong Cài đặt. Làm theo 5 bước sau để kích hoạt (không cần sửa mã nguồn):
+              <div className="space-y-2">
+                <p className="text-[#5B6B82]">
+                  Chưa thiết lập khóa Google Drive Picker. Bạn vẫn có thể tải PDF trực tiếp từ máy tính ở mục 1.
                 </p>
-                <ol className="list-decimal list-inside space-y-1 text-[#5B6B82]">
-                  <li>Mở Google Cloud Console của dự án, bật <strong>Google Drive API</strong> và <strong>Google Picker API</strong>.</li>
-                  <li>Cấu hình OAuth Consent Screen với phạm vi tối thiểu <code>https://www.googleapis.com/auth/drive.readonly</code>.</li>
-                  <li>Tạo <strong>OAuth 2.0 Client ID</strong> (Web application) và thêm đúng domain ứng dụng vào Authorized JavaScript origins.</li>
-                  <li>Tạo <strong>API Key</strong> công khai (chỉ giới hạn cho Google Picker API và đúng domain).</li>
-                  <li>Dán Client ID và API Key vào mục <strong>8. Cài đặt</strong> rồi quay lại bấm chọn tệp hoặc thư mục Drive.</li>
-                </ol>
                 {isAdmin ? (
                   <button
                     type="button"
                     onClick={onOpenSettingsTab}
                     className="btn-tactile btn-paper text-xs py-2 px-3 w-full"
                   >
-                    <Settings className="w-4 h-4" />
-                    Mở mục 9. Cài đặt để nhập Client ID & API Key
+                    <Settings className="w-4 h-4" /> Mở mục Cài đặt (Admin)
                   </button>
                 ) : (
                   <p className="text-[11px] font-semibold text-[#5B6B82] bg-white/80 p-2 rounded-lg border border-[#E5D3A8]">
-                    Vui lòng liên hệ Quản trị viên (Admin) nếu cần cấu hình kết nối Google Drive cho hệ thống.
+                    Liên hệ Quản trị viên (Admin) nếu cần bật Google Drive Picker.
                   </p>
                 )}
               </div>
@@ -833,11 +1613,57 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           </div>
         </div>
 
+        {/* AI QUOTA CONFIRMATION DIALOG BEFORE SPENDING CALLS */}
+        {pendingConfirmRun && (
+          <div className="p-4 rounded-2xl bg-[#EEF6FF] border-2 border-[#3B5F8F] space-y-2.5 text-xs">
+            <p className="font-display text-base font-extrabold text-[#14284A]">
+              Xác nhận chạy trích xuất tự động bằng AI
+            </p>
+            <p className="text-[#1B2A41]">
+              Tệp <strong>{pendingConfirmRun.readResult.fileName}</strong> có{' '}
+              <strong>{pendingConfirmRun.totalPagesInRange} trang</strong> trong khoảng đang chọn, dự kiến dùng khoảng{' '}
+              <strong className="text-[#1F7A6B]">{pendingConfirmRun.estimatedCalls} lượt AI</strong>{' '}
+              (còn lại <strong>{pendingConfirmRun.remainingQuota} lượt</strong> hôm nay
+              {pendingConfirmRun.cachedWindows > 0
+                ? ` · ${pendingConfirmRun.cachedWindows} nhóm trang đã có sẵn trong bộ nhớ đệm = 0 lượt`
+                : ''}
+              ). Tiếp tục?
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void executeFullAiExtraction(pendingConfirmRun.readResult)}
+                className="btn-tactile btn-jade text-xs py-2 px-4"
+              >
+                <Play className="w-3.5 h-3.5" /> Tiếp tục trích xuất &amp; phân dạng
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingConfirmRun(null)}
+                className="btn-tactile btn-paper text-xs py-2 px-3"
+              >
+                Để sau (chỉnh khoảng trang trước)
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* FEEDBACK BANNERS */}
         {statusMsg && (
-          <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B] flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{statusMsg}</span>
+          <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B] flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{statusMsg}</span>
+            </div>
+            {lastUpsertSummary && onOpenMissionSetsTab && (
+              <button
+                type="button"
+                onClick={onOpenMissionSetsTab}
+                className="px-3 py-1.5 rounded-lg bg-[#14284A] text-[#FFFBF0] font-extrabold inline-flex items-center gap-1"
+              >
+                Sang tab Set nhiệm vụ <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         )}
         {errorMsg && (
@@ -850,7 +1676,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               <button
                 type="button"
                 onClick={() => setShowManualFallback(true)}
-                className="px-3 py-1.5 rounded-lg bg-[#14284A] text-white font-bold !min-h-[32px]"
+                className="px-3 py-1.5 rounded-lg bg-[#14284A] text-white font-bold"
               >
                 Chuyển sang nhập tay
               </button>
@@ -859,183 +1685,233 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         )}
       </div>
 
-      {/* MANUAL FALLBACK ENTRY PANEL (ALWAYS AVAILABLE WHEN QUOTA EXHAUSTED / AI ERROR / USER CLICKS) */}
+      {/* MANUAL FALLBACK FORM */}
       {showManualFallback && (
-        <form
-          onSubmit={handleManualAddDraft}
-          className="notebook-card p-5 space-y-3 border-2 border-[#2E9C8A]"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h3 className="font-display text-lg font-extrabold text-[#14284A]">
-                Nhập tay câu hỏi Chương III (Dự phòng khi không dùng AI)
-              </h3>
-              <p className="text-xs text-[#5B6B82]">
-                Câu nhập tay vẫn được code tự giải đối chiếu và đưa vào danh sách chờ duyệt (pending_teacher_review).
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowManualFallback(false)}
-              className="text-xs font-bold text-[#5B6B82] hover:text-[#14284A]"
-            >
+        <form onSubmit={handleManualAddDraft} className="notebook-card p-5 space-y-3 border-2 border-[#2E9C8A]">
+          <div className="flex items-center justify-between">
+            <h3 className="font-display text-lg font-extrabold text-[#14284A]">Nhập tay câu hỏi (Dự phòng)</h3>
+            <button type="button" onClick={() => setShowManualFallback(false)} className="text-xs font-bold text-[#5B6B82]">
               Đóng
             </button>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
-            <div>
-              <label className="block font-bold text-[#14284A] mb-1">Chủ đề (cluster)</label>
-              <select
-                value={manualCluster}
-                onChange={(e) => {
-                  const cl = e.target.value as SkillCluster;
-                  setManualCluster(cl);
-                  setManualStation(clusterToDefaultStation(cl));
-                }}
-                className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
-              >
-                {SKILL_CLUSTER_LIST.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block font-bold text-[#14284A] mb-1">Trạm</label>
-              <select
-                value={manualStation}
-                onChange={(e) => setManualStation(e.target.value as StationId)}
-                className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
-              >
-                {STATION_LIST.map((st) => (
-                  <option key={st} value={st}>
-                    {st} — {STATIONS.find((s) => s.id === st)?.shortName ?? st}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block font-bold text-[#14284A] mb-1">Mức độ (1–4)</label>
-              <select
-                value={manualLevel}
-                onChange={(e) => setManualLevel(Number(e.target.value) as 1 | 2 | 3 | 4)}
-                className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
-              >
-                {[1, 2, 3, 4].map((lv) => (
-                  <option key={lv} value={lv}>
-                    Mức {lv}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5">
-              <div>
-                <label className="block font-bold text-[#14284A] mb-1">Trang in</label>
-                <input
-                  type="text"
-                  value={manualPagePrinted}
-                  onChange={(e) => setManualPagePrinted(e.target.value)}
-                  placeholder="vd: 39"
-                  className="w-full px-2 py-2 rounded-xl bg-white border border-[#CBB17D]"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-[#14284A] mb-1">Trang PDF</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={manualPagePdf}
-                  onChange={(e) => setManualPagePdf(e.target.value)}
-                  placeholder="vd: 41"
-                  className="w-full px-2 py-2 rounded-xl bg-white border border-[#CBB17D]"
-                />
-              </div>
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <select
+              value={manualCluster}
+              onChange={(e) => {
+                const cl = e.target.value as SkillCluster;
+                setManualCluster(cl);
+                setManualStation(clusterToDefaultStation(cl));
+              }}
+              className="px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
+            >
+              {SKILL_CLUSTER_LIST.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <select
+              value={manualStation}
+              onChange={(e) => setManualStation(e.target.value as StationId)}
+              className="px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
+            >
+              {STATION_LIST.map((st) => (
+                <option key={st} value={st}>{st} — {STATIONS.find((s) => s.id === st)?.shortName}</option>
+              ))}
+            </select>
+            <select
+              value={manualLevel}
+              onChange={(e) => setManualLevel(Number(e.target.value) as 1 | 2 | 3 | 4)}
+              className="px-2.5 py-2 rounded-xl bg-white border border-[#CBB17D] font-bold"
+            >
+              {[1, 2, 3, 4].map((lv) => (
+                <option key={lv} value={lv}>Mức {lv}</option>
+              ))}
+            </select>
           </div>
-
           <textarea
             rows={2}
             required
             value={manualStem}
             onChange={(e) => setManualStem(e.target.value)}
-            placeholder="Đề bài chuyển thể (hỗ trợ LaTeX trong $...$, ví dụ: Tam giác ABC có $a = 8\\text{ m}, b = 10\\text{ m}, C = 60^\\circ$. Tính cạnh $c$ đến 0,1 m.)"
+            placeholder="Đề bài (hỗ trợ LaTeX trong $...$)"
             className="w-full p-2.5 rounded-xl bg-white border border-[#CBB17D] text-xs"
           />
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
-            <input
-              type="text"
-              value={manualNumericAns}
-              onChange={(e) => setManualNumericAns(e.target.value)}
-              placeholder="Đáp án số (vd: 9,2)"
-              className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]"
-            />
-            <input
-              type="text"
-              value={manualUnit}
-              onChange={(e) => setManualUnit(e.target.value)}
-              placeholder="Đơn vị (m, °, m²...)"
-              className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]"
-            />
-            <input
-              type="text"
-              value={manualSolution}
-              onChange={(e) => setManualSolution(e.target.value)}
-              placeholder="Lời giải ngắn gọn..."
-              className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <input type="text" value={manualNumericAns} onChange={(e) => setManualNumericAns(e.target.value)} placeholder="Đáp án số" className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]" />
+            <input type="text" value={manualUnit} onChange={(e) => setManualUnit(e.target.value)} placeholder="Đơn vị (m, °, m²)" className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]" />
+            <input type="text" value={manualSolution} onChange={(e) => setManualSolution(e.target.value)} placeholder="Lời giải ngắn" className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]" />
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-            <input
-              type="text"
-              value={manualHint1}
-              onChange={(e) => setManualHint1(e.target.value)}
-              placeholder="Gợi ý mức 1 (KHÔNG lộ đáp án)..."
-              className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]"
-            />
-            <input
-              type="text"
-              value={manualHint2}
-              onChange={(e) => setManualHint2(e.target.value)}
-              placeholder="Gợi ý mức 2 (công thức / bước thế số)..."
-              className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <input type="text" value={manualHint1} onChange={(e) => setManualHint1(e.target.value)} placeholder="Gợi ý mức 1 (không lộ đáp án)" className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]" />
+            <input type="text" value={manualHint2} onChange={(e) => setManualHint2(e.target.value)} placeholder="Gợi ý mức 2 (công thức)" className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D]" />
           </div>
-
           <button type="submit" className="btn-tactile btn-jade text-xs py-2 px-4">
-            Đưa vào danh sách đối chiếu (Chờ duyệt)
+            Đưa vào danh sách duyệt
           </button>
         </form>
       )}
 
-      {/* SIDE-BY-SIDE REVIEW & BATCH APPROVAL */}
+      {/* MODE B: PATTERN MAPPING PANEL (Document "Dạng n..." -> Web Taxonomy) */}
+      {uniqueDocLabels.length > 0 && (
+        <div className="notebook-card p-4 space-y-2.5 text-xs">
+          <h3 className="font-display text-base font-extrabold text-[#14284A]">
+            Ánh xạ dạng bài (Dạng trong tài liệu → Dạng trong web)
+          </h3>
+          <div className="space-y-2">
+            {uniqueDocLabels.map((docLabel) => {
+              const mappedId = patternMappings[docLabel] ?? '';
+              return (
+                <div key={docLabel} className="flex flex-wrap items-center gap-2 p-2 rounded-xl bg-[#FFFBF0] border border-[#E5D3A8]">
+                  <span className="font-bold text-[#14284A] flex-1 min-w-[200px]">{docLabel}</span>
+                  <ArrowRight className="w-4 h-4 text-[#2E9C8A] shrink-0" />
+                  <select
+                    value={mappedId}
+                    onChange={(e) => {
+                      const nextPid = e.target.value;
+                      setPatternMappings((prev) => ({...prev, [docLabel]: nextPid}));
+                      const pat = taxonomy.find((t) => t.id === nextPid);
+                      setDraftItems((prev) =>
+                        prev.map((q) =>
+                          q.source_pattern_label === docLabel
+                            ? {
+                                ...q,
+                                pattern_id: nextPid || null,
+                                cluster: pat && pat.topic !== 'OUT' ? (pat.topic as SkillCluster) : q.cluster,
+                                suggested_stations: computeSuggestedStations({
+                                  topic: pat?.topic ?? q.cluster,
+                                  patternId: nextPid || null,
+                                  level: q.level,
+                                  taxonomy,
+                                }),
+                              }
+                            : q,
+                        ),
+                      );
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                  >
+                    <option value="">— Chưa ánh xạ (đề xuất dạng mới) —</option>
+                    {taxonomy.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.id} · {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  {!mappedId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const created = dataService.proposeTaxonomyPattern(user, {
+                          topic: 'MH',
+                          name: docLabel,
+                        });
+                        if (created) {
+                          setPatternMappings((prev) => ({...prev, [docLabel]: created.id}));
+                          setStatusMsg(
+                            isAdmin
+                              ? `Đã thêm dạng mới "${created.name}" (${created.id}) vào danh mục.`
+                              : `Đã gửi đề xuất dạng mới "${created.name}" chờ Admin chấp nhận.`,
+                          );
+                          onQuestionsChanged();
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]"
+                    >
+                      + Đề xuất dạng mới
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* MULTI-EXAM-CODE SELECTOR (when PDF answer key has multiple exam codes) */}
+      {examCodes.length > 1 && (
+        <div className="p-3 rounded-2xl bg-[#FFF4D6] border-2 border-[#E0A93B] flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="font-extrabold text-[#14284A]">
+            Bảng đáp án có nhiều mã đề ({examCodes.join(', ')}). Chọn mã đề cần ghép:
+          </span>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedExamCode}
+              onChange={(e) => {
+                const code = e.target.value;
+                setSelectedExamCode(code);
+                const merged = applyAnswerKeysToDrafts(draftItems, answerKeys, code);
+                setDraftItems(merged.items);
+                setStatusMsg(`Đã ghép lại đáp án theo Mã đề ${code}: khớp ${merged.matchedCount} câu.`);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-white border border-[#CBB17D] font-extrabold text-[#14284A]"
+            >
+              {examCodes.map((c) => (
+                <option key={c} value={c}>Mã đề {c}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* SIDE-BY-SIDE REVIEW TABLE & BATCH ACTIONS */}
       {draftItems.length > 0 && (
         <div className="notebook-card p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5D3A8] pb-3">
             <div>
               <h3 className="font-display text-lg font-extrabold text-[#14284A]">
-                Màn duyệt đối chiếu Bản gốc ↔ Bản chuyển thể ({draftItems.length} câu nháp)
+                Màn duyệt đối chiếu Ảnh trang PDF ↔ Câu hỏi đã tách ({draftItems.length} câu)
               </h3>
-              <p className="text-xs text-[#5B6B82]">
-                Code tự giải khớp: <strong className="text-[#1F7A6B]">{verifiedDraftsCount}</strong> ·{' '}
-                Cờ lệch đáp án:{' '}
-                <strong className={mismatchDraftsCount > 0 ? 'text-[#B5650D]' : 'text-[#5B6B82]'}>
-                  {mismatchDraftsCount}
-                </strong>{' '}
-                · Đang chọn: <strong>{selectedIds.length}/{draftItems.length}</strong>
-              </p>
+              <div className="flex flex-wrap gap-2 mt-1.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setReviewBucket('chapter3')}
+                  className={`px-3 py-1 rounded-lg font-bold border ${
+                    reviewBucket === 'chapter3'
+                      ? 'bg-[#14284A] text-white border-[#14284A]'
+                      : 'bg-white text-[#14284A] border-[#CBB17D]'
+                  }`}
+                >
+                  Chương III ({chapter3Drafts.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReviewBucket('out_of_chapter')}
+                  className={`px-3 py-1 rounded-lg font-bold border ${
+                    reviewBucket === 'out_of_chapter'
+                      ? 'bg-[#8A5108] text-white border-[#8A5108]'
+                      : 'bg-[#FFF5E2] text-[#8A5108] border-[#D98A1F]'
+                  }`}
+                >
+                  Ngoài chương ({outOfChapterDrafts.length})
+                </button>
+                <select
+                  value={filterPattern}
+                  onChange={(e) => setFilterPattern(e.target.value)}
+                  className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                >
+                  <option value="ALL">Mọi dạng bài</option>
+                  {taxonomy.map((t) => (
+                    <option key={t.id} value={t.id}>{t.id} · {t.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={filterFlag}
+                  onChange={(e) => setFilterFlag(e.target.value as 'ALL' | 'flagged' | 'pass_only')}
+                  className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                >
+                  <option value="ALL">Mọi kết quả kiểm chứng</option>
+                  <option value="pass_only">✓ Đã kiểm bằng code</option>
+                  <option value="flagged">⚠ Có cờ / cần xem lại</option>
+                </select>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <label className="text-xs font-bold flex items-center gap-1.5 mr-1 cursor-pointer">
+              <label className="text-xs font-bold flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={selectedIds.length === draftItems.length && draftItems.length > 0}
+                  checked={visibleDrafts.length > 0 && visibleDrafts.every((d) => selectedIds.includes(d.id))}
                   onChange={(e) =>
-                    setSelectedIds(e.target.checked ? draftItems.map((d) => d.id) : [])
+                    setSelectedIds(e.target.checked ? visibleDrafts.map((d) => d.id) : [])
                   }
                   className="accent-[#2E9C8A]"
                 />
@@ -1045,29 +1921,29 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               <button
                 type="button"
                 disabled={selectedIds.length === 0}
-                onClick={() => commitDrafts(selectedIds, 'pending_teacher_review')}
+                onClick={() => commitDrafts(selectedIds, 'pending_teacher_review', false)}
                 className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
               >
-                {isAdmin
-                  ? `Lưu chờ duyệt (${selectedIds.length})`
-                  : `Gửi Admin duyệt (${selectedIds.length})`}
+                {isAdmin ? `Lưu chờ duyệt (${selectedIds.length})` : `Gửi Admin duyệt (${selectedIds.length})`}
               </button>
+
               {isAdmin && (
                 <>
                   <button
                     type="button"
                     disabled={selectedIds.length === 0}
-                    onClick={() => commitDrafts(selectedIds, 'approved')}
+                    onClick={() => commitDrafts(selectedIds, 'approved', true)}
                     className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                    title={`Chỉ duyệt hàng loạt câu đã kiểm chứng code, không cờ lỗi và độ tin cậy ≥ ${Math.round(confidenceThreshold * 100)}%`}
                   >
                     <Check className="w-4 h-4" />
-                    Duyệt hàng loạt ({selectedIds.length})
+                    Duyệt hàng loạt an toàn ({selectedIds.length})
                   </button>
                   <button
                     type="button"
                     disabled={selectedIds.length === 0}
-                    onClick={() => commitDrafts(selectedIds, 'rejected')}
-                    className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold !min-h-[36px] disabled:opacity-40"
+                    onClick={() => commitDrafts(selectedIds, 'rejected', false)}
+                    className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold"
                   >
                     Từ chối ({selectedIds.length})
                   </button>
@@ -1077,30 +1953,24 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           </div>
 
           <div className="space-y-4">
-            {draftItems.map((item, idx) => {
+            {visibleDrafts.map((item, idx) => {
               const isSelected = selectedIds.includes(item.id);
-              const isDuplicate = existingQuestions.some(
-                (ex) =>
-                  ex.id === item.id ||
-                  ex.stem_vi.trim().toLowerCase() === item.stem_vi.trim().toLowerCase(),
-              );
-              const cv = item.code_verification ?? verifyQuestionByCode(item);
+              const dupMatch = findDuplicateMatch(item, existingQuestions);
               const isEditing = Boolean(expandedEditIds[item.id]);
-              const exp = item.expected_answer ?? {};
-              const numericDisplay =
-                exp.rounded ?? exp.value ?? exp.exact_numeric ?? exp.optional_value ?? '';
+              const batchCheck = isEligibleForBatchApproval(item, confidenceThreshold);
+              const pageImgUrl = item.page_pdf ? pagePreviewCache[item.page_pdf] : undefined;
+              const isOut = (item.flags ?? []).includes('out_of_chapter') || item.pattern_id === 'OUT-00';
 
               return (
                 <div
                   key={item.id}
-                  data-testid={`import-draft-${idx}`}
                   className={`p-4 rounded-2xl border-2 space-y-3 ${
-                    cv.status === 'mismatch_flagged'
+                    item.verified_by_code === 'fail' || (item.flags ?? []).includes('figure_missing')
                       ? 'bg-[#FFF9EE] border-[#D98A1F]'
                       : 'bg-[#FFFBF0] border-[#D9C293]'
                   }`}
                 >
-                  {/* Card Top Metadata Bar */}
+                  {/* Header Metadata & Flags */}
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <label className="flex items-center gap-2 font-extrabold text-[#14284A] cursor-pointer">
                       <input
@@ -1108,124 +1978,167 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         checked={isSelected}
                         onChange={(e) =>
                           setSelectedIds((prev) =>
-                            e.target.checked
-                              ? [...prev, item.id]
-                              : prev.filter((x) => x !== item.id),
+                            e.target.checked ? [...prev, item.id] : prev.filter((x) => x !== item.id),
                           )
                         }
                         className="accent-[#2E9C8A]"
                       />
                       <span>
-                        #{idx + 1} · {item.id} · {item.cluster} · Trạm {item.stationId ?? 'BS01'} · Mức{' '}
-                        {item.level} · {item.type}
+                        #{idx + 1}
+                        {item.part ? ` · Phần ${item.part}` : ''}
+                        {item.question_number ? ` · Câu ${item.question_number}` : ''} ·{' '}
+                        {item.pattern_id ?? 'Chưa gán dạng'} ({item.cluster}) · Mức {item.level} · {item.type}
                       </span>
                     </label>
 
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="px-2 py-0.5 rounded bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]">
-                        Chờ Admin duyệt
-                      </span>
-                      {typeof item.confidence === 'number' && (
-                        <span className="px-2 py-0.5 rounded bg-white border border-[#CBB17D] font-bold text-[#14284A]">
-                          Độ tin cậy: {Math.round(item.confidence * 100)}%
+                      {item.verified_by_code === 'pass' ? (
+                        <span className="px-2 py-0.5 rounded bg-[#E6F6F3] border border-[#2E9C8A] font-bold text-[#145B4F]">
+                          ✓ Đã kiểm bằng code
                         </span>
-                      )}
-                      {isDuplicate && (
-                        <span className="px-2 py-0.5 rounded bg-[#FFF5E2] border border-[#D98A1F] font-bold text-[#8A5108]">
-                          Trùng ID/đề trong Ngân hàng
+                      ) : item.verified_by_code === 'fail' ? (
+                        <span className="px-2 py-0.5 rounded bg-[#FCE8E6] border border-[#C8392B] font-bold text-[#99261B]">
+                          ⚠ Lệch đáp án
                         </span>
-                      )}
-                      {cv.hint1LeaksAnswer && (
-                        <span className="px-2 py-0.5 rounded bg-[#FFF5E2] border border-[#D98A1F] font-bold text-[#8A5108]">
-                          Cảnh báo: Gợi ý mức 1 lộ đáp án
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Code Verification Banner */}
-                  <div
-                    className={`p-2.5 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2 ${
-                      cv.status === 'verified_match'
-                        ? 'bg-[#E6F6F3] border border-[#2E9C8A] text-[#1F7A6B]'
-                        : cv.status === 'mismatch_flagged'
-                          ? 'bg-[#FFF5E2] border-2 border-[#D98A1F] text-[#8A5108]'
-                          : 'bg-white border border-[#D9C293] text-[#5B6B82]'
-                    }`}
-                  >
-                    <div className="flex items-start gap-2">
-                      {cv.status === 'verified_match' ? (
-                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                      ) : cv.status === 'mismatch_flagged' ? (
-                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                       ) : (
-                        <FileText className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span className="px-2 py-0.5 rounded bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]">
+                          Chưa kiểm được bằng code
+                        </span>
                       )}
-                      <span className="font-semibold">{cv.note_vi}</span>
-                    </div>
 
-                    {cv.status === 'mismatch_flagged' && cv.roundedCodeValue !== undefined && (
-                      <button
-                        type="button"
-                        onClick={() => applyCodeSolvedAnswer(item.id)}
-                        className="px-2.5 py-1 rounded-lg bg-[#14284A] text-white font-bold !min-h-[30px] shrink-0"
-                      >
-                        Dùng đáp án code tính ({cv.roundedCodeValue})
-                      </button>
-                    )}
+                      <span className="px-2 py-0.5 rounded bg-white border border-[#CBB17D] font-bold text-[#14284A]">
+                        Tin cậy: {Math.round((item.confidence ?? 0.75) * 100)}%
+                      </span>
+
+                      {item.suggested_stations && item.suggested_stations.length > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]">
+                          Mốc gợi ý: {item.suggested_stations.map((m) => `Mốc ${m}`).join(', ')}
+                        </span>
+                      )}
+
+                      {(item.flags ?? []).map((fl) => (
+                        <span
+                          key={fl}
+                          className="px-2 py-0.5 rounded bg-[#FFF5E2] border border-[#D98A1F] font-bold text-[#8A5108]"
+                        >
+                          {fl}
+                        </span>
+                      ))}
+                    </div>
                   </div>
 
-                  {/* SIDE-BY-SIDE COMPARISON: LEFT = ORIGINAL, RIGHT = ADAPTED */}
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-                    {/* LEFT: ORIGINAL EXCERPT & PROVENANCE */}
-                    <div className="lg:col-span-5 p-3 rounded-xl bg-white border border-[#E5D3A8] space-y-2 text-xs">
-                      <p className="font-extrabold uppercase tracking-wide text-[#5B6B82]">
-                        Bản gốc & Nguồn đối chiếu
+                  {/* Duplicate Match Resolution Bar */}
+                  {dupMatch && (
+                    <div className="p-2.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-xs space-y-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-extrabold text-[#8A5108]">
+                          {dupMatch.kind === 'exact'
+                            ? `Trùng khớp hoàn toàn với câu [${dupMatch.existingQuestion.id}] trong Ngân hàng`
+                            : `Gần giống (${Math.round(dupMatch.similarity * 100)}%) với câu [${dupMatch.existingQuestion.id}]`}
+                        </span>
+                        <select
+                          value={duplicateDecisions[item.id] ?? 'skip'}
+                          onChange={(e) =>
+                            setDuplicateDecisions((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value as 'skip' | 'replace' | 'keep_both',
+                            }))
+                          }
+                          className="px-2 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                        >
+                          <option value="skip">Bỏ qua (không trùng)</option>
+                          <option value="replace">Thay bản cũ (tạo phiên bản mới)</option>
+                          <option value="keep_both">Giữ cả hai</option>
+                        </select>
+                      </div>
+                      <p className="text-[11px] text-[#5B6B82] line-clamp-2">
+                        <strong>Bản đang có:</strong> <MathText text={dupMatch.existingQuestion.stem_vi} />
                       </p>
-                      <div className="space-y-1 text-[#1B2A41]">
-                        <p>
-                          <strong>Tệp nguồn:</strong> {item.source_file_name ?? 'Văn bản dán'}
+                    </div>
+                  )}
+
+                  {/* Code Verification Detail */}
+                  {item.code_verification && (
+                    <div
+                      className={`p-2 rounded-xl text-xs font-semibold ${
+                        item.verified_by_code === 'pass'
+                          ? 'bg-[#E6F6F3] text-[#145B4F]'
+                          : item.verified_by_code === 'fail'
+                            ? 'bg-[#FCE8E6] text-[#99261B]'
+                            : 'bg-white border border-[#E5D3A8] text-[#5B6B82]'
+                      }`}
+                    >
+                      {item.code_verification.note_vi}
+                    </div>
+                  )}
+
+                  {/* SIDE-BY-SIDE COMPARISON: LEFT = PDF PAGE / FIGURE CROP, RIGHT = KATEX QUESTION */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                    <div className="lg:col-span-5 p-3 rounded-xl bg-white border border-[#E5D3A8] space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-extrabold uppercase text-[#5B6B82]">
+                          Trang gốc {item.page_pdf ? `(PDF tr.${item.page_pdf}${item.page_printed ? ` · In tr.${item.page_printed}` : ''})` : ''}
                         </p>
-                        {item.drive_file_id && (
-                          <p className="break-all">
-                            <strong>Drive File ID:</strong>{' '}
-                            <code className="text-[11px]">{item.drive_file_id}</code>
-                          </p>
+                        {isAdmin && item.figure_bbox && !item.figure_crop && (
+                          <button
+                            type="button"
+                            onClick={() => void handleAdminUseCroppedFigure(item)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]"
+                          >
+                            <Crop className="w-3 h-3" /> Dùng ảnh cắt (nội bộ lớp)
+                          </button>
                         )}
-                        <p>
-                          <strong>Trang in:</strong> {item.page_printed ?? '—'} ·{' '}
-                          <strong>Trang PDF:</strong> {item.page_pdf ?? '—'}
-                        </p>
-                        <p>
-                          <strong>Tham chiếu:</strong> {item.source_refs.join(', ')}
-                        </p>
                       </div>
-                      <div className="p-2.5 rounded-lg bg-[#FAF5E8] border border-[#E5D3A8] text-[#5B6B82]">
-                        <p className="font-bold text-[#14284A] mb-1">Trích ngắn bản gốc:</p>
-                        <p className="italic">{item.source_excerpt || '(Không có trích đoạn gốc)'}</p>
-                      </div>
-                      {item.ai_reason && (
-                        <p className="text-[11px] text-[#5B6B82]">
-                          <strong>Lý do phân loại / chuyển thể:</strong> {item.ai_reason}
+
+                      {item.figure_crop ? (
+                        <div className="space-y-1">
+                          <img
+                            src={item.figure_crop}
+                            alt="Ảnh cắt hình vẽ nội bộ lớp"
+                            className="w-full max-h-48 object-contain rounded-lg border border-[#2E9C8A] bg-white"
+                          />
+                          <p className="text-[10px] text-[#1F7A6B] font-bold">
+                            Ảnh cắt riêng tư nội bộ lớp (≤ 150 KB). Không chia sẻ công khai ngoài lớp.
+                          </p>
+                        </div>
+                      ) : pageImgUrl ? (
+                        <img
+                          src={pageImgUrl}
+                          alt={`Ảnh trang ${item.page_pdf}`}
+                          className="w-full max-h-60 object-contain rounded-lg border border-[#E5D3A8] bg-white"
+                        />
+                      ) : (
+                        <p className="italic text-[#5B6B82] p-2 rounded-lg bg-[#FAF5E8]">
+                          {item.source_excerpt || '(Trích xuất từ văn bản không kèm ảnh)'}
+                        </p>
+                      )}
+
+                      {item.source_pattern_label && (
+                        <p className="text-[11px] text-[#14437A] font-bold">
+                          Nhãn tài liệu: {item.source_pattern_label}
+                        </p>
+                      )}
+                      {item.proposed_pattern && (
+                        <p className="text-[11px] text-[#8A5108] font-bold">
+                          Dạng mới AI đề xuất: {item.proposed_pattern}
                         </p>
                       )}
                     </div>
 
-                    {/* RIGHT: ADAPTED PREVIEW */}
                     <div className="lg:col-span-7 p-3 rounded-xl bg-white border border-[#CBB17D] space-y-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="font-extrabold uppercase tracking-wide text-[#1F7A6B]">
-                          Bản chuyển thể (Xem trước học viên)
+                        <p className="font-extrabold uppercase text-[#1F7A6B]">
+                          Bản hiển thị KaTeX (xem trước học viên)
                         </p>
                         <button
                           type="button"
                           onClick={() =>
                             setExpandedEditIds((prev) => ({...prev, [item.id]: !prev[item.id]}))
                           }
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-[#14284A] font-bold !min-h-[30px]"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-[#14284A] font-bold"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
-                          {isEditing ? 'Thu gọn trình sửa' : 'Sửa mọi trường'}
+                          {isEditing ? 'Thu gọn' : 'Sửa trực tiếp'}
                         </button>
                       </div>
 
@@ -1233,241 +2146,177 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         <MathText text={item.stem_vi} />
                       </div>
 
-                      {item.type === 'mcq' && item.options && item.options.length > 0 && (
-                        <ul className="space-y-1 pl-1">
+                      {item.options && item.options.length > 0 && (
+                        <ul className="space-y-1">
                           {item.options.map((o, oIdx) => {
-                            const isCorrectOpt = String(item.expected_answer.choice) === o.id;
+                            const isCorrect = String(item.expected_answer.choice) === o.id;
                             return (
                               <li
                                 key={o.id}
                                 className={`px-2 py-1 rounded-lg ${
-                                  isCorrectOpt
-                                    ? 'bg-[#E6F6F3] text-[#1F7A6B] font-bold'
-                                    : 'text-[#5B6B82]'
+                                  isCorrect ? 'bg-[#E6F6F3] text-[#145B4F] font-bold' : 'text-[#5B6B82]'
                                 }`}
                               >
                                 {String.fromCharCode(65 + oIdx)}. <MathText text={o.label} />
-                                {isCorrectOpt ? ' ✓' : ''}
+                                {isCorrect ? ' ✓' : ''}
                               </li>
                             );
                           })}
                         </ul>
                       )}
 
-                      {item.type !== 'mcq' && (
-                        <p className="text-[#14284A]">
+                      {item.statements && item.statements.length > 0 && (
+                        <ul className="space-y-1">
+                          {item.statements.map((s) => (
+                            <li key={s.id} className="px-2 py-1 rounded-lg bg-[#FAF5E8] flex justify-between gap-2">
+                              <span><strong>{s.id})</strong> <MathText text={s.label} /></span>
+                              <span className={`font-extrabold ${s.isTrue ? 'text-[#145B4F]' : 'text-[#99261B]'}`}>
+                                {s.isTrue ? 'Đúng' : 'Sai'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {item.type === 'numeric' && (
+                        <p>
                           <strong>Đáp án chuẩn:</strong>{' '}
                           <code className="px-1.5 py-0.5 rounded bg-[#FAF5E8]">
-                            {numericDisplay !== ''
-                              ? `${numericDisplay}${item.fixedUnitLabel ? ` ${item.fixedUnitLabel}` : ''}`
-                              : JSON.stringify(item.expected_answer)}
+                            {item.expected_answer.rounded ?? item.expected_answer.value ?? '(Chưa có)'}
+                            {item.fixedUnitLabel ? ` ${item.fixedUnitLabel}` : ''}
                           </code>
                         </p>
                       )}
 
-                      <p className="text-[#1F7A6B]">
-                        <strong>Lời giải:</strong> <MathText text={item.solution_vi} />
-                      </p>
-                      <div className="space-y-0.5 text-[#5B6B82]">
-                        <p>
-                          <strong>Gợi ý mức 1:</strong>{' '}
-                          {item.hints_vi[0] ? <MathText text={item.hints_vi[0]} /> : '—'}
+                      {item.solution_vi && (
+                        <p className="text-[#1F7A6B]">
+                          <strong>Lời giải:</strong> <MathText text={item.solution_vi} />
                         </p>
-                        <p>
-                          <strong>Gợi ý mức 2:</strong>{' '}
-                          {item.hints_vi[1] ? <MathText text={item.hints_vi[1]} /> : '—'}
-                        </p>
-                      </div>
+                      )}
                       <p className="text-[11px] text-[#5B6B82]">
-                        <strong>Kỹ năng:</strong> {item.skill_ids.join(', ')} ·{' '}
-                        <strong>Mã lỗi dự kiến:</strong> {item.anticipated_error_ids.join(', ')}
+                        <strong>Gợi ý 1:</strong> <MathText text={item.hints_vi[0] ?? '—'} /> ·{' '}
+                        <strong>Gợi ý 2:</strong> <MathText text={item.hints_vi[1] ?? '—'} />
                       </p>
                     </div>
                   </div>
 
-                  {/* FULL-FIELD INLINE EDITOR */}
+                  {/* INLINE EDITOR */}
                   {isEditing && (
-                    <div className="p-3.5 rounded-xl bg-white border-2 border-[#2E9C8A]/50 space-y-3 text-xs">
-                      <p className="font-extrabold text-[#14284A]">
-                        Chỉnh sửa đầy đủ trường câu hỏi (tự chạy lại code kiểm chứng ngay khi sửa)
-                      </p>
-
+                    <div className="p-3 rounded-xl bg-white border-2 border-[#2E9C8A]/50 space-y-2.5 text-xs">
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         <div>
-                          <label className="block font-bold mb-1">Chủ đề (topic)</label>
+                          <label className="block font-bold mb-1">Dạng bài (pattern_id)</label>
+                          <select
+                            value={item.pattern_id ?? ''}
+                            onChange={(e) => {
+                              const pid = e.target.value;
+                              const pat = taxonomy.find((t) => t.id === pid);
+                              updateDraft(item.id, (prev) => ({
+                                ...prev,
+                                pattern_id: pid || null,
+                                cluster: pat && pat.topic !== 'OUT' ? (pat.topic as SkillCluster) : prev.cluster,
+                                flags:
+                                  pid === 'OUT-00'
+                                    ? Array.from(new Set([...(prev.flags ?? []), 'out_of_chapter']))
+                                    : (prev.flags ?? []).filter((f) => f !== 'out_of_chapter'),
+                              }));
+                            }}
+                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D] font-bold"
+                          >
+                            <option value="">— Chưa gán —</option>
+                            {taxonomy.map((t) => (
+                              <option key={t.id} value={t.id}>{t.id} · {t.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-bold mb-1">Chủ đề</label>
                           <select
                             value={item.cluster}
                             onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                cluster: e.target.value as SkillCluster,
-                              }))
+                              updateDraft(item.id, (prev) => ({...prev, cluster: e.target.value as SkillCluster}))
                             }
                             className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D] font-bold"
                           >
                             {SKILL_CLUSTER_LIST.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
+                              <option key={c} value={c}>{c}</option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-bold mb-1">Trạm (station)</label>
-                          <select
-                            value={item.stationId ?? 'BS01'}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                stationId: e.target.value as StationId,
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D] font-bold"
-                          >
-                            {STATION_LIST.map((st) => (
-                              <option key={st} value={st}>
-                                {st}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block font-bold mb-1">Mức độ (1–4)</label>
+                          <label className="block font-bold mb-1">Mức (1–4)</label>
                           <select
                             value={item.level}
                             onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                level: Number(e.target.value) as 1 | 2 | 3 | 4,
-                              }))
+                              updateDraft(item.id, (prev) => ({...prev, level: Number(e.target.value) as 1 | 2 | 3 | 4}))
                             }
                             className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D] font-bold"
                           >
                             {[1, 2, 3, 4].map((lv) => (
-                              <option key={lv} value={lv}>
-                                Mức {lv}
-                              </option>
+                              <option key={lv} value={lv}>Mức {lv}</option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-bold mb-1">Dạng câu (type)</label>
+                          <label className="block font-bold mb-1">Loại câu</label>
                           <select
                             value={item.type}
                             onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                type: e.target.value as QuestionType,
-                              }))
+                              updateDraft(item.id, (prev) => ({...prev, type: e.target.value as QuestionType}))
                             }
                             className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D] font-bold"
                           >
                             {QUESTION_TYPES.map((t) => (
-                              <option key={t.value} value={t.value}>
-                                {t.label}
-                              </option>
+                              <option key={t.value} value={t.value}>{t.label}</option>
                             ))}
                           </select>
                         </div>
                       </div>
 
                       <div>
-                        <label className="block font-bold mb-1">Đề bài chuyển thể (stem_vi)</label>
+                        <label className="block font-bold mb-1">Đề bài (LaTeX trong $...$)</label>
                         <textarea
                           rows={2}
                           value={item.stem_vi}
-                          onChange={(e) =>
-                            updateDraft(item.id, (prev) => ({...prev, stem_vi: e.target.value}))
-                          }
+                          onChange={(e) => updateDraft(item.id, (prev) => ({...prev, stem_vi: e.target.value}))}
                           className="w-full p-2 rounded-lg border border-[#CBB17D]"
                         />
                       </div>
 
-                      {item.type === 'mcq' ? (
-                        <div className="space-y-1.5">
-                          <label className="block font-bold">Các phương án trắc nghiệm & đáp án đúng</label>
-                          {(item.options ?? []).map((opt, oIdx) => (
-                            <div key={opt.id} className="flex items-center gap-2">
-                              <input
-                                type="radio"
-                                name={`correct_${item.id}`}
-                                checked={String(item.expected_answer.choice) === opt.id}
-                                onChange={() =>
-                                  updateDraft(item.id, (prev) => ({
-                                    ...prev,
-                                    expected_answer: {...prev.expected_answer, choice: opt.id},
-                                  }))
-                                }
-                              />
-                              <input
-                                type="text"
-                                value={opt.label}
-                                onChange={(e) =>
-                                  updateDraft(item.id, (prev) => ({
-                                    ...prev,
-                                    options: (prev.options ?? []).map((o, i) =>
-                                      i === oIdx ? {...o, label: e.target.value} : o,
-                                    ),
-                                  }))
-                                }
-                                className="flex-1 px-2 py-1 rounded-lg border border-[#CBB17D]"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {item.type === 'numeric' && (
+                        <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block font-bold mb-1">Đáp án số (rounded / value)</label>
+                            <label className="block font-bold mb-1">Đáp án số</label>
                             <input
                               type="text"
-                              value={String(numericDisplay)}
+                              value={String(item.expected_answer.rounded ?? item.expected_answer.value ?? '')}
                               onChange={(e) => {
-                                const parsedNum = Number(e.target.value.replace(',', '.'));
+                                const n = Number(e.target.value.replace(',', '.'));
                                 updateDraft(item.id, (prev) => ({
                                   ...prev,
                                   expected_answer: {
                                     ...prev.expected_answer,
-                                    rounded: Number.isFinite(parsedNum) ? parsedNum : e.target.value,
-                                    value: Number.isFinite(parsedNum) ? parsedNum : e.target.value,
+                                    rounded: Number.isFinite(n) ? n : undefined,
+                                    value: Number.isFinite(n) ? n : undefined,
                                   },
+                                  flags: Number.isFinite(n)
+                                    ? (prev.flags ?? []).filter((f) => f !== 'missing_answer')
+                                    : prev.flags,
                                 }));
                               }}
                               className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
                             />
                           </div>
                           <div>
-                            <label className="block font-bold mb-1">Số chữ số làm tròn</label>
-                            <input
-                              type="number"
-                              min={0}
-                              max={4}
-                              value={Number(exp.decimal_places ?? 1)}
-                              onChange={(e) =>
-                                updateDraft(item.id, (prev) => ({
-                                  ...prev,
-                                  expected_answer: {
-                                    ...prev.expected_answer,
-                                    decimal_places: Number(e.target.value),
-                                  },
-                                }))
-                              }
-                              className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                            />
-                          </div>
-                          <div>
-                            <label className="block font-bold mb-1">Đơn vị hiển thị</label>
+                            <label className="block font-bold mb-1">Đơn vị</label>
                             <input
                               type="text"
-                              value={item.fixedUnitLabel ?? String(exp.unit ?? '')}
+                              value={item.fixedUnitLabel ?? ''}
                               onChange={(e) =>
                                 updateDraft(item.id, (prev) => ({
                                   ...prev,
                                   fixedUnitLabel: e.target.value || undefined,
-                                  expected_answer: {
-                                    ...prev.expected_answer,
-                                    unit: e.target.value,
-                                  },
+                                  expected_answer: {...prev.expected_answer, unit: e.target.value},
                                 }))
                               }
                               className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
@@ -1476,161 +2325,107 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <div>
-                          <label className="block font-bold mb-1">Gợi ý mức 1 (KHÔNG lộ đáp án)</label>
-                          <input
-                            type="text"
-                            value={item.hints_vi[0] ?? ''}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                hints_vi: [e.target.value, prev.hints_vi[1] ?? ''],
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-bold mb-1">Gợi ý mức 2</label>
-                          <input
-                            type="text"
-                            value={item.hints_vi[1] ?? ''}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                hints_vi: [prev.hints_vi[0] ?? '', e.target.value],
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
-                      </div>
-
                       <div>
-                        <label className="block font-bold mb-1">Lời giải chi tiết (solution_vi)</label>
+                        <label className="block font-bold mb-1">Lời giải chi tiết</label>
                         <textarea
                           rows={2}
                           value={item.solution_vi}
-                          onChange={(e) =>
-                            updateDraft(item.id, (prev) => ({
-                              ...prev,
-                              solution_vi: e.target.value,
-                            }))
-                          }
+                          onChange={(e) => updateDraft(item.id, (prev) => ({...prev, solution_vi: e.target.value}))}
                           className="w-full p-2 rounded-lg border border-[#CBB17D]"
                         />
                       </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-                        <div>
-                          <label className="block font-bold mb-1">Kỹ năng (skill_ids, cách nhau dấu phẩy)</label>
-                          <input
-                            type="text"
-                            value={item.skill_ids.join(', ')}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                skill_ids: e.target.value
-                                  .split(',')
-                                  .map((s) => s.trim())
-                                  .filter(Boolean),
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-bold mb-1">Mã lỗi (E01–E12)</label>
-                          <input
-                            type="text"
-                            value={item.anticipated_error_ids.join(', ')}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                anticipated_error_ids: e.target.value
-                                  .split(',')
-                                  .map((s) => s.trim().toUpperCase())
-                                  .filter((c) => ERROR_CODES.includes(c) || /^E\d\d$/.test(c)),
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-bold mb-1">Trang in</label>
-                          <input
-                            type="text"
-                            value={item.page_printed ?? ''}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                page_printed: e.target.value || undefined,
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-bold mb-1">Trang PDF</label>
-                          <input
-                            type="number"
-                            min={1}
-                            value={item.page_pdf ?? ''}
-                            onChange={(e) =>
-                              updateDraft(item.id, (prev) => ({
-                                ...prev,
-                                page_pdf: e.target.value ? Number(e.target.value) : undefined,
-                              }))
-                            }
-                            className="w-full px-2 py-1.5 rounded-lg border border-[#CBB17D]"
-                          />
-                        </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={item.hints_vi[0] ?? ''}
+                          onChange={(e) =>
+                            updateDraft(item.id, (prev) => ({...prev, hints_vi: [e.target.value, prev.hints_vi[1] ?? '']}))
+                          }
+                          placeholder="Gợi ý mức 1"
+                          className="px-2 py-1.5 rounded-lg border border-[#CBB17D]"
+                        />
+                        <input
+                          type="text"
+                          value={item.anticipated_error_ids.join(', ')}
+                          onChange={(e) =>
+                            updateDraft(item.id, (prev) => ({
+                              ...prev,
+                              anticipated_error_ids: e.target.value
+                                .split(',')
+                                .map((s) => s.trim().toUpperCase())
+                                .filter((c) => ERROR_CODES.includes(c)),
+                            }))
+                          }
+                          placeholder="Mã lỗi E01–E12"
+                          className="px-2 py-1.5 rounded-lg border border-[#CBB17D]"
+                        />
                       </div>
                     </div>
                   )}
 
                   {/* Per-item Action Row */}
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => commitDrafts([item.id], 'pending_teacher_review')}
-                        className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
-                      >
-                        {isAdmin ? 'Lưu chờ duyệt' : 'Gửi Admin duyệt'}
-                      </button>
-                      {isAdmin && (
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {isOut ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateDraft(item.id, (prev) => ({
+                              ...prev,
+                              pattern_id: null,
+                              flags: (prev.flags ?? []).filter((f) => f !== 'out_of_chapter'),
+                            }))
+                          }
+                          className="btn-tactile btn-gold text-xs py-1.5 px-3"
+                        >
+                          Đưa lại vào Chương III
+                        </button>
+                      ) : (
                         <>
                           <button
                             type="button"
-                            onClick={() => commitDrafts([item.id], 'approved')}
-                            className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                            onClick={() => commitDrafts([item.id], 'pending_teacher_review', false)}
+                            className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
                           >
-                            <Check className="w-3.5 h-3.5" />
-                            Duyệt ngay
+                            {isAdmin ? 'Lưu chờ duyệt' : 'Gửi Admin duyệt'}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => commitDrafts([item.id], 'rejected')}
-                            className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1 !min-h-[34px]"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                            Từ chối
-                          </button>
+                          {isAdmin && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => commitDrafts([item.id], 'approved', false)}
+                                className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                              >
+                                <Check className="w-3.5 h-3.5" /> Duyệt &amp; lưu Ngân hàng
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => commitDrafts([item.id], 'rejected', false)}
+                                className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1"
+                              >
+                                <XCircle className="w-3.5 h-3.5" /> Từ chối
+                              </button>
+                            </>
+                          )}
+                          {!batchCheck.eligible && isAdmin && (
+                            <span className="text-[11px] font-semibold text-[#8A5108]">
+                              <ShieldCheck className="w-3.5 h-3.5 inline mr-0.5" />
+                              Chặn duyệt nhanh: {batchCheck.reason}
+                            </span>
+                          )}
                         </>
                       )}
                     </div>
+
                     <button
                       type="button"
                       onClick={() => {
                         setDraftItems((prev) => prev.filter((x) => x.id !== item.id));
                         setSelectedIds((prev) => prev.filter((x) => x !== item.id));
                       }}
-                      className="text-xs font-bold text-[#5B6B82] hover:text-[#14284A] inline-flex items-center gap-1"
+                      className="text-xs font-bold text-[#99261B] inline-flex items-center gap-1 hover:underline"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Bỏ nháp
+                      <Trash2 className="w-3.5 h-3.5" /> Bỏ khỏi nháp
                     </button>
                   </div>
                 </div>
