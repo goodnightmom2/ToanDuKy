@@ -25,8 +25,16 @@ import {
   roundToPlaces,
 } from '../math/geometry.ts';
 import {computeT01Rubric, type T01RubricBreakdown} from '../math/grader.ts';
+import {resolveMissionSetQuestions} from '../math/missionSetEngine.ts';
 import {dataService} from '../services/dataService.ts';
-import type {MocId, QuestionItem, QuestionMode, StationId, UserAccount} from '../types.ts';
+import type {
+  MissionSetRecord,
+  MocId,
+  QuestionItem,
+  QuestionMode,
+  StationId,
+  UserAccount,
+} from '../types.ts';
 import {soundEngine} from '../utils/audio.ts';
 
 interface StationMissionProps {
@@ -34,6 +42,8 @@ interface StationMissionProps {
   stationId: StationId;
   mocId?: MocId;
   initialStepIndex?: number;
+  previewMissionSet?: MissionSetRecord | null;
+  isPreviewTest?: boolean;
   onUserUpdated: (user: UserAccount) => void;
   onMocPassed?: (passedMocId: MocId, allCompleted: boolean) => void;
   onBackToMap: () => void;
@@ -72,6 +82,8 @@ export const StationMission: React.FC<StationMissionProps> = ({
   stationId,
   mocId,
   initialStepIndex = 0,
+  previewMissionSet = null,
+  isPreviewTest = false,
   onUserUpdated,
   onMocPassed,
   onBackToMap,
@@ -79,17 +91,40 @@ export const StationMission: React.FC<StationMissionProps> = ({
 }) => {
   const activeMocId: MocId = mocId ?? (stationId === 'BS01' ? 6 : 1);
   const mocDef = JOURNEY_MILESTONES_BY_ID[activeMocId];
-  const isBS01Mode = Boolean(mocDef.isBS01Full);
+  const publishedMissionSet = React.useMemo(
+    () =>
+      previewMissionSet ?? dataService.getPublishedMissionSetForMoc(activeMocId, user.classId),
+    [previewMissionSet, activeMocId, user.classId],
+  );
+  // Keep signature BS01 8-step flow for normal Mốc 6 unless Admin is explicitly previewing a custom MissionSet draft
+  const isBS01Mode = Boolean(mocDef.isBS01Full) && !(isPreviewTest && previewMissionSet && previewMissionSet.slots.length > 0);
   const station = STATIONS_BY_ID[mocDef.stationId ?? stationId];
   const mocBoss = mocDef.bossId ? BOSSES[mocDef.bossId] : null;
   const skipWarmup = shouldSkipFoundationWarmup(activeMocId, user);
   const settings = dataService.getSettings();
   const allBank = React.useMemo(() => dataService.getQuestions(), []);
 
-  // Personalized milestone mission deck (5 questions for Mốc 1–5, 7–8, 10; 6 questions for Mốc 9)
-  const genericQuestions = React.useMemo(() => {
-    if (isBS01Mode) return [];
-    return buildMilestoneMissionQuestions({
+  // Personalized milestone mission deck — prefers published/preview MissionSet, falls back to built-in journey deck
+  const resolvedGenericDeck = React.useMemo(() => {
+    if (isBS01Mode) return {questions: [] as QuestionItem[], verifyFlags: [] as boolean[], usedMissionSet: false};
+    if (publishedMissionSet && publishedMissionSet.slots.length > 0) {
+      const resolved = resolveMissionSetQuestions({
+        missionSet: publishedMissionSet,
+        bank: allBank,
+        userId: user.uid,
+        skills: user.skills,
+        recentSessions: user.recentQuestionSessions ?? [],
+        nonce: (user.recentQuestionSessions ?? []).length,
+      });
+      if (resolved.questions.length > 0) {
+        return {
+          questions: resolved.questions,
+          verifyFlags: resolved.verifyFlags,
+          usedMissionSet: true,
+        };
+      }
+    }
+    const fallbackQs = buildMilestoneMissionQuestions({
       mocId: activeMocId,
       userId: user.uid,
       bank: allBank,
@@ -98,8 +133,15 @@ export const StationMission: React.FC<StationMissionProps> = ({
       recentSessions: user.recentQuestionSessions,
       nonce: (user.recentQuestionSessions ?? []).length,
     });
+    return {
+      questions: fallbackQs,
+      verifyFlags: fallbackQs.map((_, idx) => Boolean(mocDef.independentFocus) || idx === fallbackQs.length - 1),
+      usedMissionSet: false,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMocId, isBS01Mode, user.uid]);
+  }, [activeMocId, isBS01Mode, user.uid, publishedMissionSet?.id, publishedMissionSet?.version, isPreviewTest]);
+  const genericQuestions = resolvedGenericDeck.questions;
+  const genericVerifyFlags = resolvedGenericDeck.verifyFlags;
 
   const [stepIdx, setStepIdx] = React.useState(initialStepIndex);
   const [stepCleared, setStepCleared] = React.useState(false);
@@ -169,27 +211,29 @@ export const StationMission: React.FC<StationMissionProps> = ({
       usedSupportRef.current = true;
     }
 
-    const {user: nextUser} = dataService.recordAttempt({
-      userId: user.uid,
-      studentCode: user.studentCode,
-      isTestAccount: user.isTestAccount,
-      questionId: payload.question.id,
-      cluster: payload.question.cluster,
-      stationId: station.id,
-      mocId: activeMocId,
-      mode: payload.mode,
-      switchedToPractice: payload.switchedToPractice,
-      seed: payload.question.seed,
-      answerRaw: payload.answerRaw,
-      isCorrect: payload.isCorrect,
-      usedHint: payload.usedHint,
-      clickedDontKnow: payload.clickedDontKnow,
-      wrongCountOnQuestion: payload.wrongCountOnQuestion,
-      errorCode: payload.errorCode,
-      durationMs: payload.durationMs,
-      rubricScore,
-    });
-    if (nextUser) onUserUpdated(nextUser);
+    if (!isPreviewTest) {
+      const {user: nextUser} = dataService.recordAttempt({
+        userId: user.uid,
+        studentCode: user.studentCode,
+        isTestAccount: user.isTestAccount,
+        questionId: payload.question.id,
+        cluster: payload.question.cluster,
+        stationId: station.id,
+        mocId: activeMocId,
+        mode: payload.mode,
+        switchedToPractice: payload.switchedToPractice,
+        seed: payload.question.seed,
+        answerRaw: payload.answerRaw,
+        isCorrect: payload.isCorrect,
+        usedHint: payload.usedHint,
+        clickedDontKnow: payload.clickedDontKnow,
+        wrongCountOnQuestion: payload.wrongCountOnQuestion,
+        errorCode: payload.errorCode,
+        durationMs: payload.durationMs,
+        rubricScore,
+      });
+      if (nextUser) onUserUpdated(nextUser);
+    }
 
     if (payload.isCorrect) {
       if (subQueue) {
@@ -201,16 +245,18 @@ export const StationMission: React.FC<StationMissionProps> = ({
   };
 
   const handlePause = (draftAnswer: unknown, mode: QuestionMode) => {
-    const updated = dataService.savePausedSession(user.uid, {
-      kind: 'mission',
-      stationId: station.id,
-      mocId: activeMocId,
-      stepIndex: stepIdx,
-      savedAt: new Date().toISOString(),
-      draftAnswer,
-      mode,
-    });
-    if (updated) onUserUpdated(updated);
+    if (!isPreviewTest) {
+      const updated = dataService.savePausedSession(user.uid, {
+        kind: 'mission',
+        stationId: station.id,
+        mocId: activeMocId,
+        stepIndex: stepIdx,
+        savedAt: new Date().toISOString(),
+        draftAnswer,
+        mode,
+      });
+      if (updated) onUserUpdated(updated);
+    }
     onBackToMap();
   };
 
@@ -255,6 +301,7 @@ export const StationMission: React.FC<StationMissionProps> = ({
   };
 
   const finishStationMission = () => {
+    if (isPreviewTest) return;
     const res = dataService.recordMocMissionComplete(user.uid, activeMocId, {
       usedSupport: usedSupportRef.current,
     });
@@ -349,15 +396,32 @@ export const StationMission: React.FC<StationMissionProps> = ({
     const nextMocId = activeMocId < 10 ? ((activeMocId + 1) as MocId) : null;
     return (
       <div className="max-w-3xl mx-auto px-4 py-4 space-y-4">
+        {isPreviewTest && (
+          <div className="p-3 rounded-2xl bg-[#14284A] text-[#FFFBF0] text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+            <span>
+              CHẾ ĐỘ CHẠY THỬ NHƯ HỌC VIÊN (TEST) · Mốc {mocDef.id} — Mọi thao tác tại đây KHÔNG ghi vào kết quả học thật hay XP.
+            </span>
+            <button
+              type="button"
+              onClick={onBackToMap}
+              className="px-3 py-1 rounded-lg bg-[#E0A93B] text-[#14284A] font-extrabold !min-h-[30px]"
+            >
+              Quay lại Set nhiệm vụ
+            </button>
+          </div>
+        )}
         <div className="notebook-card p-4 flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-xs font-extrabold uppercase text-[#18685B]">
               Nhiệm vụ Mốc {mocDef.id} · {mocDef.city} ({mocDef.lessonRef})
+              {resolvedGenericDeck.usedMissionSet && publishedMissionSet
+                ? ` · Bộ nhiệm vụ v${publishedMissionSet.version}`
+                : ''}
             </p>
             <h1 className="font-display text-2xl font-extrabold text-[#14284A]">{mocDef.sceneName}</h1>
           </div>
           <button type="button" onClick={onBackToMap} className="btn-tactile btn-paper text-xs py-2 px-3">
-            <ArrowLeft className="w-4 h-4" /> Bản đồ
+            <ArrowLeft className="w-4 h-4" /> {isPreviewTest ? 'Về Set nhiệm vụ' : 'Bản đồ'}
           </button>
         </div>
 
@@ -376,7 +440,10 @@ export const StationMission: React.FC<StationMissionProps> = ({
             <QuestionCard
               question={currentQ}
               initialMode={
-                mocDef.independentFocus || stepIdx === genericQuestions.length - 1 ? 'verify' : 'practice'
+                genericVerifyFlags[stepIdx] ??
+                (mocDef.independentFocus || stepIdx === genericQuestions.length - 1)
+                  ? 'verify'
+                  : 'practice'
               }
               helpAfterWrong={settings.helpAfterWrong}
               requireExplanation={activeMocId >= 9 || currentQ.type === 'error_spot'}

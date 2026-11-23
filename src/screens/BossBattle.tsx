@@ -8,6 +8,7 @@ import {BOSSES, computeBossRemainingHp, OUTFITS, STATIONS_BY_ID} from '../config
 import {JOURNEY_MILESTONES_BY_ID} from '../journey.ts';
 import {buildBossBattleDeck} from '../math/bankAnalysis.ts';
 import {generateVariantForBossHit} from '../math/generators.ts';
+import {resolveBossSetQuestions} from '../math/missionSetEngine.ts';
 import {dataService} from '../services/dataService.ts';
 import type {MocId, QuestionItem, QuestionMode, StationId, UserAccount} from '../types.ts';
 import {soundEngine} from '../utils/audio.ts';
@@ -49,12 +50,39 @@ export const BossBattle: React.FC<BossBattleProps> = ({
   const bossHp = computeBossRemainingHp(boss.hitLevels, completedHits);
   const [deck, setDeck] = React.useState<QuestionItem[]>(() => {
     const prevIds = (user.recentQuestionSessions ?? []).slice(-1).flat();
+    const bank = dataService.getQuestions();
+    const allowPending = dataService.shouldAllowPendingForUser(user);
     const built = buildBossBattleDeck({
       bossId: boss.id,
-      bank: dataService.getQuestions(),
-      allowPending: dataService.shouldAllowPendingForUser(user),
+      bank,
+      allowPending,
       previousRunIds: prevIds,
     });
+    const publishedSet = dataService.getPublishedMissionSetForMoc(activeMocId, user.classId);
+    if (publishedSet && publishedSet.bossSlots && publishedSet.bossSlots.length > 0) {
+      const fromSet = resolveBossSetQuestions({
+        missionSet: publishedSet,
+        bank,
+        userId: user.uid,
+        recentSessions: user.recentQuestionSessions ?? [],
+        nonce: (user.recentQuestionSessions ?? []).length,
+      });
+      if (fromSet.length >= boss.hitLevels.length) {
+        return fromSet.slice(0, boss.hitLevels.length);
+      }
+      if (fromSet.length > 0) {
+        const seen = new Set(fromSet.map((q) => q.id));
+        const merged = [...fromSet];
+        for (const fallbackQ of built.questions) {
+          if (merged.length >= boss.hitLevels.length) break;
+          if (!seen.has(fallbackQ.id)) {
+            merged.push(fallbackQ);
+            seen.add(fallbackQ.id);
+          }
+        }
+        return merged;
+      }
+    }
     return built.questions;
   });
   const currentQuestion = deck[Math.min(hitIndex, deck.length - 1)];

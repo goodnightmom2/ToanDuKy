@@ -20,6 +20,8 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Tags,
+  Target,
   Unlock,
   UserPlus,
   Users,
@@ -28,6 +30,7 @@ import {
 import {BankDistributionTab} from '../components/BankDistributionTab.tsx';
 import {MaterialImporter} from '../components/MaterialImporter.tsx';
 import {MathText} from '../components/MathText.tsx';
+import {MissionSetTab} from '../components/MissionSetTab.tsx';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
 import {
   ALL_MOC_IDS,
@@ -35,6 +38,7 @@ import {
   JOURNEY_MILESTONES_BY_ID,
   normalizeJourneyProgress,
 } from '../journey.ts';
+import {inferPatternIdForQuestion} from '../math/taxonomy.ts';
 import {
   canEditSettingsOrUsers,
   dataService,
@@ -50,9 +54,13 @@ import {
   type BulkStudentDraftRow,
 } from '../services/studentExcel.ts';
 import type {
+  MissionSetRecord,
+  MocId,
   QuestionItem,
+  QuestionType,
   ReviewStatus,
   SkillCluster,
+  TaxonomyPattern,
   UserAccount,
   UserRole,
 } from '../types.ts';
@@ -64,6 +72,7 @@ interface AdminPanelProps {
   initialBankCluster?: SkillCluster | 'ALL';
   onExitAdmin: () => void;
   onPreviewAsStudent: () => void;
+  onPreviewMocAsStudent?: (mocId: MocId, draftOverride?: MissionSetRecord) => void;
   onOpenMapAlign?: () => void;
   onRefreshApp: () => void;
 }
@@ -75,6 +84,7 @@ export type AdminTab =
   | 'bank'
   | 'distribution'
   | 'import'
+  | 'missions'
   | 'reports'
   | 'rebuttals'
   | 'settings'
@@ -86,6 +96,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   initialBankCluster,
   onExitAdmin,
   onPreviewAsStudent,
+  onPreviewMocAsStudent,
   onOpenMapAlign,
   onRefreshApp,
 }) => {
@@ -155,6 +166,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (initialBankCluster) setBankFilterCluster(initialBankCluster);
   }, [initialBankCluster]);
   const [bankFilterStatus, setBankFilterStatus] = React.useState<ReviewStatus | 'ALL'>('ALL');
+  const [bankFilterPattern, setBankFilterPattern] = React.useState<string>('ALL');
+  const [bankFilterLevel, setBankFilterLevel] = React.useState<number | 'ALL'>('ALL');
+  const [bankFilterType, setBankFilterType] = React.useState<QuestionType | 'ALL'>('ALL');
+  const [bankFilterSource, setBankFilterSource] = React.useState<string>('ALL');
+  const [bankSearch, setBankSearch] = React.useState('');
+  const [showTaxonomyPanel, setShowTaxonomyPanel] = React.useState(false);
+  const [newTaxTopic, setNewTaxTopic] = React.useState<TaxonomyPattern['topic']>('COS');
+  const [newTaxName, setNewTaxName] = React.useState('');
+  const [mergeSourceId, setMergeSourceId] = React.useState('');
+  const [mergeTargetId, setMergeTargetId] = React.useState('');
+  const taxonomyList = React.useMemo(() => dataService.getTaxonomy(isAdmin), [tick, isAdmin]);
   const [selectedQIds, setSelectedQIds] = React.useState<string[]>([]);
   const [previewQuestion, setPreviewQuestion] = React.useState<QuestionItem | null>(null);
   const [manualStem, setManualStem] = React.useState('');
@@ -210,6 +232,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [mapUploadMsg, setMapUploadMsg] = React.useState('');
   const [aiEnabled, setAiEnabled] = React.useState(settings.aiEnabled);
   const [aiQuota, setAiQuota] = React.useState(settings.aiDailyQuotaLimit);
+  const [aiModel, setAiModel] = React.useState(settings.aiModel ?? 'gemini-3.1-flash-lite');
+  const [aiHardPageModel, setAiHardPageModel] = React.useState(
+    settings.aiHardPageModel ?? 'gemini-2.5-pro',
+  );
+  const [autoApproveThreshold, setAutoApproveThreshold] = React.useState(
+    settings.autoApproveConfidenceThreshold ?? 0.85,
+  );
   const [supabaseUrl, setSupabaseUrl] = React.useState(settings.supabaseUrl ?? '');
   const [supabasePublishableKey, setSupabasePublishableKey] = React.useState(
     settings.supabasePublishableKey ?? '',
@@ -299,12 +328,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     {id: 'bank', label: `4. Ngân hàng (${questions.length})`, icon: Sparkles},
     {id: 'distribution', label: '5. Phân bố ngân hàng', icon: LayoutGrid},
     {id: 'import', label: '6. Nhập học liệu', icon: FileUp},
-    {id: 'reports', label: '7. Báo cáo & Lỗi sai', icon: BarChart3},
-    {id: 'rebuttals', label: `8. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
+    {id: 'missions', label: '7. Set nhiệm vụ', icon: Target},
+    {id: 'reports', label: '8. Báo cáo & Lỗi sai', icon: BarChart3},
+    {id: 'rebuttals', label: `9. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
     ...(isAdmin
       ? [
-          {id: 'settings' as const, label: '9. Cài đặt', icon: Settings},
-          {id: 'selftest' as const, label: '10. Tự kiểm tra', icon: Check},
+          {id: 'settings' as const, label: '10. Cài đặt', icon: Settings},
+          {id: 'selftest' as const, label: '11. Tự kiểm tra', icon: Check},
         ]
       : []),
   ];
@@ -1437,66 +1467,374 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           )}
 
-          {/* Filters & Batch approve */}
-          <div className="notebook-card p-4 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-2">
-              <select
-                value={bankFilterCluster}
-                onChange={(e) => setBankFilterCluster(e.target.value as SkillCluster | 'ALL')}
-                className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
-              >
-                <option value="ALL">Tất cả 6 cụm</option>
-                {SKILL_CLUSTER_LIST.map((c) => (
-                  <option key={c} value={c}>
-                    {c} · {SKILL_CLUSTERS[c].shortTitle}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={bankFilterStatus}
-                onChange={(e) => setBankFilterStatus(e.target.value as ReviewStatus | 'ALL')}
-                className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
-              >
-                <option value="ALL">Mọi trạng thái</option>
-                <option value="pending_teacher_review">Chờ Admin duyệt</option>
-                <option value="approved">Đã duyệt</option>
-                <option value="rejected">Từ chối</option>
-              </select>
-            </div>
+          {/* Filters, Stats & Batch approve */}
+          {(() => {
+            const sourceNames = Array.from(
+              new Set(
+                questions
+                  .map((q) => q.source_ref_meta?.file_name || q.source_refs[0] || '')
+                  .filter(Boolean),
+              ),
+            ).sort();
+            const approvedCount = questions.filter((q) => q.review_status === 'approved').length;
+            const verifiedPassCount = questions.filter((q) => q.verified_by_code === 'pass').length;
+            const verifiedFailCount = questions.filter((q) => q.verified_by_code === 'fail').length;
+            const patternCounts = new Map<string, number>();
+            for (const q of questions) {
+              const pid = q.pattern_id || inferPatternIdForQuestion(q);
+              patternCounts.set(pid, (patternCounts.get(pid) ?? 0) + 1);
+            }
 
-            {isAdmin && (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={selectedQIds.length === 0}
-                  onClick={() => {
-                    dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
-                    setBankActionMsg(`Admin đã chấp nhận ${selectedQIds.length} câu hỏi / đề xuất.`);
-                    setSelectedQIds([]);
-                    refresh();
-                  }}
-                  className="btn-tactile btn-jade text-xs py-2 px-3"
-                >
-                  <Check className="w-4 h-4" /> Duyệt đã chọn ({selectedQIds.length})
-                </button>
-                <button
-                  type="button"
-                  disabled={pendingQuestionsCount === 0}
-                  onClick={() => {
-                    const allPending = questions
-                      .filter((q) => q.review_status === 'pending_teacher_review')
-                      .map((q) => q.id);
-                    dataService.setQuestionReviewStatus(user, allPending, 'approved');
-                    setBankActionMsg(`Admin đã chấp nhận toàn bộ ${allPending.length} mục chờ duyệt.`);
-                    refresh();
-                  }}
-                  className="btn-tactile btn-gold text-xs py-2 px-3"
-                >
-                  Duyệt toàn bộ câu chờ ({pendingQuestionsCount})
-                </button>
+            return (
+              <div className="space-y-3">
+                {/* Summary stats strip */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-[#FFFBF0] border border-[#D9C293]">
+                    <p className="text-[11px] text-[#5B6B82]">Tổng câu hỏi</p>
+                    <p className="font-display text-xl font-extrabold text-[#14284A] tabular-nums">{questions.length}</p>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]">
+                    <p className="text-[11px] text-[#145B4F]">Đã duyệt</p>
+                    <p className="font-display text-xl font-extrabold text-[#145B4F] tabular-nums">{approvedCount}</p>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#FFF4D6] border border-[#E0A93B]">
+                    <p className="text-[11px] text-[#8A5108]">Chờ Admin duyệt</p>
+                    <p className="font-display text-xl font-extrabold text-[#8A5108] tabular-nums">{pendingQuestionsCount}</p>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#EEF6FF] border border-[#9EC5FE]">
+                    <p className="text-[11px] text-[#14437A]">Code kiểm chứng khớp</p>
+                    <p className="font-display text-xl font-extrabold text-[#14437A] tabular-nums">{verifiedPassCount}</p>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#FDECEC] border border-[#E5A09B]">
+                    <p className="text-[11px] text-[#A82A2A]">Lệch kiểm chứng</p>
+                    <p className="font-display text-xl font-extrabold text-[#A82A2A] tabular-nums">{verifiedFailCount}</p>
+                  </div>
+                </div>
+
+                <div className="notebook-card p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap gap-2 flex-1">
+                      <input
+                        type="text"
+                        value={bankSearch}
+                        onChange={(e) => setBankSearch(e.target.value)}
+                        placeholder="Tìm theo mã câu, đề bài, dạng..."
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs min-w-[180px] flex-1"
+                      />
+                      <select
+                        value={bankFilterCluster}
+                        onChange={(e) => setBankFilterCluster(e.target.value as SkillCluster | 'ALL')}
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+                      >
+                        <option value="ALL">Tất cả 6 cụm</option>
+                        {SKILL_CLUSTER_LIST.map((c) => (
+                          <option key={c} value={c}>
+                            {c} · {SKILL_CLUSTERS[c].shortTitle}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={bankFilterPattern}
+                        onChange={(e) => setBankFilterPattern(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold max-w-[220px]"
+                      >
+                        <option value="ALL">Mọi dạng toán ({taxonomyList.length})</option>
+                        {taxonomyList.map((pat) => (
+                          <option key={pat.id} value={pat.id}>
+                            {pat.id} · {pat.name} ({patternCounts.get(pat.id) ?? 0})
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={bankFilterLevel}
+                        onChange={(e) =>
+                          setBankFilterLevel(e.target.value === 'ALL' ? 'ALL' : Number(e.target.value))
+                        }
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+                      >
+                        <option value="ALL">Mọi mức</option>
+                        <option value={1}>Mức 1</option>
+                        <option value={2}>Mức 2</option>
+                        <option value={3}>Mức 3</option>
+                        <option value={4}>Mức 4</option>
+                      </select>
+                      <select
+                        value={bankFilterType}
+                        onChange={(e) => setBankFilterType(e.target.value as QuestionType | 'ALL')}
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+                      >
+                        <option value="ALL">Mọi kiểu câu</option>
+                        <option value="mcq">Trắc nghiệm</option>
+                        <option value="true_false_multi">Đúng/Sai 4 ý</option>
+                        <option value="numeric">Đáp án số</option>
+                        <option value="matching">Ghép cặp</option>
+                        <option value="fill_relation">Điền hệ thức</option>
+                        <option value="error_spot">Tìm lỗi sai</option>
+                      </select>
+                      <select
+                        value={bankFilterSource}
+                        onChange={(e) => setBankFilterSource(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold max-w-[190px]"
+                      >
+                        <option value="ALL">Mọi nguồn tệp</option>
+                        {sourceNames.map((src) => (
+                          <option key={src} value={src}>
+                            {src}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={bankFilterStatus}
+                        onChange={(e) => setBankFilterStatus(e.target.value as ReviewStatus | 'ALL')}
+                        className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-bold"
+                      >
+                        <option value="ALL">Mọi trạng thái</option>
+                        <option value="pending_teacher_review">Chờ Admin duyệt</option>
+                        <option value="approved">Đã duyệt</option>
+                        <option value="rejected">Từ chối</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#E5D3A8]">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowTaxonomyPanel((v) => !v)}
+                        className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                      >
+                        <Tags className="w-3.5 h-3.5 text-[#18685B]" />
+                        {showTaxonomyPanel ? 'Ẩn Danh mục dạng' : `Quản lý Danh mục dạng (${taxonomyList.length})`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTab('missions')}
+                        className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                      >
+                        <Target className="w-3.5 h-3.5 text-[#14284A]" /> Sang Set nhiệm vụ
+                      </button>
+                    </div>
+
+                    {isAdmin && (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={selectedQIds.length === 0}
+                          onClick={() => {
+                            dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
+                            setBankActionMsg(`Admin đã chấp nhận ${selectedQIds.length} câu hỏi / đề xuất.`);
+                            setSelectedQIds([]);
+                            refresh();
+                          }}
+                          className="btn-tactile btn-jade text-xs py-2 px-3"
+                        >
+                          <Check className="w-4 h-4" /> Duyệt đã chọn ({selectedQIds.length})
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pendingQuestionsCount === 0}
+                          onClick={() => {
+                            const allPending = questions
+                              .filter((q) => q.review_status === 'pending_teacher_review')
+                              .map((q) => q.id);
+                            dataService.setQuestionReviewStatus(user, allPending, 'approved');
+                            setBankActionMsg(`Admin đã chấp nhận toàn bộ ${allPending.length} mục chờ duyệt.`);
+                            refresh();
+                          }}
+                          className="btn-tactile btn-gold text-xs py-2 px-3"
+                        >
+                          Duyệt toàn bộ câu chờ ({pendingQuestionsCount})
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Collapsible Taxonomy Catalog Manager (26 Appendix A patterns + Admin CRUD/Merge) */}
+                {showTaxonomyPanel && (
+                  <div className="notebook-card-warm p-4 space-y-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="font-display text-base font-extrabold text-[#14284A]">
+                          Danh mục dạng toán Chương III (Phụ lục A — {taxonomyList.length} dạng)
+                        </h3>
+                        <p className="text-[11px] text-[#5B6B82]">
+                          {isAdmin
+                            ? 'Admin có thể thêm, duyệt dạng đề xuất, ẩn hoặc gộp dạng trùng lặp.'
+                            : 'Giáo viên có thể xem danh sách dạng chuẩn và đề xuất thêm dạng mới (chờ Admin duyệt).'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Add / Propose new pattern */}
+                    <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-white border border-[#D9C293]">
+                      <select
+                        value={newTaxTopic}
+                        onChange={(e) => setNewTaxTopic(e.target.value as TaxonomyPattern['topic'])}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] font-bold"
+                      >
+                        <option value="NEN">NEN</option>
+                        <option value="LG">LG</option>
+                        <option value="COS">COS</option>
+                        <option value="SIN">SIN</option>
+                        <option value="DT">DT</option>
+                        <option value="MH">MH</option>
+                        <option value="OUT">OUT</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={newTaxName}
+                        onChange={(e) => setNewTaxName(e.target.value)}
+                        placeholder="Tên dạng mới (ví dụ: Ứng dụng đo chiều cao có góc hạ)"
+                        className="flex-1 min-w-[200px] px-2.5 py-1.5 rounded-lg bg-white border border-[#CBB17D]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!newTaxName.trim()) return;
+                          const created = dataService.proposeTaxonomyPattern(user, {
+                            topic: newTaxTopic,
+                            name: newTaxName.trim(),
+                          });
+                          if (created) {
+                            setNewTaxName('');
+                            setBankActionMsg(
+                              isAdmin
+                                ? `Đã thêm dạng mới ${created.id}: ${created.name}.`
+                                : `Đã gửi đề xuất dạng mới ${created.id} chờ Admin duyệt.`,
+                            );
+                            refresh();
+                          }
+                        }}
+                        className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> {isAdmin ? 'Thêm dạng mới' : 'Đề xuất dạng mới'}
+                      </button>
+                    </div>
+
+                    {/* Admin Merge tool */}
+                    {isAdmin && (
+                      <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-white border border-[#D9C293]">
+                        <span className="font-bold text-[#14284A]">Gộp dạng:</span>
+                        <select
+                          value={mergeSourceId}
+                          onChange={(e) => setMergeSourceId(e.target.value)}
+                          className="px-2 py-1.5 rounded-lg border border-[#CBB17D] max-w-[220px]"
+                        >
+                          <option value="">Chọn dạng nguồn (sẽ ẩn)...</option>
+                          {taxonomyList.filter((t) => t.status !== 'hidden').map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.id} · {t.name} ({patternCounts.get(t.id) ?? 0})
+                            </option>
+                          ))}
+                        </select>
+                        <span>→</span>
+                        <select
+                          value={mergeTargetId}
+                          onChange={(e) => setMergeTargetId(e.target.value)}
+                          className="px-2 py-1.5 rounded-lg border border-[#CBB17D] max-w-[220px]"
+                        >
+                          <option value="">Chọn dạng đích...</option>
+                          {taxonomyList.filter((t) => t.status === 'active' && t.id !== mergeSourceId).map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.id} · {t.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!mergeSourceId || !mergeTargetId || mergeSourceId === mergeTargetId}
+                          onClick={() => {
+                            if (dataService.adminMergeTaxonomyPattern(user, mergeSourceId, mergeTargetId)) {
+                              setBankActionMsg(`Đã gộp dạng ${mergeSourceId} vào ${mergeTargetId}.`);
+                              setMergeSourceId('');
+                              setMergeTargetId('');
+                              refresh();
+                            }
+                          }}
+                          className="btn-tactile btn-gold text-xs py-1.5 px-3"
+                        >
+                          Thực hiện gộp
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Pattern list */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto pr-1">
+                      {taxonomyList.map((pat) => {
+                        const qCnt = patternCounts.get(pat.id) ?? 0;
+                        return (
+                          <div
+                            key={pat.id}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
+                              pat.status === 'proposed'
+                                ? 'bg-[#FFF3DB] border-[#D98A1F]'
+                                : pat.status === 'hidden'
+                                  ? 'bg-[#F4F4F4] border-[#CCCCCC] opacity-70'
+                                  : 'bg-white border-[#E5D3A8]'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="font-extrabold text-[#14284A]">{pat.id}</span>
+                                <span className="px-1.5 py-0.5 rounded bg-[#FFF4D6] text-[10px] font-bold">
+                                  {qCnt} câu
+                                </span>
+                                {pat.has_solver && (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#E6F6F3] text-[#145B4F] text-[10px] font-bold">
+                                    Có solver
+                                  </span>
+                                )}
+                                {pat.status === 'proposed' && (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#FDECEC] text-[#A82A2A] text-[10px] font-bold">
+                                    Chờ duyệt
+                                  </span>
+                                )}
+                                {pat.status === 'hidden' && (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#E2E8F0] text-[#475569] text-[10px] font-bold">
+                                    Đã ẩn
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-[#14284A] truncate">{pat.name}</p>
+                            </div>
+                            {isAdmin && (
+                              <div className="flex gap-1 shrink-0">
+                                {pat.status !== 'active' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      dataService.adminUpsertTaxonomyPattern(user, {...pat, status: 'active'});
+                                      refresh();
+                                    }}
+                                    className="px-2 py-1 rounded bg-[#2E9C8A] text-white text-[10px] font-bold"
+                                  >
+                                    Kích hoạt
+                                  </button>
+                                )}
+                                {pat.status === 'active' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      dataService.adminUpsertTaxonomyPattern(user, {...pat, status: 'hidden'});
+                                      refresh();
+                                    }}
+                                    className="px-2 py-1 rounded bg-[#FFFBF0] border border-[#CBB17D] text-[10px] font-bold"
+                                  >
+                                    Ẩn
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* Manual add question form (supports 4 question types + level + E01–E12 error code) */}
           <div className="notebook-card-warm p-4 space-y-2.5">
@@ -1702,8 +2040,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             {questions
               .filter((q) => bankFilterCluster === 'ALL' || q.cluster === bankFilterCluster)
               .filter((q) => bankFilterStatus === 'ALL' || q.review_status === bankFilterStatus)
+              .filter((q) => bankFilterLevel === 'ALL' || q.level === bankFilterLevel)
+              .filter((q) => bankFilterType === 'ALL' || q.type === bankFilterType)
+              .filter((q) => {
+                if (bankFilterPattern === 'ALL') return true;
+                const pid = q.pattern_id || inferPatternIdForQuestion(q);
+                return pid === bankFilterPattern;
+              })
+              .filter((q) => {
+                if (bankFilterSource === 'ALL') return true;
+                const src = q.source_ref_meta?.file_name || q.source_refs[0] || '';
+                return src === bankFilterSource;
+              })
+              .filter((q) => {
+                const kw = bankSearch.trim().toLowerCase();
+                if (!kw) return true;
+                const pid = (q.pattern_id || inferPatternIdForQuestion(q)).toLowerCase();
+                return (
+                  q.id.toLowerCase().includes(kw) ||
+                  q.stem_vi.toLowerCase().includes(kw) ||
+                  pid.includes(kw) ||
+                  (q.pattern_name ?? '').toLowerCase().includes(kw)
+                );
+              })
               .map((q) => {
                 const checked = selectedQIds.includes(q.id);
+                const resolvedPatternId = q.pattern_id || inferPatternIdForQuestion(q);
                 const isOwnPending =
                   !isAdmin &&
                   q.review_status === 'pending_teacher_review' &&
@@ -1735,6 +2097,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <span className="px-1.5 py-0.5 rounded bg-[#FFF4D6] text-xs font-bold mr-1.5">
                             {q.cluster} · Mức {q.level}
                           </span>
+                          <span className="px-1.5 py-0.5 rounded bg-[#EEF6FF] text-[#14437A] text-xs font-bold mr-1.5">
+                            {resolvedPatternId}
+                          </span>
+                          {q.verified_by_code === 'pass' && (
+                            <span className="px-1.5 py-0.5 rounded bg-[#E6F6F3] text-[#145B4F] text-xs font-bold mr-1.5">
+                              ✓ Code khớp
+                            </span>
+                          )}
+                          {q.verified_by_code === 'fail' && (
+                            <span className="px-1.5 py-0.5 rounded bg-[#FCE8E6] text-[#C8392B] text-xs font-bold mr-1.5">
+                              ⚠ Lệch code
+                            </span>
+                          )}
                           <span
                             className={`px-1.5 py-0.5 rounded text-xs font-bold ${
                               q.review_status === 'approved'
@@ -2017,6 +2392,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           existingQuestions={questions}
           onQuestionsChanged={refresh}
           onOpenSettingsTab={() => setTab('settings')}
+          onOpenMissionSetsTab={() => setTab('missions')}
+        />
+      )}
+
+      {/* TAB 7: SET NHIỆM VỤ THEO TRẠM / MỐC */}
+      {tab === 'missions' && (
+        <MissionSetTab
+          user={user}
+          classes={classes}
+          questions={questions}
+          onRefresh={refresh}
+          onPreviewMocAsStudent={onPreviewMocAsStudent}
         />
       )}
 
@@ -2293,6 +2680,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-sm font-bold"
               />
             </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[#14284A]">
+                Model AI mặc định (trích xuất PDF nhanh)
+              </label>
+              <input
+                type="text"
+                value={aiModel}
+                onChange={(e) => setAiModel(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="gemini-3.1-flash-lite"
+                className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-mono"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[#14284A]">
+                Model AI trang khó (công thức/hình phức tạp)
+              </label>
+              <input
+                type="text"
+                value={aiHardPageModel}
+                onChange={(e) => setAiHardPageModel(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="gemini-2.5-pro"
+                className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-mono"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[#14284A]">
+                Ngưỡng tin cậy duyệt hàng loạt (mặc định 0.85)
+              </label>
+              <input
+                type="number"
+                min={0.5}
+                max={1}
+                step={0.05}
+                value={autoApproveThreshold}
+                onChange={(e) => setAutoApproveThreshold(Number(e.target.value))}
+                disabled={!isAdmin}
+                className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-sm font-bold"
+              />
+            </div>
           </div>
 
           <label className="flex items-center gap-2.5 text-sm font-semibold text-[#14284A]">
@@ -2534,6 +2965,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       mapBackgroundHasBakedLabels: mapHasBakedLabels,
                       aiEnabled,
                       aiDailyQuotaLimit: aiQuota,
+                      aiModel: aiModel.trim() || 'gemini-3.1-flash-lite',
+                      aiHardPageModel: aiHardPageModel.trim() || 'gemini-2.5-pro',
+                      autoApproveConfidenceThreshold: Math.min(1, Math.max(0.5, autoApproveThreshold)),
                       supabaseUrl: supabaseUrl.trim() || undefined,
                       supabasePublishableKey: supabasePublishableKey.trim() || undefined,
                       driveClientId: driveClientId.trim() || undefined,

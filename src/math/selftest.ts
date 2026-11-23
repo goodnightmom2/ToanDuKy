@@ -17,6 +17,25 @@ import {gradeNumericAnswer, gradeQuestion, shouldOfferHelp} from './grader.ts';
 import {ALL_GENERATOR_IDS, generateQuestion} from './generators.ts';
 import {ALL_INITIAL_QUESTIONS, BS01_SEED_ITEMS} from './seedBank.ts';
 import {verifyQuestionByCode} from './verifier.ts';
+import {solveByPatternAndGivens, verifyQuestionWithSolvers} from './solvers.ts';
+import {autoSuggestMissionSet, validateMissionSet} from './missionSetEngine.ts';
+import {computeQuestionFingerprint, PROMPT_VERSION} from './taxonomy.ts';
+import {
+  applyAnswerKeysToDrafts,
+  extractWindowViaAi,
+  parseAnswerKeyTableText,
+  validateRawExtractionResponse,
+} from '../services/aiExtractor.ts';
+import {
+  clearExtractionCache,
+  saveCachedExtractionResult,
+} from '../services/importBatchService.ts';
+import {
+  analyzePageMathTextHealth,
+  formatPdfStatusSummary,
+  readPdfDocumentRange,
+} from '../services/pdfReader.ts';
+import type {MissionSetRecord, QuestionItem} from '../types.ts';
 import {
   canAccessAdmin,
   canEditSettingsOrUsers,
@@ -539,6 +558,561 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       name: 'Mô phỏng 1.000 lượt đấu cho mỗi BOSS B1–B5 (tổng 5.000 lượt)',
       passed: bossSimulation.allPassed,
       detail: `${bossSimulation.totalSimulatedRuns.toLocaleString('vi-VN')} lượt (${bossSimulation.totalQuestionsGenerated.toLocaleString('vi-VN')} câu, ${bossSimulation.durationMs}ms) — ${summaryText}`,
+    });
+  }
+
+  // 18. Đọc lặp lại cùng một tệp PDF 3 lần & đổi khoảng trang 1–6 → 1–16 không lỗi detached ArrayBuffer
+  {
+    const buildMinimalPdf = (numPages: number): Uint8Array => {
+      const encoder = new TextEncoder();
+      const parts: string[] = ['%PDF-1.4\n'];
+      const offsets: number[] = [0];
+      let curLen = parts[0].length;
+      const pushObj = (num: number, body: string) => {
+        offsets[num] = curLen;
+        const chunk = `${num} 0 obj\n${body}\nendobj\n`;
+        parts.push(chunk);
+        curLen += chunk.length;
+      };
+      const kids: string[] = [];
+      for (let i = 0; i < numPages; i++) {
+        kids.push(`${3 + i} 0 R`);
+      }
+      pushObj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+      pushObj(2, `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${numPages} >>`);
+      for (let i = 0; i < numPages; i++) {
+        pushObj(3 + i, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>');
+      }
+      const xrefOffset = curLen;
+      const totalObjs = 2 + numPages;
+      let xref = `xref\n0 ${totalObjs + 1}\n0000000000 65535 f \n`;
+      for (let i = 1; i <= totalObjs; i++) {
+        xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+      }
+      const trailer = `trailer\n<< /Size ${totalObjs + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+      parts.push(xref, trailer);
+      return encoder.encode(parts.join(''));
+    };
+
+    try {
+      const pdfBytes = buildMinimalPdf(16);
+      const r1 = await readPdfDocumentRange(pdfBytes, {
+        fileName: 'test-16-trang.pdf',
+        startPage: 1,
+        endPage: 6,
+        renderImages: false,
+      });
+      const r2 = await readPdfDocumentRange(pdfBytes, {
+        fileName: 'test-16-trang.pdf',
+        startPage: 1,
+        endPage: 6,
+        renderImages: false,
+      });
+      const r3 = await readPdfDocumentRange(pdfBytes, {
+        fileName: 'test-16-trang.pdf',
+        startPage: 1,
+        endPage: 16,
+        renderImages: false,
+      });
+      const summary = formatPdfStatusSummary({
+        totalPages: r3.totalPages,
+        startPage: r3.startPage,
+        endPage: r3.endPage,
+        readCount: r3.readCount,
+        imageUsedCount: r3.imageUsedCount,
+        errorCount: r3.errorCount,
+      });
+      const ok =
+        pdfBytes.byteLength > 200 &&
+        r1.totalPages === 16 &&
+        r1.readCount === 6 &&
+        r2.readCount === 6 &&
+        r3.readCount === 16 &&
+        r3.errorCount === 0 &&
+        summary.includes('PDF 16 trang · Khoảng đọc 1–16 · Đã đọc 16/16 trang');
+      results.push({
+        id: 18,
+        name: 'Đọc lặp lại PDF 3 lần (1–6 → 1–6 → 1–16) không lỗi detached ArrayBuffer',
+        passed: ok,
+        detail: `${summary} · buffer gốc vẫn nguyên vẹn (${pdfBytes.byteLength} bytes).`,
+      });
+    } catch (err) {
+      results.push({
+        id: 18,
+        name: 'Đọc lặp lại PDF 3 lần (1–6 → 1–6 → 1–16) không lỗi detached ArrayBuffer',
+        passed: false,
+        detail: `Lỗi đọc PDF: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 19. Phát hiện trang PDF hỏng toán / có hình vẽ -> bắt buộc gửi ảnh
+  {
+    const garbledText = 'Cau 1: Cho tam giac ABC \uE012 \uE015 \uF021 tinh goc A nhu hinh ve duoi day.';
+    const cleanText =
+      'Câu 1: Trong các khẳng định sau về lịch sử toán học, khẳng định nào đúng? Hãy chọn một trong bốn phương án A, B, C, D dưới đây theo nội dung đọc hiểu chung về chương trình phổ thông mới.';
+    const hGarbled = analyzePageMathTextHealth(garbledText);
+    const hClean = analyzePageMathTextHealth(cleanText);
+    const ok =
+      hGarbled.isGarbled &&
+      hGarbled.hasFigureCue &&
+      hGarbled.sendMode !== 'text_only' &&
+      !hClean.isGarbled &&
+      hClean.sendMode === 'text_only';
+    results.push({
+      id: 19,
+      name: 'Phát hiện lớp chữ PDF hỏng toán / có hình vẽ để tự động gửi ảnh cho AI',
+      passed: ok,
+      detail: `Trang lỗi ký tự PUA + hình: mode=${hGarbled.sendMode} (${hGarbled.reasons.join('; ')}); trang thuần chữ: mode=${hClean.sendMode}.`,
+    });
+  }
+
+  // 20. Kiểm tra schema validator JSON trích xuất từ Gemini
+  {
+    const validPayload = {
+      items: [
+        {
+          number: '1',
+          type: 'mcq',
+          stem_latex: 'Cho tam giác $ABC$ có $b=6, c=8, \\widehat{A}=60^\\circ$. Tính cạnh $a$.',
+          options: [
+            {key: 'A', text: '$2\\sqrt{13}$'},
+            {key: 'B', text: '$10$'},
+          ],
+          expected_answer_key: 'A',
+          pattern_id: 'COS-01',
+          level: 2,
+          confidence: 0.92,
+        },
+      ],
+    };
+    const invalidPayload = {wrongKey: [{type: 'mcq'}]};
+    const vOk = validateRawExtractionResponse(validPayload);
+    const vBad = validateRawExtractionResponse(invalidPayload);
+    const ok = vOk.valid && vOk.items.length === 1 && !vBad.valid;
+    results.push({
+      id: 20,
+      name: 'Schema validator JSON trích xuất AI (chấp nhận đúng, chặn lỗi thiếu trường)',
+      passed: ok,
+      detail: `Hợp lệ: valid=${vOk.valid} (${vOk.items.length} câu); Sai schema: valid=${vBad.valid} (${vBad.error ?? ''}).`,
+    });
+  }
+
+  // 21. Đọc bảng đáp án ngang & ghép vào câu hỏi trích xuất (Phần I/II/III)
+  {
+    const rawKeyTable = `
+      PHẦN I. Trắc nghiệm
+      Câu 17 18 19 20 21 22
+      A B C D A B
+      PHẦN III. Trả lời ngắn
+      Câu 1: 55,3
+    `;
+    const parsedKeys = parseAnswerKeyTableText(rawKeyTable);
+    const sampleDrafts: QuestionItem[] = [
+      {
+        id: 'tmp_17',
+        cluster: 'COS',
+        skill_ids: ['cos'],
+        level: 2,
+        type: 'mcq',
+        part: 'I',
+        question_number: '17',
+        stem_vi: 'Câu 17 mẫu',
+        options: [
+          {id: 'a', label: 'A'},
+          {id: 'b', label: 'B'},
+          {id: 'c', label: 'C'},
+          {id: 'd', label: 'D'},
+        ],
+        expected_answer: {},
+        solution_vi: '',
+        anticipated_error_ids: ['E05'],
+        hints_vi: ['Gợi ý 1', 'Gợi ý 2'],
+        review_status: 'pending_teacher_review',
+        source_refs: ['test.pdf'],
+        is_adapted: false,
+      },
+      {
+        id: 'tmp_20',
+        cluster: 'SIN',
+        skill_ids: ['sin'],
+        level: 2,
+        type: 'mcq',
+        part: 'I',
+        question_number: '20',
+        stem_vi: 'Câu 20 mẫu',
+        options: [
+          {id: 'a', label: 'A'},
+          {id: 'b', label: 'B'},
+          {id: 'c', label: 'C'},
+          {id: 'd', label: 'D'},
+        ],
+        expected_answer: {},
+        solution_vi: '',
+        anticipated_error_ids: ['E05'],
+        hints_vi: ['Gợi ý 1', 'Gợi ý 2'],
+        review_status: 'pending_teacher_review',
+        source_refs: ['test.pdf'],
+        is_adapted: false,
+      },
+    ];
+    const applied = applyAnswerKeysToDrafts(sampleDrafts, parsedKeys);
+    const q17 = applied.items.find((q) => q.question_number === '17');
+    const q20 = applied.items.find((q) => q.question_number === '20');
+    const ok =
+      parsedKeys.length >= 6 &&
+      applied.matchedCount === 2 &&
+      q17?.expected_answer.choice === 'a' &&
+      q20?.expected_answer.choice === 'd';
+    results.push({
+      id: 21,
+      name: 'Ghép bảng đáp án ngang (Câu 17..22 | A B C D A B) vào câu hỏi trích xuất',
+      passed: ok,
+      detail: `Đọc được ${parsedKeys.length} đáp án; ghép khớp ${applied.matchedCount}/2 (Câu 17→${q17?.expected_answer.choice}, Câu 20→${q20?.expected_answer.choice}).`,
+    });
+  }
+
+  // 22. Bộ giải toán xác định (Côsin, Sin, Diện tích Heron/pr/abc/4R, Chiều cao 2 góc MH-02)
+  {
+    const cosSide = solveByPatternAndGivens('COS-01', {b: 6, c: 8, A_deg: 60}); // sqrt(36+64-48)=sqrt(52)≈7.2111
+    const cosAng = solveByPatternAndGivens('COS-02', {a: 7, b: 8, c: 5}); // cosA=(64+25-49)/80=0.5 => 60°
+    const sinR = solveByPatternAndGivens('SIN-02', {a: 10, A_deg: 30}); // R = 10/(2*0.5) = 10
+    const areaSin = solveByPatternAndGivens('DT-01', {b: 6, c: 8, A_deg: 30}); // 0.5*6*8*0.5 = 12
+    const areaHeron = solveByPatternAndGivens('DT-02', {a: 5, b: 6, c: 7}); // sqrt(9*4*3*2)=6*sqrt(6)≈14.6969
+    const areaPr = solveByPatternAndGivens('DT-03', {p: 12, r: 2}); // 24
+    const area4R = solveByPatternAndGivens('DT-04', {a: 6, b: 8, c: 10, R: 5}); // 480/20 = 24
+    const height2Ang = solveByPatternAndGivens('MH-02', {d: 50, alpha_deg: 30, beta_deg: 60}); // 50*0.5*(sqrt(3)/2)/0.5 = 25*sqrt(3)≈43.3013
+    const verCheck = verifyQuestionWithSolvers({
+      id: 'sol_chk',
+      cluster: 'COS',
+      skill_ids: ['cos'],
+      level: 2,
+      type: 'numeric',
+      pattern_id: 'COS-02',
+      givens: {a: 7, b: 8, c: 5},
+      stem_vi: 'Tam giác có a=7, b=8, c=5. Tính góc A.',
+      expected_answer: {value: 60, rounded: 60, decimal_places: 1, unit: '°'},
+      solution_vi: '60°',
+      anticipated_error_ids: ['E05'],
+      hints_vi: ['Dùng Côsin', 'arccos(0.5)=60'],
+      review_status: 'approved',
+      source_refs: ['selftest'],
+      is_adapted: true,
+    });
+    const ok =
+      cosSide !== null &&
+      Math.abs(cosSide.value - Math.sqrt(52)) < 1e-4 &&
+      cosAng !== null &&
+      Math.abs(cosAng.value - 60) < 1e-4 &&
+      sinR !== null &&
+      Math.abs(sinR.value - 10) < 1e-4 &&
+      areaSin !== null &&
+      Math.abs(areaSin.value - 12) < 1e-4 &&
+      areaHeron !== null &&
+      Math.abs(areaHeron.value - 6 * Math.sqrt(6)) < 1e-4 &&
+      areaPr !== null &&
+      Math.abs(areaPr.value - 24) < 1e-4 &&
+      area4R !== null &&
+      Math.abs(area4R.value - 24) < 1e-4 &&
+      height2Ang !== null &&
+      Math.abs(height2Ang.value - 25 * Math.sqrt(3)) < 1e-4 &&
+      verCheck.status === 'pass';
+    results.push({
+      id: 22,
+      name: 'Bộ giải kiểm chứng code (Côsin, Sin/R, Heron, S=pr, S=abc/4R, chiều cao 2 góc MH-02)',
+      passed: ok,
+      detail: `COS-01=${cosSide?.value.toFixed(3)}, COS-02=${cosAng?.value.toFixed(1)}°, SIN-02 R=${sinR?.value.toFixed(1)}, DT-02=${areaHeron?.value.toFixed(3)}, MH-02 h=${height2Ang?.value.toFixed(2)}m, verify=${verCheck.status}.`,
+    });
+  }
+
+  // 23. Idempotent upsert & chống trùng lặp khi nhập lại cùng tệp PDF
+  {
+    const svc = new DataService(new EphemeralStore());
+    await svc.setupFirstAdmin({username: 'adm_imp', password: 'Password123', displayName: 'Admin Import'});
+    const admin = svc.getCurrentUser()!;
+    const sampleQ: QuestionItem = {
+      id: 'pdf_dup_1',
+      cluster: 'COS',
+      skill_ids: ['cos'],
+      level: 2,
+      type: 'mcq',
+      pattern_id: 'COS-01',
+      stem_vi: 'Cho tam giác $ABC$ có $b = 5, c = 7, \\widehat{A} = 60^\\circ$. Độ dài cạnh $a$ là bao nhiêu?',
+      options: [
+        {id: 'a', label: '$\\sqrt{39}$'},
+        {id: 'b', label: '$\\sqrt{109}$'},
+        {id: 'c', label: '$6$'},
+        {id: 'd', label: '$8$'},
+      ],
+      expected_answer: {choice: 'a'},
+      solution_vi: '$a^2 = 25 + 49 - 35 = 39 \\Rightarrow a = \\sqrt{39}$.',
+      anticipated_error_ids: ['E05'],
+      hints_vi: ['Áp dụng Định lý Côsin', 'Thay số cẩn thận dấu trừ'],
+      review_status: 'pending_teacher_review',
+      source_refs: ['de-mau.pdf'],
+      is_adapted: false,
+      fingerprint: computeQuestionFingerprint(
+        'Cho tam giác $ABC$ có $b = 5, c = 7, \\widehat{A} = 60^\\circ$. Độ dài cạnh $a$ là bao nhiêu?',
+        [{id: 'a', label: '$\\sqrt{39}$'}, {id: 'b', label: '$\\sqrt{109}$'}],
+      ),
+    };
+    const rFirst = svc.upsertImportedQuestions(admin, [sampleQ], {
+      targetStatus: 'approved',
+      duplicatePolicy: 'skip',
+    });
+    const countAfterFirst = svc.getQuestions().length;
+    const rSecond = svc.upsertImportedQuestions(admin, [{...sampleQ, id: 'pdf_dup_2'}], {
+      targetStatus: 'approved',
+      duplicatePolicy: 'skip',
+    });
+    const countAfterSecond = svc.getQuestions().length;
+    const ok =
+      rFirst.added === 1 &&
+      rSecond.added === 0 &&
+      rSecond.skippedDuplicates === 1 &&
+      countAfterFirst === countAfterSecond;
+    results.push({
+      id: 23,
+      name: 'Nhập lại cùng tệp PDF không tạo câu trùng lặp (Idempotent fingerprint upsert)',
+      passed: ok,
+      detail: `Lần 1: +${rFirst.added}; Lần 2: +${rSecond.added}, bỏ qua trùng=${rSecond.skippedDuplicates} (tổng giữ nguyên ${countAfterSecond} câu).`,
+    });
+  }
+
+  // 24. Kiểm tra ràng buộc Set nhiệm vụ (thiếu câu, giảm mức, trùng BOSS, transfer trùng luyện tập, câu chưa duyệt)
+  {
+    const approvedSample = ALL_INITIAL_QUESTIONS.filter((q) => q.review_status === 'approved');
+    const q1 = approvedSample[0];
+    const unapprovedQ: QuestionItem = {
+      ...q1,
+      id: 'q_unapproved_test',
+      review_status: 'pending_teacher_review',
+    };
+    const bankWithUnapproved = [...approvedSample, unapprovedQ];
+
+    const brokenSet: MissionSetRecord = {
+      id: 'ms_test_broken',
+      mocId: 2,
+      stationId: 'QS01',
+      classId: 'ALL',
+      status: 'draft',
+      version: 1,
+      slots: [
+        {
+          id: 's1',
+          role: 'main',
+          label: 'Mức cao trước',
+          mode: 'fixed',
+          count: 2,
+          levelMin: 4,
+          levelMax: 4,
+          requiredToPass: true,
+          verifyMode: false,
+          fixedQuestionIds: [q1.id], // shortage: needs 2, has 1
+        },
+        {
+          id: 's2',
+          role: 'transfer',
+          label: 'Tự giải mức thấp hơn + trùng câu luyện tập + chưa duyệt',
+          mode: 'fixed',
+          count: 2,
+          levelMin: 1,
+          levelMax: 1,
+          requiredToPass: true,
+          verifyMode: true,
+          fixedQuestionIds: [q1.id, unapprovedQ.id], // reuses q1 + includes unapproved!
+        },
+      ],
+      bossSlots: [
+        {
+          id: 'b1',
+          role: 'boss_hit',
+          label: 'BOSS trùng câu với nhiệm vụ',
+          mode: 'fixed',
+          count: 1,
+          levelMin: 2,
+          levelMax: 2,
+          requiredToPass: true,
+          verifyMode: true,
+          fixedQuestionIds: [q1.id],
+        },
+      ],
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const brokenRes = validateMissionSet(brokenSet, bankWithUnapproved);
+    const errJoined = brokenRes.errors.join(' | ');
+    const hasShortage = errJoined.includes('mới chọn 1');
+    const hasDecreasing = errJoined.includes('giảm so với ô trước');
+    const hasBossDup = errJoined.includes('bị trùng giữa Nhiệm vụ mốc và BOSS');
+    const hasTransferDup = errJoined.includes('dùng lại câu');
+    const hasUnapproved = errJoined.includes('chưa được Admin duyệt');
+
+    const suggested = autoSuggestMissionSet({
+      mocId: 2,
+      bank: approvedSample,
+      classId: 'ALL',
+      actorName: 'Admin',
+      actorUid: 'adm_test',
+    });
+    const suggestedRes = validateMissionSet(suggested, approvedSample);
+    const ok =
+      !brokenRes.valid &&
+      hasShortage &&
+      hasDecreasing &&
+      hasBossDup &&
+      hasTransferDup &&
+      hasUnapproved &&
+      suggestedRes.valid;
+    results.push({
+      id: 24,
+      name: 'Kiểm tra ràng buộc Set nhiệm vụ & Đề xuất tự động không lỗi',
+      passed: ok,
+      detail: `Phát hiện đủ 5 lỗi chặn (${brokenRes.errors.length} thông báo); Auto-Suggest Mốc 2 hợp lệ=${suggestedRes.valid} (${suggestedRes.errors.length} lỗi).`,
+    });
+  }
+
+  // 25. Phân quyền: Giáo viên không tự duyệt/xuất bản; Học viên không thấy import_batches hay câu chưa duyệt
+  {
+    const svc = new DataService(new EphemeralStore());
+    await svc.setupFirstAdmin({username: 'adm_rbac', password: 'Password123', displayName: 'Admin RBAC'});
+    const admin = svc.getCurrentUser()!;
+    const teacherRes = await svc.adminCreateTeacher(admin, {
+      username: 'gv_rbac',
+      password: 'Password123',
+      displayName: 'GV RBAC',
+    });
+    const teacher = teacherRes.user!;
+    const cls = svc.getClasses()[0];
+    const stuRes = await svc.registerStudent({
+      username: 'hv_rbac',
+      password: 'Password123',
+      displayName: 'HV RBAC',
+      classCode: cls.code,
+    });
+    const student = stuRes.user!;
+
+    // Teacher saves an import batch & a mission set draft
+    svc.saveImportBatch(teacher, {
+      id: 'batch_gv_1',
+      ownerUid: teacher.uid,
+      ownerName: teacher.displayName,
+      fileName: 'de-gv.pdf',
+      fileSha256: 'abc123',
+      totalPages: 2,
+      startPage: 1,
+      endPage: 2,
+      classificationMode: 'web_taxonomy',
+      status: 'reviewing',
+      pages: [],
+      draftQuestions: [],
+      answerKeys: [],
+      examCodes: [],
+      aiCallsUsed: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const teacherUpsert = svc.upsertImportedQuestions(
+      teacher,
+      [
+        {
+          id: 'q_gv_prop',
+          cluster: 'SIN',
+          skill_ids: ['sin'],
+          level: 2,
+          type: 'numeric',
+          stem_vi: 'Câu GV đề xuất thử quyền duyệt',
+          expected_answer: {value: 10, rounded: 10, decimal_places: 1, unit: 'm'},
+          solution_vi: '10 m',
+          anticipated_error_ids: ['E05'],
+          hints_vi: ['Gợi ý 1', 'Gợi ý 2'],
+          review_status: 'approved', // teacher tries to force approved!
+          source_refs: ['de-gv.pdf'],
+          is_adapted: false,
+        },
+      ],
+      {targetStatus: 'approved'},
+    );
+    const savedTeacherQ = svc.getQuestions().find((q) => q.id === teacherUpsert.savedIds[0]);
+    const teacherApproveRes = svc.setQuestionReviewStatus(teacher, [savedTeacherQ?.id ?? ''], 'approved');
+    const teacherDraftMs = svc.saveMissionSetDraft(teacher, {
+      id: 'ms_moc_1_ALL',
+      mocId: 1,
+      stationId: 'QS01',
+      classId: 'ALL',
+      version: 1,
+      slots: [],
+      bossSlots: [],
+      status: 'published', // teacher tries to publish directly!
+    });
+    const teacherPubRes = svc.adminPublishMissionSet(teacher, teacherDraftMs.record?.id ?? 'ms_moc_1_ALL');
+    const studentBatches = svc.getImportBatches(student);
+    const studentMissionSets = svc.getMissionSets(student);
+
+    const ok =
+      savedTeacherQ?.review_status === 'pending_teacher_review' &&
+      teacherApproveRes === false &&
+      teacherDraftMs.record?.status === 'pending_admin_review' &&
+      teacherPubRes.ok === false &&
+      studentBatches.length === 0 &&
+      studentMissionSets.every((m) => m.status === 'published');
+    results.push({
+      id: 25,
+      name: 'Phân quyền chặt chẽ (GV không tự duyệt/xuất bản; HS không thấy lô nhập hay nháp)',
+      passed: ok,
+      detail: `Câu GV bị ép về=${savedTeacherQ?.review_status}, tự duyệt=${teacherApproveRes}, bộ NV GV bị ép về=${teacherDraftMs.record?.status}, tự xuất bản=${teacherPubRes.ok}, lô nhập HS đọc được=${studentBatches.length}.`,
+    });
+  }
+
+  // 26. Cache trích xuất AI theo (sha256, pageRange, promptVersion, model) -> 0 lượt gọi AI khi đọc lại
+  {
+    clearExtractionCache();
+    const fakeSha = 'sha256_selftest_cache_001';
+    const cachedQ: QuestionItem = {
+      ...ALL_INITIAL_QUESTIONS[0],
+      id: 'cached_q_1',
+    };
+    saveCachedExtractionResult({
+      sha256: fakeSha,
+      pageRange: 'q:1,2',
+      promptVersion: PROMPT_VERSION,
+      model: 'gemini-3.1-flash-lite',
+      items: [cachedQ],
+      answerKeys: [],
+    });
+    const hit = await extractWindowViaAi({
+      pages: [
+        {
+          pagePdf: 1,
+          text: 'Trang 1',
+          state: {pagePdf: 1, status: 'read', sendMode: 'text_only', textLength: 7},
+          cachedImage: null,
+        },
+        {
+          pagePdf: 2,
+          text: 'Trang 2',
+          state: {pagePdf: 2, status: 'read', sendMode: 'text_only', textLength: 7},
+          cachedImage: null,
+        },
+      ],
+      fileName: 'cache-test.pdf',
+      fileSha256: fakeSha,
+      accessToken: null,
+      maxDaily: 50,
+      aiEnabled: false, // Even with AI off, cache hit must return immediately with 0 API calls!
+      classificationMode: 'web_taxonomy',
+      taxonomy: [],
+      model: 'gemini-3.1-flash-lite',
+    });
+    clearExtractionCache();
+    const ok = hit.fromCache === true && hit.items.length === 1 && hit.items[0].id === 'cached_q_1';
+    results.push({
+      id: 26,
+      name: 'Cache trích xuất AI theo (SHA-256, trang, prompt, model) — 0 lượt gọi mạng khi đọc lại',
+      passed: ok,
+      detail: `fromCache=${hit.fromCache}, items=${hit.items.length}, model=${hit.usedModel}.`,
     });
   }
 

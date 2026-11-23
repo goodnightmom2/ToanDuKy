@@ -38,6 +38,7 @@ import {
 } from './services/dataService.ts';
 import type {
   AvatarAppearance,
+  MissionSetRecord,
   MocId,
   SkillCluster,
   StationId,
@@ -99,6 +100,10 @@ function AppInner() {
   const [bossStartHit, setBossStartHit] = React.useState(0);
   const [bossStartHp, setBossStartHp] = React.useState(100);
   const [previewingAsStudent, setPreviewingAsStudent] = React.useState(false);
+  const [previewMissionConfig, setPreviewMissionConfig] = React.useState<{
+    mocId: MocId;
+    missionSet?: MissionSetRecord;
+  } | null>(null);
   const [adminInitialTab, setAdminInitialTab] = React.useState<AdminTab | undefined>(undefined);
   const [adminInitialCluster, setAdminInitialCluster] = React.useState<SkillCluster | 'ALL' | undefined>(
     undefined,
@@ -543,10 +548,26 @@ function AppInner() {
             stationId={activeStation}
             mocId={activeMocId}
             initialStepIndex={missionStartStep}
+            previewMissionSet={previewMissionConfig?.missionSet ?? null}
+            isPreviewTest={Boolean(previewMissionConfig)}
             onUserUpdated={setUser}
             onMocPassed={handleMocPassed}
-            onBackToMap={() => navigate('map')}
+            onBackToMap={() => {
+              if (previewMissionConfig) {
+                setPreviewMissionConfig(null);
+                setAdminInitialTab('missions');
+                navigate('admin');
+                return;
+              }
+              navigate('map');
+            }}
             onGoToBoss={() => {
+              if (previewMissionConfig) {
+                setPreviewMissionConfig(null);
+                setAdminInitialTab('missions');
+                navigate('admin');
+                return;
+              }
               if (!dataService.canUserChallengeMocBoss(user.uid, activeMocId)) return;
               setBossStartHit(0);
               setBossStartHp(100);
@@ -639,8 +660,16 @@ function AppInner() {
             initialBankCluster={adminInitialCluster}
             onExitAdmin={() => navigate('map')}
             onPreviewAsStudent={() => {
+              setPreviewMissionConfig(null);
               setPreviewingAsStudent(true);
               navigate('map');
+            }}
+            onPreviewMocAsStudent={(mocId, draftOverride) => {
+              setPreviewMissionConfig({mocId, missionSet: draftOverride});
+              setActiveMocId(mocId);
+              setActiveStation(JOURNEY_MILESTONES_BY_ID[mocId].stationId);
+              setMissionStartStep(0);
+              navigate('mission');
             }}
             onOpenMapAlign={() => {
               if (canEditSettingsOrUsers(user)) navigate('map_align');
