@@ -90,6 +90,7 @@ import {MathText} from './MathText.tsx';
 interface AiStatusInfo {
   configured: boolean;
   model: string;
+  availableModels?: string[];
   dailyUsed: number;
   dailyLimit: number;
   remaining?: number;
@@ -139,10 +140,12 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const taxonomy = React.useMemo(() => dataService.getTaxonomy(false), [existingQuestions.length]);
   const savedBatches = React.useMemo(() => dataService.getImportBatches(user), [user, existingQuestions.length]);
   const confidenceThreshold = settings.autoApproveConfidenceThreshold ?? 0.85;
-  const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-4-carbon';
+  const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-2.5-pro';
 
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
-  const activeModel = aiStatus?.model || settings.aiModel?.trim() || 'gemini-3.1-flash-lite';
+  const [selectedModelOverride, setSelectedModelOverride] = React.useState('');
+  const activeModel =
+    selectedModelOverride || aiStatus?.model || settings.aiModel?.trim() || 'gemini-2.5-flash-lite';
   const [autoRunAfterUpload, setAutoRunAfterUpload] = React.useState(true);
   const [previewZoom, setPreviewZoom] = React.useState<1 | 1.5 | 2>(1);
   const [showGalleryVerify, setShowGalleryVerify] = React.useState(false);
@@ -443,6 +446,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           setAiStatus((prev) => ({
             configured: prev?.configured ?? true,
             model: res.usedModel || prev?.model || activeModel,
+            availableModels: prev?.availableModels,
             dailyUsed: res.quota!.used,
             dailyLimit: res.quota!.limit,
             remaining: res.quota!.remaining,
@@ -511,6 +515,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           setAiStatus((prev) => ({
             configured: prev?.configured ?? true,
             model: prev?.model ?? activeModel,
+            availableModels: prev?.availableModels,
             dailyUsed: akRes.quota!.used,
             dailyLimit: akRes.quota!.limit,
             remaining: akRes.quota!.remaining,
@@ -672,6 +677,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         setAiStatus((prev) => ({
           configured: prev?.configured ?? true,
           model: res.usedModel || prev?.model || activeModel,
+          availableModels: prev?.availableModels,
           dailyUsed: res.quota!.used,
           dailyLimit: res.quota!.limit,
           remaining: res.quota!.remaining,
@@ -785,6 +791,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           setAiStatus((prev) => ({
             configured: prev?.configured ?? true,
             model: res.usedModel || prev?.model || activeModel,
+            availableModels: prev?.availableModels,
             dailyUsed: res.quota!.used,
             dailyLimit: res.quota!.limit,
             remaining: res.quota!.remaining,
@@ -1181,6 +1188,18 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     new Set(draftItems.map((d) => d.source_pattern_label).filter((s): s is string => Boolean(s))),
   );
 
+  if (!isAdmin) {
+    return (
+      <div className="notebook-card p-6 text-sm text-[#14284A] space-y-2">
+        <h2 className="font-display text-lg font-extrabold">Chức năng dành riêng cho Quản trị viên (Admin)</h2>
+        <p className="text-xs text-[#5B6B82]">
+          Tính năng nhập học liệu hàng loạt bằng AI được giới hạn cho Quản trị viên nhằm đảm bảo chất lượng đề và tối ưu hạn mức AI.
+          Giáo viên vẫn có thể xem ngân hàng và gửi đề xuất chỉnh sửa/thêm câu hỏi thủ công ở tab <strong>4. Ngân hàng</strong>.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* 7-STEP PIPELINE STEPPER */}
@@ -1220,9 +1239,9 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               Nhập học liệu 1 chạm: PDF → AI tách câu &amp; phân dạng → Kiểm chứng code → Ngân hàng
             </h2>
             <p className="text-xs text-[#5B6B82]">
-              Hỗ trợ <strong>.pdf</strong> (đọc từng trang + gửi ảnh khi lớp chữ lỗi công thức/có hình),{' '}
-              <strong>.docx</strong>, <strong>.json</strong>, <strong>.txt</strong>. Mọi câu giáo viên gửi lên đều vào hàng chờ{' '}
-              <strong>Admin duyệt</strong>; chỉ câu đã duyệt mới hiện với học viên. Không lưu tệp PDF gốc vào CSDL.
+              <strong>Dành riêng cho Quản trị viên (Admin)</strong> nhằm kiểm soát chất lượng đề và tối ưu hạn mức AI. Hỗ trợ{' '}
+              <strong>.pdf</strong> (đọc từng trang + gửi ảnh khi lớp chữ lỗi công thức/có hình),{' '}
+              <strong>.docx</strong>, <strong>.json</strong>, <strong>.txt</strong>. Không lưu tệp PDF gốc vào CSDL.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-1 text-xs">
               <label className="inline-flex items-center gap-1.5 font-bold text-[#14284A] cursor-pointer">
@@ -1247,7 +1266,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
             </div>
           </div>
 
-          <div className="min-w-[260px] p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] space-y-1.5">
+          <div className="min-w-[270px] p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] space-y-1.5">
             <div className="flex items-center justify-between gap-3 text-xs font-bold text-[#14284A]">
               <span>Hạn mức AI hôm nay</span>
               <span className={quotaExhausted ? 'text-[#B5650D]' : 'text-[#1F7A6B]'}>
@@ -1274,6 +1293,23 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 <RefreshCw className="w-3 h-3" /> Cập nhật
               </button>
             </div>
+            {aiStatus?.configured && aiStatus.availableModels && aiStatus.availableModels.length > 0 && (
+              <div className="pt-1 flex items-center gap-1.5 text-[11px]">
+                <label className="font-bold text-[#14284A] shrink-0">Đổi model:</label>
+                <select
+                  value={selectedModelOverride}
+                  onChange={(e) => setSelectedModelOverride(e.target.value)}
+                  className="flex-1 min-w-0 px-2 py-1 rounded-lg bg-white border border-[#D5B87E] text-[11px] font-bold text-[#14284A] !min-h-[28px]"
+                >
+                  <option value="">Tự động ({aiStatus.model} — ổn định nhất)</option>
+                  {aiStatus.availableModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
 

@@ -104,7 +104,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onRefreshApp,
 }) => {
   const isAdmin = canEditSettingsOrUsers(user);
-  const [tab, setTab] = React.useState<AdminTab>(initialTab ?? 'overview');
+  const sanitizeTabForRole = React.useCallback(
+    (candidate?: AdminTab): AdminTab => {
+      const next = candidate ?? 'overview';
+      if (!isAdmin && (next === 'import' || next === 'settings' || next === 'selftest')) {
+        return 'overview';
+      }
+      return next;
+    },
+    [isAdmin],
+  );
+  const [tab, setTab] = React.useState<AdminTab>(() => sanitizeTabForRole(initialTab));
   const [tick, setTick] = React.useState(0);
   const refresh = () => {
     setTick((t) => t + 1);
@@ -112,8 +122,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   React.useEffect(() => {
-    if (initialTab) setTab(initialTab);
-  }, [initialTab]);
+    if (initialTab) setTab(sanitizeTabForRole(initialTab));
+  }, [initialTab, sanitizeTabForRole]);
 
   // Derived role-scoped data (Admin sees all; Teacher sees ONLY own classes & students)
   const users = React.useMemo(() => dataService.getScopedUsers(user), [tick, user]);
@@ -331,10 +341,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     {id: 'classes', label: isAdmin ? '3. Lớp & mã' : `3. Lớp của tôi (${classes.length})`, icon: BookMarked},
     {id: 'bank', label: `4. Ngân hàng (${questions.length})`, icon: Sparkles},
     {id: 'distribution', label: '5. Phân bố ngân hàng', icon: LayoutGrid},
-    {id: 'import', label: '6. Nhập học liệu', icon: FileUp},
-    {id: 'missions', label: '7. Set nhiệm vụ', icon: Target},
-    {id: 'reports', label: '8. Báo cáo & Lỗi sai', icon: BarChart3},
-    {id: 'rebuttals', label: `9. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
+    ...(isAdmin ? [{id: 'import' as const, label: '6. Nhập học liệu', icon: FileUp}] : []),
+    {id: 'missions', label: isAdmin ? '7. Set nhiệm vụ' : '6. Set nhiệm vụ', icon: Target},
+    {id: 'reports', label: isAdmin ? '8. Báo cáo & Lỗi sai' : '7. Báo cáo & Lỗi sai', icon: BarChart3},
+    {id: 'rebuttals', label: `${isAdmin ? '9' : '8'}. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
     ...(isAdmin
       ? [
           {id: 'settings' as const, label: '10. Cài đặt', icon: Settings},
@@ -445,7 +455,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   • Ở tab <strong>2. Học sinh của tôi</strong>, bấm nút <strong>Tiến độ &amp; Lỗi sai</strong> bên cạnh từng học sinh để xem chi tiết mốc đang học, trạng thái 6 cụm kỹ năng, các câu làm sai và mã lỗi cụ thể (E01–E12).
                 </p>
                 <p>
-                  • Mọi đề xuất thêm mới, chỉnh sửa hoặc thay thế câu hỏi và học liệu ở tab <strong>4. Ngân hàng</strong> &amp; <strong>6. Nhập học liệu</strong> sẽ được chuyển tới <strong>Admin duyệt</strong> trước khi áp dụng cho học sinh.
+                  • Mọi đề xuất thêm mới, chỉnh sửa hoặc thay thế câu hỏi ở tab <strong>4. Ngân hàng</strong> sẽ được chuyển tới <strong>Admin duyệt</strong> trước khi áp dụng cho học sinh. Chức năng nhập học liệu hàng loạt bằng AI chỉ dành riêng cho Quản trị viên (Admin).
                 </p>
               </>
             )}
@@ -2587,8 +2597,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         />
       )}
 
-      {/* TAB 6: IMPORT MATERIALS */}
-      {tab === 'import' && (
+      {/* TAB 6: IMPORT MATERIALS (ADMIN ONLY) */}
+      {tab === 'import' && isAdmin && (
         <MaterialImporter
           user={user}
           settings={settings}

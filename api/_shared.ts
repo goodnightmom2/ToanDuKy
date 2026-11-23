@@ -1,63 +1,98 @@
 import {GoogleGenAI} from '@google/genai';
 
-export const AI_MODEL = 'gemini-3.1-flash-lite';
-export const AI_HARD_PAGE_MODEL = 'gemini-4-carbon';
-export const AI_FALLBACK_MODEL = 'gemini-3.8-flash';
+export const AI_MODEL = 'gemini-2.5-flash-lite';
+export const AI_HARD_PAGE_MODEL = 'gemini-2.5-pro';
+export const AI_FALLBACK_MODEL = 'gemini-2.5-flash';
 export const AI_STATIC_FALLBACK_CHAIN: string[] = [
-  'gemini-3.1-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-4-hydrogen',
-  'gemini-4-carbon',
-  'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3.8-flash',
+  'gemini-2.0-flash',
+  'gemini-4-hydrogen',
 ];
 export const DAILY_QUOTA_DEFAULT = 50;
-export const PROMPT_VERSION = 'v2.2';
+export const PROMPT_VERSION = 'v2.3';
 
 // In-memory cache of live generateContent models discovered from Google AI Studio for this API key
 let cachedDiscoveredModels: {fetchedAt: number; models: string[]} | null = null;
 const DISCOVER_TTL_MS = 15 * 60 * 1000;
 
-function extractVersionScore(modelId: string): number {
-  const m = modelId.match(/gemini-(\d+)(?:\.(\d+))?/i);
-  if (!m) return 0;
-  return Number(m[1]) * 100 + Number(m[2] ?? 0);
+// In-memory 3-minute cooldown for models currently returning 503 UNAVAILABLE / 429 high-demand
+const busyModelCooldownUntil = new Map<string, number>();
+const COOLDOWN_MS = 3 * 60 * 1000;
+
+export function markModelTemporarilyUnavailable(modelId: string): void {
+  busyModelCooldownUntil.set(modelId, Date.now() + COOLDOWN_MS);
+}
+
+export function isModelCoolingDown(modelId: string): boolean {
+  const until = busyModelCooldownUntil.get(modelId);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    busyModelCooldownUntil.delete(modelId);
+    return false;
+  }
+  return true;
+}
+
+function getModelFamilyBucket(modelId: string): string {
+  const low = modelId.toLowerCase();
+  if (low.includes('flash-lite')) return 'flash-lite';
+  if (low.includes('flash')) return 'flash';
+  if (low.includes('hydrogen')) return 'hydrogen';
+  if (low.includes('pro')) return 'pro';
+  if (low.includes('carbon') || low.includes('argon')) return 'frontier';
+  return 'other';
 }
 
 function scoreModelForTask(modelId: string, preferHard: boolean): number {
   const low = modelId.toLowerCase();
-  let score = extractVersionScore(low) * 10;
-  // Prefer stable GA models slightly over preview/exp unless newer generation
-  if (low.includes('exp')) score -= 8;
-  if (low.includes('preview')) score -= 3;
-  if (low.includes('latest')) score += 4;
+  let score = 0;
+
+  // Penalize experimental/preview slightly because they frequently return 503 high-demand on free tier
+  if (low.includes('-exp')) score -= 35;
+  if (low.includes('-preview')) score -= 18;
+  if (low.includes('thinking')) score -= 10;
 
   if (preferHard) {
-    if (low.includes('pro') || low.includes('carbon') || low.includes('argon') || low.includes('ultra')) {
-      score += 60;
-    } else if (low.includes('flash') && !low.includes('lite')) {
-      score += 30;
-    } else if (low.includes('hydrogen') || low.includes('lite')) {
-      score += 15;
-    }
+    // Hard-page ("Pro") mode: prefer stable Pro / Flash / Carbon
+    if (low.includes('2.5-pro') || low.includes('3.0-pro') || low.includes('3.1-pro')) score += 120;
+    else if (low.includes('pro')) score += 105;
+    else if (low.includes('2.5-flash') && !low.includes('lite')) score += 95;
+    else if (low.includes('flash') && !low.includes('lite')) score += 90;
+    else if (low.includes('carbon') || low.includes('argon')) score += 80;
+    else if (low.includes('hydrogen')) score += 70;
+    else if (low.includes('flash-lite')) score += 65;
   } else {
-    // Fast, accurate multimodal extraction: flash / flash-lite / hydrogen first
-    if (low.includes('flash') && !low.includes('lite')) {
-      score += 55;
-    } else if (low.includes('flash-lite') || low.includes('hydrogen')) {
-      score += 48;
-    } else if (low.includes('pro') || low.includes('carbon') || low.includes('argon')) {
-      score += 35;
-    }
+    // Standard PDF extraction: prioritize high-availability, generous-quota Flash & Flash-Lite models FIRST
+    // so overloaded frontier models (503 UNAVAILABLE) never stall extraction!
+    if (low === 'gemini-2.5-flash' || low === 'gemini-3.1-flash-lite') score += 140;
+    else if (low === 'gemini-2.5-flash-lite') score += 135;
+    else if (low.includes('flash-lite')) score += 125;
+    else if (low.includes('flash')) score += 120;
+    else if (low.includes('2.5-pro') || low.includes('pro')) score += 85;
+    else if (low.includes('hydrogen')) score += 75;
+    else if (low.includes('carbon') || low.includes('argon')) score += 60;
+    else score += 40;
   }
+
+  // Slight tie-breaker preferring newer minor versions within same tier
+  const vm = low.match(/gemini-(\d+)(?:\.(\d+))?/);
+  if (vm) {
+    const maj = Number(vm[1]);
+    const min = Number(vm[2] ?? 0);
+    // Keep tie-breaker modest (0..25) so family reliability dominates over raw generation number
+    score += Math.min(25, maj * 4 + min);
+  }
+
   return score;
 }
 
 /**
  * Dynamically queries Google AI Studio `/v1beta/models` (free, zero quota) to discover the
  * exact live `generateContent`-capable Gemini models available on the configured GEMINI_API_KEY.
- * Eliminates 404 model-not-found failures whenever Google rotates or retires model IDs.
  */
 export async function discoverLiveGeminiModels(): Promise<string[]> {
   const key = (process.env.GEMINI_API_KEY ?? '').trim();
@@ -87,7 +122,7 @@ export async function discoverLiveGeminiModels(): Promise<string[]> {
     };
     const rawList = Array.isArray(json.models) ? json.models : [];
     const excluded =
-      /(embedding|imagen|veo|tts|audio|robotics|computer-use|aqa|deep-research|nano|live|gemma|learnlm|vision-only|bison|gecko)/i;
+      /(embedding|imagen|veo|tts|audio|robotics|computer-use|aqa|deep-research|nano|live|gemma|learnlm|vision-only|bison|gecko|001$)/i;
 
     const usable = rawList
       .filter((m) => {
@@ -111,8 +146,10 @@ export async function discoverLiveGeminiModels(): Promise<string[]> {
 }
 
 /**
- * Resolves an ordered, deduplicated list of LIVE Gemini models to attempt for a request.
- * Only tries `requestedModel` first if it exists in Google's live catalog (preventing wasted 404s).
+ * Resolves a DIVERSE, ordered list of up to 8 LIVE Gemini models:
+ * - Skips models currently in 3-minute 503/429 cooldown (moves them to the very end)
+ * - Interleaves different model families (flash, flash-lite, pro, hydrogen) so a 503 spike
+ *   in one family immediately succeeds on another family!
  */
 export async function resolveLiveModelChain(
   requestedModel?: string,
@@ -125,15 +162,30 @@ export async function resolveLiveModelChain(
     const sorted = [...discovered].sort(
       (a, b) => scoreModelForTask(b, preferHard) - scoreModelForTask(a, preferHard),
     );
-    const out: string[] = [];
-    if (cleanReq && discovered.includes(cleanReq)) {
-      out.push(cleanReq);
+    const healthy = sorted.filter((m) => !isModelCoolingDown(m));
+    const cooling = sorted.filter((m) => isModelCoolingDown(m));
+
+    // Diversify across families: pick top 1 from each bucket first, then remaining healthy
+    const diversified: string[] = [];
+    const seenBuckets = new Set<string>();
+    if (cleanReq && healthy.includes(cleanReq)) {
+      diversified.push(cleanReq);
+      seenBuckets.add(getModelFamilyBucket(cleanReq));
     }
-    for (const m of sorted) {
-      if (!out.includes(m)) out.push(m);
-      if (out.length >= 6) break;
+    for (const m of healthy) {
+      const b = getModelFamilyBucket(m);
+      if (!diversified.includes(m) && !seenBuckets.has(b)) {
+        diversified.push(m);
+        seenBuckets.add(b);
+      }
     }
-    return out;
+    for (const m of healthy) {
+      if (!diversified.includes(m)) diversified.push(m);
+    }
+    for (const m of cooling) {
+      if (!diversified.includes(m)) diversified.push(m);
+    }
+    return diversified.slice(0, 8);
   }
 
   // Static fallback only if listing `/v1beta/models` failed
@@ -241,7 +293,7 @@ export interface VerifiedCaller {
  */
 export async function verifyRequestAuth(
   request: Request,
-  options?: {requireStaff?: boolean},
+  options?: {requireStaff?: boolean; requireAdmin?: boolean},
 ): Promise<{ok: true; caller: VerifiedCaller} | {ok: false; status: number; error: string}> {
   const supabaseUrl = (process.env.VITE_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '').trim();
   const supabaseKey = (
@@ -304,6 +356,13 @@ export async function verifyRequestAuth(
     }
 
     const role = (profile.role ?? 'student') as VerifiedCaller['role'];
+    if (options?.requireAdmin && role !== 'admin') {
+      return {
+        ok: false,
+        status: 403,
+        error: 'Chỉ Quản trị viên (Admin) mới có quyền sử dụng chức năng nhập học liệu bằng AI.',
+      };
+    }
     if (options?.requireStaff && role !== 'admin' && role !== 'teacher') {
       return {
         ok: false,

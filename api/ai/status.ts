@@ -11,8 +11,8 @@ export async function GET(request: Request): Promise<Response> {
     const reqMax = Number(url.searchParams.get('maxDaily'));
     const status = getQuotaStatus(Number.isFinite(reqMax) ? reqMax : undefined);
 
-    // Only authenticated staff receive model & detailed quota telemetry
-    const auth = await verifyRequestAuth(request, {requireStaff: true});
+    // Only authenticated Admins receive model & detailed quota telemetry
+    const auth = await verifyRequestAuth(request, {requireAdmin: true});
     if (!auth.ok) {
       return jsonResponse({configured: status.configured}, 200);
     }

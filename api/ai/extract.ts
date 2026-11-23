@@ -6,6 +6,7 @@ import {
   fixLatexControlChars,
   getGenAIClient,
   jsonResponse,
+  markModelTemporarilyUnavailable,
   PROMPT_VERSION,
   refundQuota,
   resolveLiveModelChain,
@@ -126,8 +127,11 @@ function summarizeProviderError(rawMsg: string): string {
   if (m.includes('api key') || m.includes('permission_denied') || m.includes('403') || m.includes('401')) {
     return `Khóa GEMINI_API_KEY trên Vercel không hợp lệ hoặc bị hạn chế quyền. (${safeSnippet})`;
   }
+  if (m.includes('503') || m.includes('unavailable') || m.includes('high demand') || m.includes('overloaded')) {
+    return `Các model Gemini đang quá tải tạm thời (503 High Demand) trên Google AI Studio. Hãy chờ 30–60 giây rồi bấm "Thử lại" hoặc chọn model khác ở hộp trên. (${safeSnippet})`;
+  }
   if (m.includes('resource_exhausted') || m.includes('quota') || m.includes('429')) {
-    return `Tài khoản Google AI Studio (GEMINI_API_KEY) tạm chạm giới hạn tốc độ / hạn mức (429). Hãy chờ 1 phút rồi thử lại. (${safeSnippet})`;
+    return `Tài khoản Google AI Studio (GEMINI_API_KEY) tạm chạm giới hạn tốc độ / hạn mức miễn phí (429). Hãy chờ 1 phút rồi thử lại. (${safeSnippet})`;
   }
   if (m.includes('404') || m.includes('not found')) {
     return `Không tìm thấy model Gemini khả dụng cho khóa API hiện tại. (${safeSnippet})`;
@@ -139,7 +143,8 @@ function summarizeProviderError(rawMsg: string): string {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const auth = await verifyRequestAuth(request, {requireStaff: true});
+  // Strictly Admin-only to prevent unauthorized quota consumption
+  const auth = await verifyRequestAuth(request, {requireAdmin: true});
   if (!auth.ok) {
     return jsonResponse({error: auth.error}, auth.status);
   }
@@ -291,7 +296,10 @@ export async function POST(request: Request): Promise<Response> {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[api/ai/extract] Model ${modelName} failed:`, msg);
-        errors.push(`${modelName}: ${msg.slice(0, 160)}`);
+        if (/503|unavailable|high demand|overloaded|429|resource_exhausted/i.test(msg)) {
+          markModelTemporarilyUnavailable(modelName);
+        }
+        errors.push(`${modelName}: ${msg.slice(0, 140)}`);
         // If API key itself is invalid/unauthorized, stop trying other models immediately
         if (/api key|permission_denied|unauthenticated/i.test(msg)) {
           throw new Error(msg);

@@ -5,6 +5,7 @@ import {
   fixLatexControlChars,
   getGenAIClient,
   jsonResponse,
+  markModelTemporarilyUnavailable,
   refundQuota,
   resolveLiveModelChain,
   verifyRequestAuth,
@@ -26,7 +27,7 @@ interface AnswerKeyBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const auth = await verifyRequestAuth(request, {requireStaff: true});
+  const auth = await verifyRequestAuth(request, {requireAdmin: true});
   if (!auth.ok) {
     return jsonResponse({error: auth.error}, auth.status);
   }
@@ -112,6 +113,9 @@ export async function POST(request: Request): Promise<Response> {
         }
       } catch (e) {
         lastErr = e instanceof Error ? e.message : String(e);
+        if (/503|unavailable|high demand|overloaded|429|resource_exhausted|quota/i.test(lastErr)) {
+          markModelTemporarilyUnavailable(modelName);
+        }
       }
     }
     if (!responseText) throw new Error(lastErr || 'Empty answer-key response');
