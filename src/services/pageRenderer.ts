@@ -142,8 +142,8 @@ export async function renderPdfPageToImages(
 ): Promise<CachedPageImage | null> {
   if (typeof document === 'undefined') return null;
 
-  const scale = options?.scale ?? 1.6;
-  const quality = options?.quality ?? 0.82;
+  const scale = options?.scale ?? 2.2;
+  const quality = options?.quality ?? 0.84;
 
   const viewport = pdfPage.getViewport({scale});
   const canvas = document.createElement('canvas');

@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   FastForward,
+  FileSearch,
   FileUp,
   Image as ImageIcon,
   LayoutGrid,
@@ -29,6 +30,7 @@ import {
 } from 'lucide-react';
 import {BankDistributionTab} from '../components/BankDistributionTab.tsx';
 import {MaterialImporter} from '../components/MaterialImporter.tsx';
+import {MathLatexEditor} from '../components/MathLatexEditor.tsx';
 import {MathText} from '../components/MathText.tsx';
 import {MissionSetTab} from '../components/MissionSetTab.tsx';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
@@ -38,6 +40,7 @@ import {
   JOURNEY_MILESTONES_BY_ID,
   normalizeJourneyProgress,
 } from '../journey.ts';
+import {questionContainsMath, runMathBankAudit} from '../math/mathEngine.ts';
 import {inferPatternIdForQuestion} from '../math/taxonomy.ts';
 import {
   canEditSettingsOrUsers,
@@ -172,6 +175,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [bankFilterSource, setBankFilterSource] = React.useState<string>('ALL');
   const [bankSearch, setBankSearch] = React.useState('');
   const [showTaxonomyPanel, setShowTaxonomyPanel] = React.useState(false);
+  const [showMathAuditPanel, setShowMathAuditPanel] = React.useState(false);
   const [newTaxTopic, setNewTaxTopic] = React.useState<TaxonomyPattern['topic']>('COS');
   const [newTaxName, setNewTaxName] = React.useState('');
   const [mergeSourceId, setMergeSourceId] = React.useState('');
@@ -1472,7 +1476,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             const sourceNames = Array.from(
               new Set(
                 questions
-                  .map((q) => q.source_ref_meta?.file_name || q.source_refs[0] || '')
+                  .map((q) => q.source_ref?.file_name || q.source_file_name || q.source_refs[0] || '')
                   .filter(Boolean),
               ),
             ).sort();
@@ -1608,6 +1612,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </button>
                       <button
                         type="button"
+                        onClick={() => setShowMathAuditPanel((v) => !v)}
+                        className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                      >
+                        <FileSearch className="w-3.5 h-3.5 text-[#8A5108]" />
+                        {showMathAuditPanel ? 'Ẩn Rà soát công thức' : 'Rà soát công thức (audit:math)'}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setTab('missions')}
                         className="btn-tactile btn-paper text-xs py-1.5 px-3"
                       >
@@ -1621,8 +1633,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           type="button"
                           disabled={selectedQIds.length === 0}
                           onClick={() => {
-                            dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
-                            setBankActionMsg(`Admin đã chấp nhận ${selectedQIds.length} câu hỏi / đề xuất.`);
+                            const selectedObjs = questions.filter((q) => selectedQIds.includes(q.id));
+                            const unverifiedCount = selectedObjs.filter(
+                              (q) => questionContainsMath(q) && q.math_verified === false,
+                            ).length;
+                            const ok = dataService.setQuestionReviewStatus(user, selectedQIds, 'approved');
+                            setBankActionMsg(
+                              unverifiedCount > 0
+                                ? `Đã bỏ qua ${unverifiedCount} câu Toán chưa bấm "Đã đối chiếu công thức" (math_verified=false). ${ok ? 'Các câu hợp lệ khác đã được duyệt.' : 'Vui lòng đối chiếu công thức trước khi duyệt.'}`
+                                : `Admin đã chấp nhận ${selectedQIds.length} câu hỏi / đề xuất.`,
+                            );
                             setSelectedQIds([]);
                             refresh();
                           }}
@@ -1634,21 +1654,108 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           type="button"
                           disabled={pendingQuestionsCount === 0}
                           onClick={() => {
-                            const allPending = questions
-                              .filter((q) => q.review_status === 'pending_teacher_review')
+                            const eligiblePending = questions
+                              .filter(
+                                (q) =>
+                                  q.review_status === 'pending_teacher_review' &&
+                                  (!questionContainsMath(q) || q.math_verified !== false),
+                              )
                               .map((q) => q.id);
-                            dataService.setQuestionReviewStatus(user, allPending, 'approved');
-                            setBankActionMsg(`Admin đã chấp nhận toàn bộ ${allPending.length} mục chờ duyệt.`);
+                            if (eligiblePending.length === 0) {
+                              setBankActionMsg(
+                                'Không có câu chờ duyệt nào đủ điều kiện: các câu có Toán bắt buộc phải bấm "Đã đối chiếu công thức" trước khi duyệt.',
+                              );
+                              return;
+                            }
+                            dataService.setQuestionReviewStatus(user, eligiblePending, 'approved');
+                            setBankActionMsg(
+                              `Admin đã chấp nhận ${eligiblePending.length}/${pendingQuestionsCount} mục chờ duyệt đủ điều kiện đối chiếu công thức.`,
+                            );
                             refresh();
                           }}
                           className="btn-tactile btn-gold text-xs py-2 px-3"
                         >
-                          Duyệt toàn bộ câu chờ ({pendingQuestionsCount})
+                          Duyệt câu chờ đã đối chiếu ({pendingQuestionsCount})
                         </button>
                       </div>
                     )}
                   </div>
                 </div>
+
+                {/* Collapsible Dry-Run Math Audit & Safe --fix Panel (Section 5.2) */}
+                {showMathAuditPanel && (() => {
+                  const audit = runMathBankAudit(questions);
+                  const flaggedReports = audit.reports.filter((r) => r.issueCount > 0);
+                  return (
+                    <div className="notebook-card-warm p-4 space-y-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h3 className="font-display text-base font-extrabold text-[#14284A]">
+                            Báo cáo Rà soát công thức (audit:math — chạy khô, không sửa dữ liệu)
+                          </h3>
+                          <p className="text-[11px] text-[#5B6B82]">
+                            Tổng quét: <strong>{audit.totalQuestions}</strong> câu · Đạt chuẩn:{' '}
+                            <strong className="text-[#145B4F]">{audit.cleanCount}</strong> · Cần lưu ý:{' '}
+                            <strong className="text-[#B45309]">{audit.withIssuesCount}</strong>. Chế độ chuẩn hóa luôn lưu bản gốc vào <code>stem_raw</code> và không ảnh hưởng dữ liệu học sinh.
+                          </p>
+                        </div>
+                        {isAdmin && audit.withIssuesCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const fixRes = dataService.adminRunMathAuditFix(
+                                user,
+                                flaggedReports.map((r) => r.questionId),
+                              );
+                              setBankActionMsg(
+                                `Đã chạy chuẩn hóa an toàn (--fix): quét ${fixRes.totalScanned} câu, chuẩn hóa ${fixRes.normalizedCount} câu (đã giữ nguyên stem_raw), gắn cờ xem lại ${fixRes.flaggedCount} câu.`,
+                              );
+                              refresh();
+                            }}
+                            className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                          >
+                            Áp dụng chuẩn hóa (--fix, bảo toàn stem_raw)
+                          </button>
+                        )}
+                      </div>
+
+                      {Object.keys(audit.byCode).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {Object.entries(audit.byCode).map(([code, cnt]) => (
+                            <span
+                              key={code}
+                              className="px-2 py-0.5 rounded-full bg-white border border-[#D9C293] font-bold text-[#8A5108]"
+                            >
+                              {code}: {cnt}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {flaggedReports.length === 0 ? (
+                        <p className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-[#145B4F] font-bold">
+                          ✓ 100% câu hỏi hiện tại đạt chuẩn LaTeX KaTeX, không có dấu $ lẻ hay ký tự lỗi!
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-1">
+                          {flaggedReports.slice(0, 40).map((rep) => (
+                            <div
+                              key={rep.questionId}
+                              className="p-2 rounded-xl bg-white border border-[#E5D3A8] flex flex-wrap items-start justify-between gap-2"
+                            >
+                              <div>
+                                <span className="font-extrabold text-[#14284A] mr-1.5">[{rep.questionId}]</span>
+                                <span className="text-[11px] text-[#8A5108]">
+                                  {rep.issues.map((iss) => `${iss.field}: ${iss.detail}`).join(' · ')}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Collapsible Taxonomy Catalog Manager (26 Appendix A patterns + Admin CRUD/Merge) */}
                 {showTaxonomyPanel && (
@@ -1889,12 +1996,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 ))}
               </select>
             </div>
-            <input
-              type="text"
+            <MathLatexEditor
+              label="Nội dung đề bài (hỗ trợ KaTeX trong $...$, có thanh công cụ & chuẩn hóa)"
               value={manualStem}
-              onChange={(e) => setManualStem(e.target.value)}
-              placeholder="Đề bài (hỗ trợ KaTeX trong $...$, ví dụ: Tính $AC$ biết...)"
-              className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
+              onChange={setManualStem}
+              rows={2}
+              compact
             />
             {manualType === 'numeric' ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2049,7 +2156,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               })
               .filter((q) => {
                 if (bankFilterSource === 'ALL') return true;
-                const src = q.source_ref_meta?.file_name || q.source_refs[0] || '';
+                const src = q.source_ref?.file_name || q.source_file_name || q.source_refs[0] || '';
                 return src === bankFilterSource;
               })
               .filter((q) => {
@@ -2060,7 +2167,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   q.id.toLowerCase().includes(kw) ||
                   q.stem_vi.toLowerCase().includes(kw) ||
                   pid.includes(kw) ||
-                  (q.pattern_name ?? '').toLowerCase().includes(kw)
+                  (q.source_pattern_label ?? '').toLowerCase().includes(kw)
                 );
               })
               .map((q) => {
@@ -2142,8 +2249,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </p>
                           )}
                           <div className="mt-1">
-                            <MathText text={q.stem_vi} />
+                            <MathText text={q.stem_vi} formulaImage={q.formula_image} />
                           </div>
+                          {questionContainsMath(q) && q.math_verified === false && (
+                            <p className="mt-1 text-[11px] font-bold text-[#99261B]">
+                              ⚠ Chưa đối chiếu công thức (math_verified=false) — cần kiểm tra bản render rồi bấm "Đã đối chiếu công thức" trước khi duyệt.
+                            </p>
+                          )}
                         </div>
                       </label>
 
@@ -2155,6 +2267,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         >
                           Xem trước
                         </button>
+                        {questionContainsMath(q) && q.math_verified === false && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = dataService.markQuestionMathVerified(user, [q.id], true);
+                              setBankActionMsg(
+                                res.ok
+                                  ? `Đã xác nhận đối chiếu công thức cho câu [${q.id}] (math_verified=true).`
+                                  : `Không thể xác nhận câu [${q.id}]: công thức vẫn còn lỗi cú pháp KaTeX hoặc dấu $ lẻ.`,
+                              );
+                              refresh();
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-[#EEF6FF] border border-[#3B82F6] text-[#14437A] text-xs font-bold !min-h-[34px]"
+                          >
+                            ✓ Đã đối chiếu công thức
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => {
@@ -2175,16 +2304,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {isAdmin && q.review_status !== 'approved' && (
                           <button
                             type="button"
+                            disabled={questionContainsMath(q) && q.math_verified === false}
+                            title={
+                              questionContainsMath(q) && q.math_verified === false
+                                ? 'Bấm "Đã đối chiếu công thức" trước khi duyệt câu có Toán'
+                                : undefined
+                            }
                             onClick={() => {
-                              dataService.setQuestionReviewStatus(user, [q.id], 'approved');
+                              const ok = dataService.setQuestionReviewStatus(user, [q.id], 'approved');
                               setBankActionMsg(
-                                isReplaceProposal
-                                  ? `Admin đã chấp nhận & áp dụng bản thay thế cho câu [${q.replacesQuestionId}].`
-                                  : `Admin đã duyệt câu [${q.id}].`,
+                                !ok
+                                  ? `Câu [${q.id}] chưa được đối chiếu công thức (math_verified=false) nên chưa thể duyệt.`
+                                  : isReplaceProposal
+                                    ? `Admin đã chấp nhận & áp dụng bản thay thế cho câu [${q.replacesQuestionId}].`
+                                    : `Admin đã duyệt câu [${q.id}].`,
                               );
                               refresh();
                             }}
-                            className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white text-xs font-bold !min-h-[34px]"
+                            className="px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white text-xs font-bold !min-h-[34px] disabled:opacity-45"
                           >
                             {isReplaceProposal ? 'Chấp nhận & áp dụng' : 'Duyệt'}
                           </button>
@@ -2215,7 +2352,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
           {editingQuestion && (
             <div className="fixed inset-0 z-50 bg-[#14284A]/55 flex items-center justify-center p-4" role="dialog" aria-modal="true">
-              <div className="notebook-card max-w-lg w-full p-5 space-y-3 text-xs">
+              <div className="notebook-card max-w-2xl w-full max-h-[90dvh] overflow-y-auto p-5 space-y-3 text-xs">
                 <div className="flex items-center justify-between">
                   <h3 className="font-display text-lg font-extrabold text-[#14284A]">
                     {isAdmin
@@ -2228,18 +2365,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
                 <p className="text-[#5B6B82]">
                   {isAdmin
-                    ? `Bản cũ v${editingQuestion.version ?? 1} vẫn được giữ trong lịch sử phiên bản để bảo toàn minh chứng bài làm trước đó.`
+                    ? `Bản cũ v${editingQuestion.version ?? 1} vẫn được giữ trong lịch sử phiên bản. Lưu ý: sửa công thức sẽ đặt lại trạng thái "Chưa đối chiếu công thức" để xác nhận lại.`
                     : 'Bản gốc đang hoạt động sẽ được giữ nguyên. Đề xuất chỉnh sửa/thay thế của bạn sẽ được gửi vào hàng chờ để Quản trị viên (Admin) xem xét và chấp nhận.'}
                 </p>
-                <div className="space-y-1">
-                  <label className="font-bold text-[#14284A]">Nội dung đề bài</label>
-                  <textarea
-                    rows={3}
-                    value={editQStem}
-                    onChange={(e) => setEditQStem(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
-                  />
-                </div>
+                <MathLatexEditor
+                  label="Nội dung đề bài (LaTeX + Xem trước trực tiếp)"
+                  value={editQStem}
+                  onChange={setEditQStem}
+                  rows={3}
+                />
                 <div className="space-y-1">
                   <label className="font-bold text-[#14284A]">Gợi ý bước đầu</label>
                   <input
@@ -2249,15 +2383,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
                   />
                 </div>
-                <div className="space-y-1">
-                  <label className="font-bold text-[#14284A]">Lời giải mẫu</label>
-                  <textarea
-                    rows={2}
-                    value={editQSolution}
-                    onChange={(e) => setEditQSolution(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-[#14284A]"
-                  />
-                </div>
+                <MathLatexEditor
+                  label="Lời giải mẫu (LaTeX + Xem trước trực tiếp)"
+                  value={editQSolution}
+                  onChange={setEditQSolution}
+                  rows={2}
+                  compact
+                  showTemplates={false}
+                />
                 <div className="space-y-1">
                   <label className="font-bold text-[#14284A]">Ghi chú lý do sửa / thay thế</label>
                   <input
@@ -3194,7 +3327,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </div>
                           {qItem?.stem_vi && (
                             <div className="text-[#4B5B73]">
-                              <MathText text={qItem.stem_vi.slice(0, 200)} />
+                              <MathText text={qItem.stem_vi} maxLength={200} />
                             </div>
                           )}
                           <p>

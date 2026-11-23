@@ -31,9 +31,9 @@ import {ALL_INITIAL_QUESTIONS} from './seedBank.ts';
 import {runAllSelfTests} from './selftest.ts';
 import {verifyQuestionByCode} from './verifier.ts';
 
-test('Toán Du Ký — Toàn bộ 26 bài kiểm thử bắt buộc', async () => {
+test('Toán Du Ký — Toàn bộ 33 bài kiểm thử bắt buộc', async () => {
   const results = await runAllSelfTests();
-  assert.equal(results.length, 26, 'Phải có đúng 26 kiểm thử bắt buộc');
+  assert.equal(results.length, 33, 'Phải có đúng 33 kiểm thử bắt buộc');
   for (const r of results) {
     assert.equal(r.passed, true, `Kiểm thử #${r.id} (${r.name}) thất bại: ${r.detail}`);
   }

@@ -194,9 +194,11 @@ function AppInner() {
   React.useEffect(() => {
     const audioOn = user?.preferences.audioEnabled ?? false;
     const reduceMotion = user?.preferences.reduceMotion ?? false;
+    const mathScale = user?.preferences.mathFontScale ?? 'normal';
     soundEngine.setEnabled(audioOn);
     document.documentElement.classList.toggle('reduce-motion', reduceMotion);
-  }, [user?.preferences.audioEnabled, user?.preferences.reduceMotion]);
+    document.documentElement.dataset.mathScale = mathScale;
+  }, [user?.preferences.audioEnabled, user?.preferences.reduceMotion, user?.preferences.mathFontScale]);
 
   const navigate = (next: AppRoute) => {
     if (next === 'selftest') {

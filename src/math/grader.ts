@@ -1,6 +1,7 @@
 import {ERROR_CATALOG} from '../config.ts';
 import type {GradeResult, QuestionItem} from '../types.ts';
 import {formatViNumber, roundToPlaces} from './geometry.ts';
+import {evaluateSafeDegreeExpression} from './mathEngine.ts';
 
 export interface ParsedNumericInput {
   valid: boolean;
@@ -83,7 +84,29 @@ export interface NumericGradeOptions {
  * - Enforces rounding accuracy based on decimalPlaces (e.g., 55 vs 55.3 triggers E07).
  */
 export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
-  const parsed = parseVietnameseNumber(opts.rawInput);
+  let parsed = parseVietnameseNumber(opts.rawInput);
+  let exprReadNote = '';
+
+  // Section 8: If student typed a math expression (e.g. "60*sin(60)/sin(70)", "10√13", "sqrt(3)/2"),
+  // evaluate safely in DEGREE mode (zero eval) and still grade against the exact strict tolerance!
+  if (!parsed.valid && /[+\-*/^()√]|sin|cos|tan|cot|sqrt|pi/i.test(opts.rawInput)) {
+    const exprRes = evaluateSafeDegreeExpression(opts.rawInput);
+    if (exprRes.valid && exprRes.value !== undefined) {
+      parsed = {
+        valid: true,
+        value: exprRes.value,
+        unit: exprRes.unit ? normalizeUnit(exprRes.unit) : undefined,
+      };
+      exprReadNote = ` (Máy đọc biểu thức của em là ${exprRes.previewLatex} ≈ ${formatViNumber(exprRes.value, Math.max(2, opts.decimalPlaces ?? 1))})`;
+    } else if (exprRes.error_vi) {
+      return {
+        isCorrect: false,
+        errorCode: 'E07',
+        feedback_vi: `Biểu thức em nhập chưa hợp lệ: ${exprRes.error_vi} Hãy kiểm tra dấu ngoặc hoặc nhập trực tiếp giá trị số (ví dụ 55,3).`,
+      };
+    }
+  }
+
   if (!parsed.valid || parsed.value === undefined) {
     return {
       isCorrect: false,
@@ -102,14 +125,14 @@ export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
       return {
         isCorrect: false,
         errorCode: 'E07',
-        feedback_vi: `Đơn vị em nhập chưa khớp với đơn vị yêu cầu (${displayUnit(targetUnit)}). Hãy kiểm tra lại đơn vị đo.`,
+        feedback_vi: `Đơn vị em nhập chưa khớp với đơn vị yêu cầu (${displayUnit(targetUnit)}). Hãy kiểm tra lại đơn vị đo.${exprReadNote}`,
       };
     }
     if (!givenUnit && !opts.hasFixedUnitLabel) {
       return {
         isCorrect: false,
         errorCode: 'E07',
-        feedback_vi: `Em đã ghi số đo nhưng còn thiếu đơn vị (${displayUnit(targetUnit)}). Hãy bổ sung đơn vị rồi kiểm tra lại.`,
+        feedback_vi: `Em đã ghi số đo nhưng còn thiếu đơn vị (${displayUnit(targetUnit)}). Hãy bổ sung đơn vị rồi kiểm tra lại.${exprReadNote}`,
       };
     }
   }
@@ -118,8 +141,13 @@ export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
   const expected = roundToPlaces(opts.expectedRounded, places);
   const tolerance = places > 0 ? Math.pow(10, -(places + 2)) : 1e-4;
   const diff = Math.abs(parsed.value - expected);
+  // Also accept exact expression matching expectedExact within tight tolerance (1e-3)
+  const exactMatch =
+    Boolean(exprReadNote) &&
+    opts.expectedExact !== undefined &&
+    Math.abs(parsed.value - opts.expectedExact) <= 1e-3;
 
-  if (diff <= tolerance) {
+  if (diff <= tolerance || exactMatch) {
     return {
       isCorrect: true,
       feedback_vi: `Chính xác! Em đã tính và làm tròn đúng kết quả ${formatViNumber(expected, places)}${targetUnit ? ' ' + displayUnit(targetUnit) : ''}.`,
@@ -133,15 +161,14 @@ export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
     return {
       isCorrect: false,
       errorCode: 'E07',
-      feedback_vi: `Giá trị em tính đã rất gần đáp án, nhưng bước làm tròn chưa khớp yêu cầu (${places === 1 ? 'đến hàng phần mười 0,1' : places === 2 ? 'đến hàng phần trăm 0,01' : 'làm tròn số nguyên'}). Hãy kiểm tra chữ số kế tiếp rồi làm tròn lại.`,
+      feedback_vi: `Giá trị em tính đã rất gần đáp án, nhưng bước làm tròn chưa khớp yêu cầu (${places === 1 ? 'đến hàng phần mười 0,1' : places === 2 ? 'đến hàng phần trăm 0,01' : 'làm tròn số nguyên'}). Hãy kiểm tra chữ số kế tiếp rồi làm tròn lại.${exprReadNote}`,
     };
   }
 
   return {
     isCorrect: false,
     errorCode: 'E05',
-    feedback_vi:
-      'Kết quả số chưa khớp. Hãy kiểm tra lại công thức đã lập, chế độ độ (DEG) trên máy tính và phép tính cuối.',
+    feedback_vi: `Kết quả số chưa khớp. Hãy kiểm tra lại công thức đã lập, chế độ độ (DEG) trên máy tính và phép tính cuối.${exprReadNote}`,
   };
 }
 

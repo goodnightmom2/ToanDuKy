@@ -18,6 +18,11 @@ import {
   JOURNEY_MILESTONES_BY_ID,
   normalizeJourneyProgress,
 } from '../journey.ts';
+import {
+  normalizeQuestionMathSafely,
+  questionContainsMath,
+  verifyQuestionMathLayers,
+} from '../math/mathEngine.ts';
 import {ALL_INITIAL_QUESTIONS} from '../math/seedBank.ts';
 import {
   computeQuestionFingerprint,
@@ -551,9 +556,13 @@ function questionToRow(q: QuestionItem): Record<string, unknown> {
 function rowToQuestion(row: Record<string, unknown>): QuestionItem | null {
   const payload = row.payload as QuestionItem | undefined;
   if (!payload || !payload.id) return null;
+  const effectiveStatus = (row.review_status as ReviewStatus) ?? payload.review_status;
   return {
     ...payload,
-    review_status: (row.review_status as ReviewStatus) ?? payload.review_status,
+    review_status: effectiveStatus,
+    math_format: payload.math_format ?? 'latex-1',
+    // Preserve all existing approved bank questions for active students without disruption
+    math_verified: payload.math_verified ?? (effectiveStatus === 'approved' ? true : false),
   };
 }
 
@@ -3181,17 +3190,31 @@ export class DataService {
     const now = new Date().toISOString();
     let savedQuestion: QuestionItem;
 
+    const isMathContentEdited = (prev: QuestionItem, next: QuestionItem): boolean => {
+      if (prev.stem_vi !== next.stem_vi) return true;
+      if ((prev.solution_vi ?? '') !== (next.solution_vi ?? '')) return true;
+      if (JSON.stringify(prev.options ?? []) !== JSON.stringify(next.options ?? [])) return true;
+      if (JSON.stringify(prev.statements ?? []) !== JSON.stringify(next.statements ?? [])) return true;
+      return false;
+    };
+
+    const stampedInput: QuestionItem = {
+      ...question,
+      math_format: 'latex-1',
+    };
+
     if (!isAdminActor) {
       // Teacher path: every addition, edit, or replacement MUST wait for Admin approval.
       // Live approved/existing questions are NEVER overwritten directly by a teacher.
       const sanitizedBase: QuestionItem = {
-        ...question,
+        ...stampedInput,
         review_status: 'pending_teacher_review',
         reviewedBy: undefined,
         reviewedAt: undefined,
       };
       if (existingIdx >= 0) {
         const prev = nextList[existingIdx];
+        const formulaChanged = isMathContentEdited(prev, sanitizedBase);
         const isOwnPendingDraft =
           prev.review_status === 'pending_teacher_review' &&
           prev.proposedByUid === actor.uid;
@@ -3199,6 +3222,9 @@ export class DataService {
           savedQuestion = {
             ...sanitizedBase,
             id: prev.id,
+            math_verified: formulaChanged ? false : (sanitizedBase.math_verified ?? prev.math_verified ?? false),
+            math_verified_by: formulaChanged ? undefined : prev.math_verified_by,
+            math_verified_at: formulaChanged ? undefined : prev.math_verified_at,
             version: prev.version ?? 1,
             versionHistory: prev.versionHistory ?? [],
             createdBy: prev.createdBy ?? actor.displayName,
@@ -3215,6 +3241,9 @@ export class DataService {
           savedQuestion = {
             ...sanitizedBase,
             id: generateId('prop'),
+            math_verified: formulaChanged ? false : Boolean(sanitizedBase.math_verified),
+            math_verified_by: formulaChanged ? undefined : sanitizedBase.math_verified_by,
+            math_verified_at: formulaChanged ? undefined : sanitizedBase.math_verified_at,
             version: (prev.version ?? 1) + 1,
             versionHistory: prev.versionHistory ?? [],
             createdBy: prev.createdBy,
@@ -3230,6 +3259,7 @@ export class DataService {
       } else {
         savedQuestion = {
           ...sanitizedBase,
+          math_verified: sanitizedBase.math_verified ?? false,
           version: 1,
           versionHistory: [],
           createdBy: actor.displayName,
@@ -3243,6 +3273,7 @@ export class DataService {
       }
     } else if (existingIdx >= 0) {
       const prev = nextList[existingIdx];
+      const formulaChanged = isMathContentEdited(prev, stampedInput);
       const nextVersion = (prev.version ?? 1) + 1;
       const history = [
         ...(prev.versionHistory ?? []),
@@ -3254,10 +3285,26 @@ export class DataService {
           stem_vi: prev.stem_vi,
         },
       ];
-      savedQuestion = {...question, version: nextVersion, versionHistory: history};
+      savedQuestion = {
+        ...stampedInput,
+        // Section 6.5 & 10.5: Editing formula content ALWAYS resets math_verified to false!
+        math_verified: formulaChanged
+          ? false
+          : (stampedInput.math_verified ?? prev.math_verified ?? (prev.review_status === 'approved')),
+        math_verified_by: formulaChanged ? undefined : (stampedInput.math_verified_by ?? prev.math_verified_by),
+        math_verified_at: formulaChanged ? undefined : (stampedInput.math_verified_at ?? prev.math_verified_at),
+        version: nextVersion,
+        versionHistory: history,
+      };
       nextList[existingIdx] = savedQuestion;
     } else {
-      savedQuestion = {...question, version: 1, versionHistory: [], createdBy: actor.displayName};
+      savedQuestion = {
+        ...stampedInput,
+        math_verified: stampedInput.math_verified ?? false,
+        version: 1,
+        versionHistory: [],
+        createdBy: actor.displayName,
+      };
       nextList.unshift(savedQuestion);
     }
 
@@ -3285,6 +3332,11 @@ export class DataService {
       const idx = workingList.findIndex((q) => q.id === qId);
       if (idx < 0) continue;
       const item = workingList[idx];
+
+      // Section 1.3, 6.5 & 10.5: Block approving any math question whose math_verified is explicitly false
+      if (status === 'approved' && questionContainsMath(item) && item.math_verified === false) {
+        continue;
+      }
 
       // If Admin approves a teacher's edit/replace proposal, apply it onto the target live question
       if (status === 'approved' && item.replacesQuestionId) {
@@ -3353,7 +3405,140 @@ export class DataService {
         void this.supabase.from('questions').delete().in('id', proposalIdsToDelete);
       }
     }
-    return true;
+    return updatedQuestions.length > 0;
+  }
+
+  /**
+   * Marks question(s) as math_verified (eye-checked + passes syntax check).
+   * Required before Admin can approve any new/edited math question (Section 6.5).
+   */
+  markQuestionMathVerified(
+    actor: UserAccount,
+    questionIds: string[],
+    verified = true,
+  ): {ok: boolean; verifiedCount: number; blockedIds: string[]} {
+    if (!canAccessAdmin(actor)) return {ok: false, verifiedCount: 0, blockedIds: questionIds};
+    const idSet = new Set(questionIds);
+    const now = new Date().toISOString();
+    const updatedList: QuestionItem[] = [];
+    const blockedIds: string[] = [];
+
+    const nextQuestions = this.db.questions.map((q) => {
+      if (!idSet.has(q.id)) return q;
+      if (verified) {
+        const check = verifyQuestionMathLayers(q, {doubleCheckText: q.double_check_text});
+        if (check.syntaxErrors.length > 0) {
+          blockedIds.push(q.id);
+          return {...q, math_flags: check.flags, math_verified: false};
+        }
+        const upd: QuestionItem = {
+          ...q,
+          math_format: 'latex-1',
+          math_verified: true,
+          math_verified_by: actor.displayName,
+          math_verified_at: now,
+          math_flags: check.flags.filter(
+            (f) => f !== 'unbalanced_dollar' && f !== 'latex_syntax_error',
+          ),
+        };
+        updatedList.push(upd);
+        return upd;
+      }
+      const upd: QuestionItem = {
+        ...q,
+        math_verified: false,
+        math_verified_by: undefined,
+        math_verified_at: undefined,
+      };
+      updatedList.push(upd);
+      return upd;
+    });
+
+    if (updatedList.length > 0) {
+      this.save({...this.db, questions: nextQuestions});
+      if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+        void this.supabase
+          .from('questions')
+          .upsert(updatedList.map(questionToRow), {onConflict: 'id'});
+      }
+      this.recordAuditLog(actor, verified ? 'math_verify' : 'math_unverify', 'question', updatedList[0].id, {
+        count: updatedList.length,
+        blocked: blockedIds.length,
+      });
+    }
+
+    return {ok: updatedList.length > 0, verifiedCount: updatedList.length, blockedIds};
+  }
+
+  /**
+   * Non-destructive `--fix` math normalization migration for existing bank questions (Section 5.2):
+   * - Preserves original text in `stem_raw` (ZERO data loss)
+   * - Never touches users, classes, attempts, or events
+   * - Increments version + logs audit record
+   */
+  adminRunMathAuditFix(
+    actor: UserAccount,
+    targetQuestionIds?: string[],
+  ): {ok: boolean; totalScanned: number; normalizedCount: number; flaggedCount: number} {
+    if (!canEditSettingsOrUsers(actor)) {
+      return {ok: false, totalScanned: 0, normalizedCount: 0, flaggedCount: 0};
+    }
+    const filterSet = targetQuestionIds ? new Set(targetQuestionIds) : null;
+    const now = new Date().toISOString();
+    let totalScanned = 0;
+    let normalizedCount = 0;
+    let flaggedCount = 0;
+    const changedRows: QuestionItem[] = [];
+
+    const nextQuestions = this.db.questions.map((q) => {
+      if (filterSet && !filterSet.has(q.id)) return q;
+      totalScanned += 1;
+      const res = normalizeQuestionMathSafely(q);
+      if (res.hasErrors) {
+        flaggedCount += 1;
+      }
+      if (!res.changed && !res.hasErrors && q.math_format === 'latex-1') {
+        return q;
+      }
+      if (res.changed) normalizedCount += 1;
+      const nextVer = res.changed ? (q.version ?? 1) + 1 : (q.version ?? 1);
+      const history = res.changed
+        ? [
+            ...(q.versionHistory ?? []),
+            {
+              version: q.version ?? 1,
+              editedAt: now,
+              editedBy: `${actor.displayName} (audit:math --fix)`,
+              note: 'Chuẩn hóa công thức sang chuẩn latex-1 (bảo toàn stem_raw)',
+              stem_vi: q.stem_vi,
+            },
+          ]
+        : q.versionHistory ?? [];
+      const saved: QuestionItem = {
+        ...res.updated,
+        version: nextVer,
+        versionHistory: history,
+        review_status: res.hasErrors ? 'pending_teacher_review' : q.review_status,
+      };
+      changedRows.push(saved);
+      return saved;
+    });
+
+    if (changedRows.length > 0) {
+      this.save({...this.db, questions: nextQuestions});
+      if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
+        void this.supabase
+          .from('questions')
+          .upsert(changedRows.map(questionToRow), {onConflict: 'id'});
+      }
+      this.recordAuditLog(actor, 'audit_math_fix', 'question', 'bank', {
+        totalScanned,
+        normalizedCount,
+        flaggedCount,
+      });
+    }
+
+    return {ok: true, totalScanned, normalizedCount, flaggedCount};
   }
 
   deleteQuestion(actor: UserAccount, questionId: string): boolean {

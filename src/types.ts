@@ -167,6 +167,7 @@ export interface UserAccount {
     audioEnabled: boolean;
     reduceMotion: boolean;
     easyMove: boolean;
+    mathFontScale?: 'normal' | 'large';
   };
 }
 
@@ -240,6 +241,24 @@ export type QuestionFlag =
   | 'unverifiable_by_code'
   | 'missing_answer'
   | 'proposed_new_pattern';
+
+export type MathFlag =
+  | 'unbalanced_dollar'
+  | 'latex_syntax_error'
+  | 'numbers_mismatch'
+  | 'symbols_mismatch'
+  | 'answer_mismatch'
+  | 'formula_split'
+  | 'formula_uncertain'
+  | 'unicode_math_leftover'
+  | 'unbraced_vi_decimal';
+
+export interface FormulaImageFallback {
+  dataUrl: string;
+  alt: string;
+  kbSize?: number;
+  privateClassOnly?: boolean;
+}
 
 export type VerifiedByCodeStatus = 'pass' | 'fail' | 'n/a';
 
@@ -397,6 +416,16 @@ export interface QuestionItem {
   suggested_stations?: MocId[];
   approved_by?: string;
   approved_at?: string;
+  // Math rendering, normalization & verification standard (`latex-1`, 100% additive)
+  math_format?: 'latex-1';
+  math_verified?: boolean;
+  math_verified_by?: string;
+  math_verified_at?: string;
+  math_flags?: MathFlag[];
+  stem_raw?: string;
+  formula_image?: FormulaImageFallback;
+  question_bbox?: FigureBBox;
+  double_check_text?: string;
 }
 
 export interface AttemptRecord {

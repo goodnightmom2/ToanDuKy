@@ -41,18 +41,28 @@ interface ExtractBody {
   customPatterns?: string[];
   modelOverride?: string;
   useHardPageModel?: boolean;
+  doubleCheck?: boolean;
+  latexFixError?: string;
 }
 
-const APPENDIX_B_SYSTEM_PROMPT = `Bạn là trợ lý số hóa đề Toán THPT Việt Nam (${PROMPT_VERSION}). Bạn nhận ảnh và/hoặc văn bản của 1–3 trang PDF. Hãy tách TỪNG câu hỏi và chỉ trả về JSON đúng lược đồ, không thêm giải thích hay markdown.
-Quy tắc:
-(1) Chỉ dựa vào nội dung đang thấy, không bịa đề, số liệu hay đáp án; chỗ không chắc thì ghi vào flags ("formula_uncertain", "figure_missing", "cut_off_at_page_end", "cut_off_at_page_start") và hạ confidence. Nếu thiếu đáp án thì để expected_answer_key="" và expected_numeric=null, thêm cờ "missing_answer".
-(2) Công thức viết bằng LaTeX trong $...$; giữ nguyên số, đơn vị, ký hiệu góc.
-(3) Nhận diện part ("I", "II", "III" hoặc ""), type ("mcq", "true_false_multi", "short_numeric", "matching", "fill_relation", "error_spot", "open_explain"), number (ví dụ "1", "17"), và nếu có tiêu đề "Dạng n ..." thì ghi vào source_pattern_label.
-(4) Trắc nghiệm: mỗi lựa chọn một phần tử options[{key, text}] (A, B, C, D); đúng/sai nhiều ý: mỗi ý a, b, c, d một phần tử statements[{key, text}].
-(5) Nếu đề nhắc "như hình", "hình dưới", "hình vẽ": đặt needs_figure=true; ưu tiên mô tả hình thành figure_spec (đỉnh, cạnh, góc, nhãn), nếu không mô tả được thì điền figure_bbox (page, x, y, w, h trong khoảng 0..1).
-(6) Với câu thuộc dạng có công thức Chương III, trích givens (a, b, c, A_deg, B_deg, C_deg, R, r, S, d, alpha_deg, beta_deg, trig_fn, trig_value, quadrant, target, unit, decimal_places, v1, v2, t, value, fromUnit, toUnit) để máy tự giải lại kiểm chứng.
-(7) Phân loại bằng danh mục dạng (taxonomy) kèm theo: trả topic ("NEN"|"LG"|"COS"|"SIN"|"DT"|"MH"|"OUT"), pattern_id, level (1–4), skill_ids, anticipated_error_ids (E01–E12), hints_vi đúng 2 mức (mức 1 TUYỆT ĐỐI không lộ đáp án), confidence (0..1), ai_reason. Câu không thuộc Chương III "Hệ thức lượng trong tam giác" (vd: mệnh đề, tập hợp, bất phương trình, hàm số...) đặt topic="OUT", pattern_id="OUT-00". Nếu thuộc Chương III nhưng chưa khớp dạng nào thì đặt pattern_id="" và điền proposed_pattern (tên dạng mới đề xuất).
-(8) Chỉ trang chứa "Đáp án / Lời giải / Hướng dẫn giải" mới trả answer_key: danh sách {number, part, examCode, answer, solution_vi}.
+const APPENDIX_B_SYSTEM_PROMPT = `Bạn là trợ lý số hóa đề Toán THPT Việt Nam (${PROMPT_VERSION}, chuẩn latex-1). Bạn nhận ảnh độ phân giải cao và/hoặc văn bản của 1–3 trang PDF. Hãy tách TỪNG câu hỏi và chỉ trả về JSON đúng lược đồ, không thêm giải thích hay markdown.
+Quy tắc BẮT BUỘC:
+(1) Chỉ dựa vào nội dung đang thấy, KHÔNG bịa đề, KHÔNG "đẹp hóa" hay tự sửa số liệu; chỗ không chắc ghi flags ("formula_uncertain", "figure_missing", "cut_off_at_page_end", "cut_off_at_page_start") và hạ confidence. Thiếu đáp án -> expected_answer_key="", expected_numeric=null, thêm cờ "missing_answer".
+(2) Chuẩn LaTeX Chương III (đặt trong $...$ hoặc $$...$$; chữ tiếng Việt để NGOÀI $...$):
+    - Góc: $\\widehat{BAC}$, $\\widehat{A}$ (KHÔNG dùng ∠ hay \\angle). Độ: $50^\\circ$ (KHÔNG dùng ° trần trong $...$).
+    - Hàm lượng giác: $\\sin 60^\\circ$, $\\cos A$, $\\tan\\alpha$, $\\cot\\alpha$ (đổi tg→\\tan, cotg→\\cot).
+    - Phân số: $\\dfrac{AC}{\\sin 60^\\circ}$; Căn: $\\sqrt{3}$; Nhân: $\\cdot$; Tam giác: $\\triangle ABC$; Vuông góc: $AB\\perp CH$; Vectơ: $\\overrightarrow{AB}$.
+    - Số thập phân kiểu Việt trong công thức bọc ngoặc nhọn: $55{,}3$; đơn vị ngắn: $55{,}3\\ \\mathrm{m}$, $259{,}8\\ \\mathrm{m}^2$, $0{,}75\\ \\mathrm{km}$. Tọa độ: $(35{,}54;\\ 0;\\ 42{,}36)$.
+    - Ví dụ chuẩn (few-shot):
+      • "AC = 60·sin60°/sin70° ≈ 55,3 m" → "$AC=\\dfrac{60\\sin 60^\\circ}{\\sin 70^\\circ}\\approx 55{,}3\\ \\mathrm{m}$"
+      • "cosA = (b²+c²−a²)/(2bc)" → "$\\cos A=\\dfrac{b^2+c^2-a^2}{2bc}$"
+      • "đu quay có đường kính 115 m, BC cách nhau 345 m, góc BAC nhỏ nhất" → "đu quay có đường kính $115\\ \\mathrm{m}$, $BC$ cách nhau $345\\ \\mathrm{m}$, góc $\\widehat{BAC}$ nhỏ nhất"
+(3) Nhận diện part ("I", "II", "III" hoặc ""), type ("mcq", "true_false_multi", "short_numeric", "matching", "fill_relation", "error_spot", "open_explain"), number (ví dụ "1", "17"), source_pattern_label ("Dạng n ..."), và nếu nhìn thấy vị trí câu trên trang ảnh thì điền question_bbox {page, x, y, w, h trong 0..1}.
+(4) Trắc nghiệm: mỗi lựa chọn một phần tử options[{key, text}] (A, B, C, D); đúng/sai nhiều ý: statements[{key, text}].
+(5) Nếu đề nhắc "như hình", "hình dưới", "hình vẽ": needs_figure=true; ưu tiên figure_spec, nếu không mô tả được điền figure_bbox {page, x, y, w, h trong 0..1}.
+(6) Trích givens (a, b, c, A_deg, B_deg, C_deg, R, r, S, d, alpha_deg, beta_deg, trig_fn, trig_value, quadrant, target, unit, decimal_places, v1, v2, t, value, fromUnit, toUnit) để máy tự giải kiểm chứng.
+(7) Phân loại theo taxonomy kèm theo: topic ("NEN"|"LG"|"COS"|"SIN"|"DT"|"MH"|"OUT"), pattern_id, level (1–4), skill_ids, anticipated_error_ids (E01–E12), hints_vi đúng 2 mức (mức 1 KHÔNG lộ đáp án), confidence (0..1), ai_reason. Ngoài Chương III -> topic="OUT", pattern_id="OUT-00".
+(8) Chỉ trang chứa "Đáp án / Lời giải / Hướng dẫn giải" mới trả answer_key: {number, part, examCode, answer, solution_vi}.
 (9) Câu bị cắt giữa hai trang: trả phần đang thấy và gắn cờ "cut_off_at_page_end" hoặc "cut_off_at_page_start".`;
 
 export async function POST(request: Request): Promise<Response> {
@@ -354,6 +364,7 @@ export async function POST(request: Request): Promise<Response> {
         model: modelName,
         contents: {parts},
         config: {
+          temperature: 0,
           responseMimeType: 'application/json',
           responseSchema: extractSchema,
         },
@@ -366,6 +377,7 @@ export async function POST(request: Request): Promise<Response> {
         model: fallback,
         contents: {parts},
         config: {
+          temperature: 0,
           responseMimeType: 'application/json',
           responseSchema: extractSchema,
           thinkingConfig: {thinkingLevel: ThinkingLevel.LOW},

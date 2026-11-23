@@ -142,6 +142,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
           <div className="py-3 flex items-center justify-between gap-3">
             <div>
+              <p className="font-bold text-sm text-[#14284A]">Tăng cỡ công thức Toán</p>
+              <p className="text-xs text-[#5B6B82]">Phóng lớn phân số, căn bậc hai và chỉ số góc thêm 20% khi đọc đề.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                onUpdatePreferences({
+                  mathFontScale: user.preferences.mathFontScale === 'large' ? 'normal' : 'large',
+                })
+              }
+              className={`px-4 py-2 rounded-xl font-bold text-xs border-2 ${
+                user.preferences.mathFontScale === 'large'
+                  ? 'bg-[#2E9C8A] text-white border-[#1F7A6B]'
+                  : 'bg-[#FFFBF0] text-[#14284A] border-[#CBB17D]'
+              }`}
+            >
+              {user.preferences.mathFontScale === 'large' ? 'Cỡ LỚN (+20%)' : 'Cỡ chuẩn'}
+            </button>
+          </div>
+
+          <div className="py-3 flex items-center justify-between gap-3">
+            <div>
               <p className="font-bold text-sm text-[#14284A]">Di chuyển dễ trong cảnh 2D</p>
               <p className="text-xs text-[#5B6B82]">Tăng tốc độ bước đi nhân vật khi khám phá trạm.</p>
             </div>

@@ -436,7 +436,8 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
                 return (
                   <div key={qId} className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-white border border-[#E5D3A8]">
                     <span className="truncate font-semibold text-[#14284A]">
-                      <strong>[{qId}]</strong> {q ? q.stem_vi.slice(0, 75) : '(Không tìm thấy)'}
+                      <strong>[{qId}]</strong>{' '}
+                      {q ? <MathText text={q.stem_vi} maxLength={75} /> : '(Không tìm thấy)'}
                     </span>
                     <button
                       type="button"

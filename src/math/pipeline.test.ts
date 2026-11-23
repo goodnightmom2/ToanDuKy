@@ -165,7 +165,7 @@ test('5. Bộ giải toán kiểm chứng: Côsin, Sin/R, Diện tích (sin/Hero
     givens: {a: 7, b: 8, c: 5},
     expected_answer: {value: 60, rounded: 60, decimal_places: 1, unit: '°'},
   });
-  assert.equal(check.status, 'pass');
+  assert.equal(check.verified_by_code, 'pass');
 });
 
 test('6. Upsert idempotent theo fingerprint — nhập lại không tạo trùng', async () => {
@@ -176,10 +176,10 @@ test('6. Upsert idempotent theo fingerprint — nhập lại không tạo trùng
     ...ALL_INITIAL_QUESTIONS[0],
     id: 'imp_01',
     stem_vi: 'Tính cạnh $a$ của tam giác $ABC$ có $b=9, c=11, \\widehat{A}=60^\\circ$.',
-    fingerprint: computeQuestionFingerprint('Tính cạnh $a$ của tam giác $ABC$ có $b=9, c=11, \\widehat{A}=60^\\circ$.'),
   };
-  const r1 = svc.upsertImportedQuestions(admin, [q], {targetStatus: 'approved', duplicatePolicy: 'skip'});
-  const r2 = svc.upsertImportedQuestions(admin, [{...q, id: 'imp_02'}], {targetStatus: 'approved', duplicatePolicy: 'skip'});
+  q.fingerprint = computeQuestionFingerprint(q);
+  const r1 = svc.upsertImportedQuestions(admin, [q], {targetStatus: 'approved', duplicateAction: 'skip'});
+  const r2 = svc.upsertImportedQuestions(admin, [{...q, id: 'imp_02'}], {targetStatus: 'approved', duplicateAction: 'skip'});
   assert.equal(r1.added, 1);
   assert.equal(r2.added, 0);
   assert.equal(r2.skippedDuplicates, 1);

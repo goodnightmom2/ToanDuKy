@@ -12,6 +12,7 @@ import {
   HardDriveUpload,
   History,
   Layers,
+  LayoutGrid,
   PenLine,
   Play,
   RefreshCw,
@@ -21,8 +22,10 @@ import {
   Square,
   Trash2,
   XCircle,
+  ZoomIn,
 } from 'lucide-react';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, STATIONS} from '../config.ts';
+import {questionContainsMath, verifyQuestionMathLayers} from '../math/mathEngine.ts';
 import {verifyQuestionWithSolvers} from '../math/solvers.ts';
 import {
   computeQuestionFingerprint,
@@ -81,6 +84,7 @@ import type {
   StationId,
   UserAccount,
 } from '../types.ts';
+import {MathLatexEditor} from './MathLatexEditor.tsx';
 import {MathText} from './MathText.tsx';
 
 interface AiStatusInfo {
@@ -140,6 +144,8 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
   const [autoRunAfterUpload, setAutoRunAfterUpload] = React.useState(true);
+  const [previewZoom, setPreviewZoom] = React.useState<1 | 1.5 | 2>(1);
+  const [showGalleryVerify, setShowGalleryVerify] = React.useState(false);
   const [classificationMode, setClassificationMode] = React.useState<ClassificationMode>('web_taxonomy');
   const [customPatternsText, setCustomPatternsText] = React.useState('');
 
@@ -1455,13 +1461,11 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 />
               </div>
 
-              <textarea
-                id="paste-material-textarea"
-                rows={4}
+              <MathLatexEditor
                 value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder="Dán nội dung đề Toán 10 Chương III vào đây nếu muốn trích xuất thủ công không cần ảnh..."
-                className="w-full p-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-xs leading-relaxed"
+                onChange={setImportText}
+                rows={4}
+                placeholder="Dán nội dung đề Toán 10 Chương III vào đây (hỗ trợ xem trước KaTeX trực tiếp & nút Chuẩn hóa Unicode từ Word/PDF)..."
               />
 
               <div className="flex flex-wrap gap-2">
@@ -1931,10 +1935,19 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 <>
                   <button
                     type="button"
+                    onClick={() => setShowGalleryVerify((v) => !v)}
+                    className="btn-tactile btn-gold text-xs py-1.5 px-3"
+                    title="Mở chế độ thư viện đối chiếu 6 câu/màn hình (ảnh gốc | bản render)"
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                    {showGalleryVerify ? 'Đóng thư viện 6 câu' : 'Thư viện đối chiếu 6 câu'}
+                  </button>
+                  <button
+                    type="button"
                     disabled={selectedIds.length === 0}
                     onClick={() => commitDrafts(selectedIds, 'approved', true)}
                     className="btn-tactile btn-jade text-xs py-1.5 px-3"
-                    title={`Chỉ duyệt hàng loạt câu đã kiểm chứng code, không cờ lỗi và độ tin cậy ≥ ${Math.round(confidenceThreshold * 100)}%`}
+                    title="Chỉ duyệt hàng loạt câu đã bấm Đối chiếu công thức (math_verified=true), kiểm chứng code khớp, không cờ lỗi và độ tin cậy ≥ 95%"
                   >
                     <Check className="w-4 h-4" />
                     Duyệt hàng loạt an toàn ({selectedIds.length})
@@ -1951,6 +1964,88 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               )}
             </div>
           </div>
+
+          {/* 6-Card Gallery Batch Eye-Check Mode (Section 6.4) */}
+          {showGalleryVerify && (() => {
+            const galleryCandidates = visibleDrafts
+              .filter(
+                (q) =>
+                  q.math_verified !== true &&
+                  q.verified_by_code === 'pass' &&
+                  (q.confidence ?? 0) >= 0.95 &&
+                  !(q.math_flags ?? []).some((f) =>
+                    ['unbalanced_dollar', 'latex_syntax_error', 'numbers_mismatch', 'symbols_mismatch', 'formula_split'].includes(f),
+                  ),
+              )
+              .slice(0, 6);
+            return (
+              <div className="p-4 rounded-2xl bg-[#EEF6FF] border-2 border-[#3B82F6] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="font-display text-base font-extrabold text-[#14284A]">
+                      Thư viện đối chiếu nhanh (tối đa 6 câu/màn hình · độ tin cậy ≥ 95%, qua đủ 4 lớp kiểm tra)
+                    </h4>
+                    <p className="text-[11px] text-[#14437A]">
+                      So sánh ảnh gốc với bản render KaTeX bên cạnh rồi bấm nút xác nhận để mở khóa duyệt hàng loạt.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={galleryCandidates.length === 0}
+                    onClick={() => {
+                      const ids = new Set(galleryCandidates.map((g) => g.id));
+                      const now = new Date().toISOString();
+                      setDrafts((prev) =>
+                        prev.map((d) =>
+                          ids.has(d.id)
+                            ? {
+                                ...d,
+                                math_verified: true,
+                                math_verified_by: user.displayName,
+                                math_verified_at: now,
+                              }
+                            : d,
+                        ),
+                      );
+                      setStatusMsg(`Đã xác nhận đối chiếu công thức cho ${galleryCandidates.length} câu trong thư viện!`);
+                    }}
+                    className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Xác nhận đã đối chiếu {galleryCandidates.length} câu này
+                  </button>
+                </div>
+                {galleryCandidates.length === 0 ? (
+                  <p className="text-xs text-[#14437A] italic">
+                    Không còn câu nào đạt ngưỡng tự động ≥ 95% chưa đối chiếu. Các câu còn lại vui lòng kiểm tra từng câu bên dưới.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    {galleryCandidates.map((gc) => {
+                      const gImg = gc.page_pdf ? pagePreviewCache[gc.page_pdf] : undefined;
+                      return (
+                        <div key={gc.id} className="p-2.5 rounded-xl bg-white border border-[#9EC5FE] grid grid-cols-2 gap-2 text-xs">
+                          <div className="max-h-36 overflow-auto rounded border border-[#E5D3A8] bg-[#FAF5E8] p-1">
+                            {gImg ? (
+                              <img src={gImg} alt={`Trang ${gc.page_pdf}`} className="w-full object-contain" />
+                            ) : (
+                              <p className="text-[10px] text-[#5B6B82]">{gc.source_excerpt || '(Văn bản)'}</p>
+                            )}
+                          </div>
+                          <div className="max-h-36 overflow-auto space-y-1">
+                            <p className="font-extrabold text-[#14284A]">
+                              Câu {gc.question_number ?? '?'} · {Math.round((gc.confidence ?? 0) * 100)}%
+                            </p>
+                            <MathText text={gc.stem_vi} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="space-y-4">
             {visibleDrafts.map((item, idx) => {
@@ -2075,19 +2170,58 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   {/* SIDE-BY-SIDE COMPARISON: LEFT = PDF PAGE / FIGURE CROP, RIGHT = KATEX QUESTION */}
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
                     <div className="lg:col-span-5 p-3 rounded-xl bg-white border border-[#E5D3A8] space-y-2 text-xs">
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
                         <p className="font-extrabold uppercase text-[#5B6B82]">
                           Trang gốc {item.page_pdf ? `(PDF tr.${item.page_pdf}${item.page_printed ? ` · In tr.${item.page_printed}` : ''})` : ''}
                         </p>
-                        {isAdmin && item.figure_bbox && !item.figure_crop && (
-                          <button
-                            type="button"
-                            onClick={() => void handleAdminUseCroppedFigure(item)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]"
-                          >
-                            <Crop className="w-3 h-3" /> Dùng ảnh cắt (nội bộ lớp)
-                          </button>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {pageImgUrl && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPreviewZoom((z) => (z === 1 ? 1.5 : z === 1.5 ? 2 : 1))
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] font-bold text-[#14284A]"
+                              title="Phóng to ảnh trang gốc để soi chỉ số mũ/góc"
+                            >
+                              <ZoomIn className="w-3 h-3" /> {Math.round(previewZoom * 100)}%
+                            </button>
+                          )}
+                          {isAdmin && item.figure_bbox && !item.figure_crop && (
+                            <button
+                              type="button"
+                              onClick={() => void handleAdminUseCroppedFigure(item)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]"
+                            >
+                              <Crop className="w-3 h-3" /> Ảnh hình
+                            </button>
+                          )}
+                          {isAdmin && pageImgUrl && !item.formula_image && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const bbox = item.question_bbox ?? item.figure_bbox ?? {page: item.page_pdf ?? 1, x: 0.04, y: 0.05, w: 0.92, h: 0.35};
+                                const cropped = await cropFigureFromPageDataUrl(pageImgUrl, bbox, 145);
+                                if (cropped) {
+                                  updateDraft(item.id, (prev) => ({
+                                    ...prev,
+                                    formula_image: {
+                                      dataUrl: cropped.dataUrl,
+                                      alt: prev.stem_vi.slice(0, 140) || 'Ảnh công thức gốc (nội bộ lớp)',
+                                      kbSize: cropped.kbSize,
+                                      privateClassOnly: true,
+                                    },
+                                  }));
+                                  setStatusMsg(`Đã lưu ảnh cắt công thức an toàn (${cropped.kbSize} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}.`);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]"
+                              title="Phương án an toàn (Mục 6.6): dùng ảnh cắt biểu thức khi công thức quá phức tạp"
+                            >
+                              <Crop className="w-3 h-3" /> Ảnh công thức
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {item.figure_crop ? (
@@ -2102,11 +2236,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                           </p>
                         </div>
                       ) : pageImgUrl ? (
-                        <img
-                          src={pageImgUrl}
-                          alt={`Ảnh trang ${item.page_pdf}`}
-                          className="w-full max-h-60 object-contain rounded-lg border border-[#E5D3A8] bg-white"
-                        />
+                        <div className="max-h-64 overflow-auto rounded-lg border border-[#E5D3A8] bg-white">
+                          <img
+                            src={pageImgUrl}
+                            alt={`Ảnh trang ${item.page_pdf}`}
+                            style={{width: `${previewZoom * 100}%`, maxWidth: 'none'}}
+                            className="object-contain"
+                          />
+                        </div>
                       ) : (
                         <p className="italic text-[#5B6B82] p-2 rounded-lg bg-[#FAF5E8]">
                           {item.source_excerpt || '(Trích xuất từ văn bản không kèm ảnh)'}
@@ -2126,24 +2263,79 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     </div>
 
                     <div className="lg:col-span-7 p-3 rounded-xl bg-white border border-[#CBB17D] space-y-2 text-xs">
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="font-extrabold uppercase text-[#1F7A6B]">
                           Bản hiển thị KaTeX (xem trước học viên)
                         </p>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedEditIds((prev) => ({...prev, [item.id]: !prev[item.id]}))
-                          }
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-[#14284A] font-bold"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          {isEditing ? 'Thu gọn' : 'Sửa trực tiếp'}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {questionContainsMath(item) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (item.math_verified) {
+                                  updateDraft(item.id, (prev) => ({
+                                    ...prev,
+                                    math_verified: false,
+                                    math_verified_by: undefined,
+                                    math_verified_at: undefined,
+                                  }));
+                                  return;
+                                }
+                                const chk = verifyQuestionMathLayers(item, {
+                                  referenceText: item.source_excerpt,
+                                  doubleCheckText: item.double_check_text,
+                                });
+                                if (chk.syntaxErrors.length > 0) {
+                                  setErrorMsg(`Chưa thể đối chiếu câu ${item.question_number ?? item.id}: ${chk.syntaxErrors.join(' | ')}`);
+                                  return;
+                                }
+                                updateDraft(item.id, (prev) => ({
+                                  ...prev,
+                                  math_format: 'latex-1',
+                                  math_verified: true,
+                                  math_verified_by: user.displayName,
+                                  math_verified_at: new Date().toISOString(),
+                                  math_flags: chk.flags,
+                                }));
+                              }}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border font-bold ${
+                                item.math_verified
+                                  ? 'bg-[#E6F6F3] border-[#2E9C8A] text-[#145B4F]'
+                                  : 'bg-[#EEF6FF] border-[#3B82F6] text-[#14437A]'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              {item.math_verified ? 'Đã đối chiếu công thức ✓' : 'Đã đối chiếu công thức'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedEditIds((prev) => ({...prev, [item.id]: !prev[item.id]}))
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-[#14284A] font-bold"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            {isEditing ? 'Thu gọn' : 'Sửa trực tiếp'}
+                          </button>
+                        </div>
                       </div>
 
+                      {(item.math_flags ?? []).length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {(item.math_flags ?? []).map((mf) => (
+                            <span
+                              key={mf}
+                              className="px-2 py-0.5 rounded-full bg-[#FCE8E6] border border-[#E5A09B] text-[#99261B] text-[10px] font-bold"
+                            >
+                              Cờ Toán: {mf}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
                       <div className="text-sm font-semibold text-[#14284A] leading-relaxed">
-                        <MathText text={item.stem_vi} />
+                        <MathText text={item.stem_vi} formulaImage={item.formula_image} />
                       </div>
 
                       {item.options && item.options.length > 0 && (
@@ -2273,15 +2465,21 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         </div>
                       </div>
 
-                      <div>
-                        <label className="block font-bold mb-1">Đề bài (LaTeX trong $...$)</label>
-                        <textarea
-                          rows={2}
-                          value={item.stem_vi}
-                          onChange={(e) => updateDraft(item.id, (prev) => ({...prev, stem_vi: e.target.value}))}
-                          className="w-full p-2 rounded-lg border border-[#CBB17D]"
-                        />
-                      </div>
+                      <MathLatexEditor
+                        label="Đề bài (LaTeX trong $...$ — sửa công thức sẽ đặt lại yêu cầu đối chiếu)"
+                        value={item.stem_vi}
+                        onChange={(nextStem) =>
+                          updateDraft(item.id, (prev) => ({
+                            ...prev,
+                            stem_vi: nextStem,
+                            math_verified: false,
+                            math_verified_by: undefined,
+                            math_verified_at: undefined,
+                          }))
+                        }
+                        rows={2}
+                        compact
+                      />
 
                       {item.type === 'numeric' && (
                         <div className="grid grid-cols-2 gap-2">

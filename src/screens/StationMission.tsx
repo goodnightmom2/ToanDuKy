@@ -629,7 +629,7 @@ export const StationMission: React.FC<StationMissionProps> = ({
             S04: Chuyển dữ kiện thực địa sang mô hình tam giác 2D
           </h2>
           <p className="text-[15px] text-[#1B2A41] leading-relaxed">
-            Từ số đo mô phỏng vừa ghi ở bước S03 (<MathText text="$AB = 60\text{ m}, \widehat{A} = 50^\circ, \widehat{B} = 60^\circ$" />), ta dựng tam giác $ABC$ phẳng trên mặt đất. Hãy thử bấm nút <strong>Xoay</strong> trên hình để thấy rằng dù nhìn từ hướng nào, độ dài các cạnh và số đo ba góc vẫn giữ nguyên!
+            Từ số đo mô phỏng vừa ghi ở bước S03 (<MathText text="$AB = 60\ \mathrm{m},\ \widehat{A} = 50^\circ,\ \widehat{B} = 60^\circ$" />), ta dựng tam giác <MathText text="$ABC$" /> phẳng trên mặt đất. Hãy thử bấm nút <strong>Xoay</strong> trên hình để thấy rằng dù nhìn từ hướng nào, độ dài các cạnh và số đo ba góc vẫn giữ nguyên!
           </p>
           <TriangleDiagram
             vertices={['A', 'B', 'C']}
@@ -740,19 +740,27 @@ export const StationMission: React.FC<StationMissionProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-sm">
               <div className="p-3 rounded-xl bg-[#FFF4D6] border border-[#E2CFA3]">
                 <span className="text-xs text-[#5B6B82] block">Đường đáy AB</span>
-                <strong className="text-[#14284A] tabular-nums">60 m</strong>
+                <strong className="text-[#14284A] tabular-nums">
+                  <MathText text="$60\ \mathrm{m}$" />
+                </strong>
               </div>
               <div className="p-3 rounded-xl bg-[#FFF4D6] border border-[#E2CFA3]">
                 <span className="text-xs text-[#5B6B82] block">Hai góc ngắm</span>
-                <strong className="text-[#14284A] tabular-nums">∠A = 50° · ∠B = 60°</strong>
+                <strong className="text-[#14284A] tabular-nums">
+                  <MathText text="$\widehat{A}=50^\circ,\ \widehat{B}=60^\circ$" />
+                </strong>
               </div>
               <div className="p-3 rounded-xl bg-[#FFF4D6] border border-[#E2CFA3]">
                 <span className="text-xs text-[#5B6B82] block">Góc đối diện AB</span>
-                <strong className="text-[#14284A] tabular-nums">∠C = 70°</strong>
+                <strong className="text-[#14284A] tabular-nums">
+                  <MathText text="$\widehat{C}=70^\circ$" />
+                </strong>
               </div>
               <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]">
                 <span className="text-xs text-[#1F7A6B] block">Khoảng cách AC</span>
-                <strong className="text-[#14284A] tabular-nums">≈ 55,3 m</strong>
+                <strong className="text-[#14284A] tabular-nums">
+                  <MathText text="$\approx 55{,}3\ \mathrm{m}$" />
+                </strong>
               </div>
             </div>
 

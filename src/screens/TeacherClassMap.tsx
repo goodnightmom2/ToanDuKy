@@ -577,7 +577,7 @@ export const TeacherClassMap: React.FC<TeacherClassMapProps> = ({
                           </div>
                           {qItem?.stem_vi && (
                             <div className="text-[#4B5B73]">
-                              <MathText text={qItem.stem_vi.slice(0, 200)} />
+                              <MathText text={qItem.stem_vi} maxLength={200} />
                             </div>
                           )}
                           <p>

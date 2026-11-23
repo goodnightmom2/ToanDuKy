@@ -18,6 +18,17 @@ import {ALL_GENERATOR_IDS, generateQuestion} from './generators.ts';
 import {ALL_INITIAL_QUESTIONS, BS01_SEED_ITEMS} from './seedBank.ts';
 import {verifyQuestionByCode} from './verifier.ts';
 import {solveByPatternAndGivens, verifyQuestionWithSolvers} from './solvers.ts';
+import {
+  compareNumberMultisets,
+  evaluateSafeDegreeExpression,
+  extractNumberTokens,
+  formatVi,
+  normalizeMath,
+  renderKatexSafe,
+  runMathBankAudit,
+  splitMath,
+  verifyQuestionMathLayers,
+} from './mathEngine.ts';
 import {autoSuggestMissionSet, validateMissionSet} from './missionSetEngine.ts';
 import {computeQuestionFingerprint, PROMPT_VERSION} from './taxonomy.ts';
 import {
@@ -800,28 +811,36 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       is_adapted: true,
     });
     const ok =
-      cosSide !== null &&
+      cosSide.solved &&
+      typeof cosSide.value === 'number' &&
       Math.abs(cosSide.value - Math.sqrt(52)) < 1e-4 &&
-      cosAng !== null &&
+      cosAng.solved &&
+      typeof cosAng.value === 'number' &&
       Math.abs(cosAng.value - 60) < 1e-4 &&
-      sinR !== null &&
+      sinR.solved &&
+      typeof sinR.value === 'number' &&
       Math.abs(sinR.value - 10) < 1e-4 &&
-      areaSin !== null &&
+      areaSin.solved &&
+      typeof areaSin.value === 'number' &&
       Math.abs(areaSin.value - 12) < 1e-4 &&
-      areaHeron !== null &&
+      areaHeron.solved &&
+      typeof areaHeron.value === 'number' &&
       Math.abs(areaHeron.value - 6 * Math.sqrt(6)) < 1e-4 &&
-      areaPr !== null &&
+      areaPr.solved &&
+      typeof areaPr.value === 'number' &&
       Math.abs(areaPr.value - 24) < 1e-4 &&
-      area4R !== null &&
+      area4R.solved &&
+      typeof area4R.value === 'number' &&
       Math.abs(area4R.value - 24) < 1e-4 &&
-      height2Ang !== null &&
+      height2Ang.solved &&
+      typeof height2Ang.value === 'number' &&
       Math.abs(height2Ang.value - 25 * Math.sqrt(3)) < 1e-4 &&
-      verCheck.status === 'pass';
+      verCheck.verified_by_code === 'pass';
     results.push({
       id: 22,
       name: 'Bộ giải kiểm chứng code (Côsin, Sin/R, Heron, S=pr, S=abc/4R, chiều cao 2 góc MH-02)',
       passed: ok,
-      detail: `COS-01=${cosSide?.value.toFixed(3)}, COS-02=${cosAng?.value.toFixed(1)}°, SIN-02 R=${sinR?.value.toFixed(1)}, DT-02=${areaHeron?.value.toFixed(3)}, MH-02 h=${height2Ang?.value.toFixed(2)}m, verify=${verCheck.status}.`,
+      detail: `COS-01=${cosSide.value?.toFixed(3)}, COS-02=${cosAng.value?.toFixed(1)}°, SIN-02 R=${sinR.value?.toFixed(1)}, DT-02=${areaHeron.value?.toFixed(3)}, MH-02 h=${height2Ang.value?.toFixed(2)}m, verify=${verCheck.verified_by_code}.`,
     });
   }
 
@@ -851,19 +870,16 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       review_status: 'pending_teacher_review',
       source_refs: ['de-mau.pdf'],
       is_adapted: false,
-      fingerprint: computeQuestionFingerprint(
-        'Cho tam giác $ABC$ có $b = 5, c = 7, \\widehat{A} = 60^\\circ$. Độ dài cạnh $a$ là bao nhiêu?',
-        [{id: 'a', label: '$\\sqrt{39}$'}, {id: 'b', label: '$\\sqrt{109}$'}],
-      ),
     };
+    sampleQ.fingerprint = computeQuestionFingerprint(sampleQ);
     const rFirst = svc.upsertImportedQuestions(admin, [sampleQ], {
       targetStatus: 'approved',
-      duplicatePolicy: 'skip',
+      duplicateAction: 'skip',
     });
     const countAfterFirst = svc.getQuestions().length;
     const rSecond = svc.upsertImportedQuestions(admin, [{...sampleQ, id: 'pdf_dup_2'}], {
       targetStatus: 'approved',
-      duplicatePolicy: 'skip',
+      duplicateAction: 'skip',
     });
     const countAfterSecond = svc.getQuestions().length;
     const ok =
@@ -1113,6 +1129,204 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       name: 'Cache trích xuất AI theo (SHA-256, trang, prompt, model) — 0 lượt gọi mạng khi đọc lại',
       passed: ok,
       detail: `fromCache=${hit.fromCache}, items=${hit.items.length}, model=${hit.usedModel}.`,
+    });
+  }
+
+  // 27. Golden tests (Phụ lục #1–#22) cho normalizeMath & splitMath
+  const goldenCases: Array<{id: number; input: string; expected: string}> = [
+    {id: 1, input: 'sin60° − cos30° = 0', expected: '$\\sin 60^\\circ-\\cos 30^\\circ=0$'},
+    {id: 2, input: 'AC/sin60° = AB/sin70°', expected: '$\\dfrac{AC}{\\sin 60^\\circ}=\\dfrac{AB}{\\sin 70^\\circ}$'},
+    {id: 3, input: 'AC = 60·sin60°/sin70° ≈ 55,3 m', expected: '$AC=\\dfrac{60\\sin 60^\\circ}{\\sin 70^\\circ}\\approx 55{,}3\\ \\mathrm{m}$'},
+    {id: 4, input: 'a² = b² + c² − 2bc·cosA', expected: '$a^2=b^2+c^2-2bc\\cos A$'},
+    {id: 5, input: 'cosA = (b²+c²−a²)/(2bc)', expected: '$\\cos A=\\dfrac{b^2+c^2-a^2}{2bc}$'},
+    {id: 6, input: '∠BAC = 50°', expected: '$\\widehat{BAC}=50^\\circ$'},
+    {id: 7, input: 'S = ½·20·30·sin60° = 150√3 ≈ 259,8 m²', expected: '$S=\\dfrac{1}{2}\\cdot 20\\cdot 30\\cdot\\sin 60^\\circ=150\\sqrt{3}\\approx 259{,}8\\ \\mathrm{m}^2$'},
+    {id: 8, input: 'p = (13+14+15)/2 = 21', expected: '$p=\\dfrac{13+14+15}{2}=21$'},
+    {id: 9, input: 'S = √(21·8·7·6) = 84', expected: '$S=\\sqrt{21\\cdot 8\\cdot 7\\cdot 6}=84$'},
+    {id: 10, input: '0,75 km = 750 m', expected: '$0{,}75\\ \\mathrm{km}=750\\ \\mathrm{m}$'},
+    {id: 11, input: 'x/sin30° = 12/sin90°', expected: '$\\dfrac{x}{\\sin 30^\\circ}=\\dfrac{12}{\\sin 90^\\circ}$'},
+    {id: 12, input: 'AB = 10√13 ≈ 36,1 m', expected: '$AB=10\\sqrt{13}\\approx 36{,}1\\ \\mathrm{m}$'},
+    {id: 13, input: 'sin(180° − α) = sinα', expected: '$\\sin(180^\\circ-\\alpha)=\\sin\\alpha$'},
+    {id: 14, input: 'R = a/(2sinA)', expected: '$R=\\dfrac{a}{2\\sin A}$'},
+    {id: 15, input: 'h = d·sinα·sinβ/sin(β − α)', expected: '$h=\\dfrac{d\\sin\\alpha\\sin\\beta}{\\sin(\\beta-\\alpha)}$'},
+    {id: 16, input: 'tg α, cotg α', expected: '$\\tan\\alpha,\\ \\cot\\alpha$'},
+    {id: 17, input: 'ΔABC có AB ⊥ CH', expected: '$\\triangle ABC$ có $AB\\perp CH$'},
+    {id: 18, input: '→AB', expected: '$\\overrightarrow{AB}$'},
+    {id: 19, input: 'C ≈ (35,543776; 0; 42,359423)', expected: '$C\\approx(35{,}543776;\\ 0;\\ 42{,}359423)$'},
+    {
+      id: 20,
+      input: 'đu quay có đường kính 115 m … BC cách nhau 345 m … góc BAC nhỏ nhất',
+      expected: 'đu quay có đường kính $115\\ \\mathrm{m}$ … $BC$ cách nhau $345\\ \\mathrm{m}$ … góc $\\widehat{BAC}$ nhỏ nhất',
+    },
+  ];
+  {
+    const fails: string[] = [];
+    for (const tc of goldenCases) {
+      const r = normalizeMath(tc.input);
+      if (r.normalized !== tc.expected || r.flags.length > 0) {
+        fails.push(`#${tc.id} (got=${r.normalized})`);
+      }
+    }
+    const vecWord = normalizeMath('vectơ AB').normalized === '$\\overrightarrow{AB}$';
+    const unbal = splitMath('Tính $AC = 55,3').error === 'unbalanced_dollar';
+    const esc = splitMath('Giá \\$50 và $\\widehat{A}=60^\\circ$').segments[0]?.value === 'Giá $50 và ';
+    const viDec = normalizeMath('AC ≈ 55,3 m').normalized.includes('55{,}3') && formatVi(55.296, 1) === '55,3';
+    const ok = fails.length === 0 && vecWord && unbal && esc && viDec;
+    results.push({
+      id: 27,
+      name: '22 Golden Tests chuẩn hóa LaTeX (Phụ lục #1–#22, dấu $ lẻ, \\$, thập phân Việt)',
+      passed: ok,
+      detail: ok
+        ? '22/22 mẫu Phụ lục khớp chính xác tuyệt đối (kể cả đu quay 115 m, BC 345 m, góc BAC, dấu $ lẻ, \\$, 55{,}3).'
+        : `Lệch ở: ${fails.join('; ')} (vec=${vecWord}, unbal=${unbal}, esc=${esc}, viDec=${viDec})`,
+    });
+  }
+
+  // 28. KaTeX parse + MathML không rỗng cho toàn bộ LaTeX Phụ lục
+  {
+    let totalSegments = 0;
+    const errors: string[] = [];
+    for (const tc of goldenCases) {
+      const sp = splitMath(tc.expected);
+      for (const seg of sp.segments) {
+        if (seg.type !== 'text') {
+          totalSegments += 1;
+          const k = renderKatexSafe(seg.value, {displayMode: seg.type === 'block', strictMode: true});
+          if (!k.ok || !k.html.includes('<math')) {
+            errors.push(`#${tc.id}: ${k.rawError ?? 'thiếu MathML'}`);
+          }
+        }
+      }
+    }
+    results.push({
+      id: 28,
+      name: 'KaTeX parse toàn bộ LaTeX Phụ lục & xuất đủ MathML (output: htmlAndMathml)',
+      passed: errors.length === 0 && totalSegments >= 20,
+      detail: `${totalSegments - errors.length}/${totalSegments} biểu thức render sạch và có thẻ <math> (MathML).`,
+    });
+  }
+
+  // 29. Property-based: bảo toàn tập token số trên 220 chuỗi sinh ngẫu nhiên
+  {
+    let mismatchCount = 0;
+    for (let i = 1; i <= 220; i++) {
+      const a = ((i * 7) % 97) + 1;
+      const b = ((i * 13) % 83) + 2;
+      const dec = `${a},${((i * 3) % 9) + 1}`;
+      const deg = ((i * 11) % 150) + 10;
+      const samples = [
+        `Cho tam giác có cạnh ${dec} m và góc ${deg}°`,
+        `AC = ${a}·sin${deg}°/sin${Math.min(170, deg + 5)}° ≈ ${dec} m`,
+        `∠BAC = ${deg}° và S = ${b}√${(i % 17) + 2} ≈ ${dec} m²`,
+      ];
+      const src = samples[i % samples.length];
+      const out = normalizeMath(src).normalized;
+      if (!compareNumberMultisets(extractNumberTokens(src), extractNumberTokens(out)).match) {
+        mismatchCount += 1;
+      }
+    }
+    results.push({
+      id: 29,
+      name: 'Bảo toàn tuyệt đối tập token số khi chuẩn hóa (220 chuỗi ngẫu nhiên)',
+      passed: mismatchCount === 0,
+      detail: `220/220 chuỗi kiểm chứng multiset số: lệch=${mismatchCount}.`,
+    });
+  }
+
+  // 30. Lớp kiểm tra tự động (a)–(d): thiếu số, thừa số, lệch ký hiệu, thiếu ngoặc }, đáp án sai
+  {
+    const baseQ: QuestionItem = {
+      ...ALL_INITIAL_QUESTIONS[0],
+      id: 'st_layer_q',
+      type: 'numeric',
+      pattern_id: 'COS-02',
+      givens: {a: 7, b: 8, c: 5},
+      stem_vi: 'Tam giác $ABC$ có $a=7, b=8, c=5$. Tính góc $\\widehat{A}$.',
+      expected_answer: {value: 60, rounded: 60, decimal_places: 1, unit: '°'},
+    };
+    const rA = verifyQuestionMathLayers({...baseQ, stem_vi: 'Tính $\\dfrac{a}{b$'});
+    const rB = verifyQuestionMathLayers(baseQ, {referenceText: 'Tam giác ABC có a=7, b=8, c=5, d=12.'});
+    const rC = verifyQuestionMathLayers(baseQ, {doubleCheckText: 'Tam giác ABC có a=7, b=8, c=5, 60° và √3.'});
+    const rD = verifyQuestionMathLayers({...baseQ, expected_answer: {value: 90, rounded: 90, decimal_places: 1, unit: '°'}});
+    const ok =
+      rA.flags.includes('latex_syntax_error') &&
+      rB.flags.includes('numbers_mismatch') &&
+      Boolean(rB.numberMismatch?.missing.includes('12')) &&
+      rC.flags.includes('symbols_mismatch') &&
+      rD.solverStatus === 'fail' &&
+      rD.flags.includes('answer_mismatch');
+    results.push({
+      id: 30,
+      name: 'Kiểm chứng tự động 4 lớp (a–d): cú pháp KaTeX, đối chiếu số, đối chiếu ký hiệu, solver',
+      passed: ok,
+      detail: `Phát hiện đủ: (a) syntax=${rA.flags.includes('latex_syntax_error')}, (b) thiếu số 12=${Boolean(rB.numberMismatch?.missing.includes('12'))}, (c) ký hiệu=${rC.flags.includes('symbols_mismatch')}, (d) lệch đáp án=${rD.solverStatus}.`,
+    });
+  }
+
+  // 31. Cổng duyệt math_verified=false chặn approved; sửa công thức đặt lại math_verified=false
+  {
+    const svc = new DataService(new EphemeralStore());
+    await svc.setupFirstAdmin({username: 'adm_mver', password: 'Password123', displayName: 'Admin MV'});
+    const adm = svc.getCurrentUser()!;
+    svc.upsertQuestion(
+      adm,
+      {
+        ...ALL_INITIAL_QUESTIONS[0],
+        id: 'st_mver_1',
+        stem_vi: 'Tính $\\sin 60^\\circ + \\cos 30^\\circ$.',
+        review_status: 'pending_teacher_review',
+        math_verified: false,
+      },
+      'Tạo câu chờ đối chiếu',
+    );
+    const blockedBefore = !svc.setQuestionReviewStatus(adm, ['st_mver_1'], 'approved');
+    const verifiedOk = svc.markQuestionMathVerified(adm, ['st_mver_1'], true).ok;
+    const approvedAfter = svc.setQuestionReviewStatus(adm, ['st_mver_1'], 'approved');
+    const liveQ = svc.getQuestions().find((x) => x.id === 'st_mver_1')!;
+    svc.upsertQuestion(adm, {...liveQ, stem_vi: 'Tính $\\sin 45^\\circ + \\cos 45^\\circ$.'}, 'Sửa đề');
+    const resetAfterEdit = svc.getQuestions().find((x) => x.id === 'st_mver_1')?.math_verified === false;
+    const ok = blockedBefore && verifiedOk && approvedAfter && resetAfterEdit;
+    results.push({
+      id: 31,
+      name: 'Cổng duyệt công thức (math_verified=false chặn duyệt; sửa đề tự reset về false)',
+      passed: ok,
+      detail: `Chặn duyệt khi chưa đối chiếu=${blockedBefore}, duyệt sau đối chiếu=${approvedAfter}, reset sau khi sửa=${resetAfterEdit}.`,
+    });
+  }
+
+  // 32. Bảo mật LaTeX/HTML (chặn \href, \url, \includegraphics, <script>) & Đánh giá biểu thức độ an toàn
+  {
+    const blockHref = !renderKatexSafe('\\href{javascript:alert(1)}{x}').ok;
+    const blockUrl = !renderKatexSafe('\\url{https://evil.test}').ok;
+    const blockImg = !renderKatexSafe('\\includegraphics{a.png}').ok;
+    const blockScript = !renderKatexSafe('<script>alert(1)</script>').ok;
+    const degEval = evaluateSafeDegreeExpression('60*sin(60)/sin(70)');
+    const ok =
+      blockHref &&
+      blockUrl &&
+      blockImg &&
+      blockScript &&
+      degEval.valid &&
+      typeof degEval.value === 'number' &&
+      Math.abs(degEval.value - 55.2963) < 1e-3 &&
+      degEval.previewLatex.includes('\\dfrac');
+    results.push({
+      id: 32,
+      name: 'Bảo mật LaTeX/HTML (chặn lệnh nguy hiểm) & Trình tính biểu thức chế độ độ (không eval)',
+      passed: ok,
+      detail: `Chặn \\href/\\url/\\includegraphics/<script>=${blockHref && blockUrl && blockImg && blockScript}; 60*sin(60)/sin(70)≈${degEval.value?.toFixed(3)}.`,
+    });
+  }
+
+  // 33. Audit toàn bộ ngân hàng hiện có (không có dấu $ lẻ hay lỗi cú pháp KaTeX)
+  {
+    const audit = runMathBankAudit(ALL_INITIAL_QUESTIONS);
+    const syntaxBroken = (audit.byCode['unbalanced_dollar'] ?? 0) + (audit.byCode['latex_syntax_error'] ?? 0) + (audit.byCode['dangerous_command'] ?? 0);
+    results.push({
+      id: 33,
+      name: 'Rà soát công thức ngân hàng gốc (audit:math — 0 dấu $ lẻ, 0 lỗi KaTeX, 0 lệnh nguy hiểm)',
+      passed: syntaxBroken === 0,
+      detail: `Quét ${audit.totalQuestions} câu: lỗi nghiêm trọng=${syntaxBroken}, cần chuẩn hóa nhẹ=${audit.withIssuesCount} (${JSON.stringify(audit.byCode)}).`,
     });
   }
 

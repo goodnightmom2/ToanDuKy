@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Calculator,
   CheckCircle2,
   HelpCircle,
   Lightbulb,
@@ -7,6 +8,7 @@ import {
   Pause,
 } from 'lucide-react';
 import {gradeQuestion, shouldOfferHelp} from '../math/grader.ts';
+import {evaluateSafeDegreeExpression} from '../math/mathEngine.ts';
 import type {GradeResult, QuestionItem, QuestionMode} from '../types.ts';
 import {soundEngine} from '../utils/audio.ts';
 import {MathText} from './MathText.tsx';
@@ -63,6 +65,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
 
   // Inputs by type
   const [textAnswer, setTextAnswer] = React.useState('');
+  const [showMathKeypad, setShowMathKeypad] = React.useState(false);
   const [selectedChoice, setSelectedChoice] = React.useState('');
   const [trueFalseMap, setTrueFalseMap] = React.useState<Record<string, boolean>>({});
   const [matchingMap, setMatchingMap] = React.useState<Record<string, string>>({});
@@ -294,8 +297,20 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
 
       {/* Question stem */}
       <div className="text-[17px] leading-relaxed font-medium text-[#14284A]">
-        <MathText text={question.stem_vi} />
+        <MathText text={question.stem_vi} formulaImage={question.formula_image} />
       </div>
+
+      {/* Optional cropped private figure from PDF import */}
+      {question.figure_crop && !question.diagramData && (
+        <div className="p-2.5 rounded-xl bg-white border border-[#D9C293] flex justify-center">
+          <img
+            src={question.figure_crop}
+            alt="Hình minh họa câu hỏi"
+            className="max-h-56 w-auto rounded-lg object-contain"
+            loading="lazy"
+          />
+        </div>
+      )}
 
       {/* Optional 2D geometric diagram */}
       {question.diagramData && (
@@ -320,19 +335,38 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
           : '';
         const needsFreeUnit = Boolean(expectedUnitRaw && !question.fixedUnitLabel);
         const quickUnits = ['m', 'cm', 'km', 'm²', '°'];
+        const mathKeys = ['sin(', 'cos(', 'tan(', '√(', 'π', '°', '^', '/', '(', ')', '·'];
+        const hasExpressionSyntax = /[+\-*/^()√]|sin|cos|tan|cot|sqrt|pi/i.test(textAnswer);
+        const exprPreview = hasExpressionSyntax ? evaluateSafeDegreeExpression(textAnswer) : null;
         const applyQuickUnit = (u: string) => {
           const baseNum = textAnswer.trim().replace(/\s*[a-zA-ZÀ-ỹ°^2²]+$/, '').trim();
           setTextAnswer(baseNum ? `${baseNum} ${u}` : u);
         };
         return (
           <div className="space-y-3">
-            <label className="block text-sm font-semibold text-[#1F3B63]">
-              Nhập kết quả của em (dùng dấu phẩy hoặc dấu chấm đều được):
-            </label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="block text-sm font-semibold text-[#1F3B63]">
+                Nhập kết quả của em (dùng dấu phẩy hoặc dấu chấm đều được):
+              </label>
+              {!solved && (
+                <button
+                  type="button"
+                  onClick={() => setShowMathKeypad((v) => !v)}
+                  className={`px-2.5 py-1 rounded-lg border text-xs font-bold inline-flex items-center gap-1 !min-h-[32px] ${
+                    showMathKeypad
+                      ? 'bg-[#14284A] text-[#FFFBF0] border-[#14284A]'
+                      : 'bg-[#FFFBF0] text-[#14284A] border-[#CBB17D]'
+                  }`}
+                >
+                  <Calculator className="w-3.5 h-3.5" />
+                  {showMathKeypad ? 'Ẩn bàn phím Toán' : 'Bàn phím Toán'}
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-2 w-full">
               <input
                 type="text"
-                inputMode={needsFreeUnit ? 'text' : 'decimal'}
+                inputMode={needsFreeUnit || showMathKeypad ? 'text' : 'decimal'}
                 value={textAnswer}
                 onChange={(e) => setTextAnswer(e.target.value)}
                 disabled={solved}
@@ -348,6 +382,56 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
                 </span>
               )}
             </div>
+
+            {/* Live KaTeX expression preview (Section 8) */}
+            {exprPreview && (
+              <div
+                className={`px-3 py-2 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                  exprPreview.valid
+                    ? 'bg-[#EEF6FB] border-[#9CD5CA] text-[#14284A]'
+                    : 'bg-[#FFF5E2] border-[#E0A93B] text-[#8A5108]'
+                }`}
+              >
+                {exprPreview.valid ? (
+                  <>
+                    <span>
+                      <strong>Máy đọc biểu thức (chế độ độ DEG):</strong>{' '}
+                      <MathText text={exprPreview.previewLatex} />
+                    </span>
+                    <span className="font-bold text-[#18685B] tabular-nums">
+                      ≈ {exprPreview.value !== undefined ? exprPreview.value.toFixed(3).replace('.', ',') : ''}
+                    </span>
+                  </>
+                ) : (
+                  <span>
+                    <strong>Kiểm tra cú pháp biểu thức:</strong> {exprPreview.error_vi}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Compact Student Math Keypad (Section 8) */}
+            {showMathKeypad && !solved && (
+              <div className="p-2.5 rounded-xl bg-[#FFFBF0] border border-[#D9C293] flex flex-wrap gap-1.5">
+                {mathKeys.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setTextAnswer((prev) => `${prev}${k}`)}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-[#CBB17D] font-bold text-xs text-[#14284A] hover:bg-[#FFF4D6] !min-h-[36px]"
+                  >
+                    {k}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setTextAnswer((prev) => prev.slice(0, -1))}
+                  className="px-3 py-1.5 rounded-lg bg-[#FFF4D6] border border-[#D5B87E] font-bold text-xs text-[#8A5108] !min-h-[36px]"
+                >
+                  ⌫ Xóa
+                </button>
+              </div>
+            )}
             {needsFreeUnit && !solved && (
               <div className="flex flex-wrap items-center gap-1.5 text-xs">
                 <span className="font-semibold text-[#5B6B82]">Chọn nhanh đơn vị:</span>
@@ -532,7 +616,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
                           : 'bg-[#FFFBF0] text-[#14284A] border-[#CBB17D]'
                       }`}
                     >
-                      ∠{v}
+                      <MathText text={`$\\widehat{${v}}$`} />
                     </button>
                   );
                 })}
@@ -544,24 +628,14 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
 
       {question.type === 'fill_relation' && question.fillRelationTemplate && (
         <div className="space-y-3">
-          <div className="p-4 rounded-2xl bg-white border-2 border-[#D5B87E] flex flex-wrap items-center justify-center gap-4 text-lg font-bold text-[#14284A]">
-            <div className="flex flex-col items-center">
-              <span className="px-3 pb-1 border-b-2 border-[#14284A]">
-                {question.fillRelationTemplate.leftNumerator}
-              </span>
-              <span className="pt-1 text-[#18685B]">
-                sin({fillLeft !== undefined ? `${fillLeft}°` : '?'})
-              </span>
-            </div>
-            <span className="text-2xl">=</span>
-            <div className="flex flex-col items-center">
-              <span className="px-3 pb-1 border-b-2 border-[#14284A]">
-                {question.fillRelationTemplate.rightNumerator}
-              </span>
-              <span className="pt-1 text-[#8A5608]">
-                sin({fillRight !== undefined ? `${fillRight}°` : '?'})
-              </span>
-            </div>
+          <div className="p-4 rounded-2xl bg-white border-2 border-[#D5B87E] flex flex-wrap items-center justify-center gap-3 text-lg font-bold text-[#14284A]">
+            <MathText
+              text={`$$\\dfrac{${question.fillRelationTemplate.leftNumerator}}{\\sin ${
+                fillLeft !== undefined ? `${fillLeft}^\\circ` : '?'
+              }}=\\dfrac{${question.fillRelationTemplate.rightNumerator}}{\\sin ${
+                fillRight !== undefined ? `${fillRight}^\\circ` : '?'
+              }}$$`}
+            />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

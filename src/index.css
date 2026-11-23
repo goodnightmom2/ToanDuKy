@@ -69,10 +69,44 @@
   }
 }
 
-/* KaTeX sizing for crisp readability (>= 20px) */
+/* KaTeX sizing & font protection (>= 1.18em, crisp contrast, never overridden by Baloo 2 / Tailwind) */
+:root {
+  --math-font-scale: 1;
+}
+
+html[data-math-scale="large"] {
+  --math-font-scale: 1.2;
+}
+
 .katex {
-  font-size: 1.25em !important;
+  font-family: KaTeX_Main, "Times New Roman", serif !important;
+  font-size: calc(1.18em * var(--math-font-scale, 1)) !important;
   color: var(--ink-900);
+  line-height: 1.35;
+}
+
+.katex-display {
+  margin: 0.35em 0 !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding-bottom: 2px;
+}
+
+.math-text-root {
+  overflow-wrap: break-word;
+}
+
+.math-block-scroll,
+.math-inline-wrap {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+/* Ensure formulas inside MCQ/radio buttons keep full tap target & never clip at 360px */
+button .math-inline-wrap {
+  vertical-align: middle;
+  max-width: 100%;
 }
 
 .tabular-nums {
@@ -441,16 +475,27 @@
   transition-duration: 0.01ms !important;
 }
 
-/* Print styles for Phiếu kết quả khảo sát */
+/* Print styles for Phiếu kết quả khảo sát (preserve KaTeX fonts & avoid broken formulas) */
 @media print {
   .no-print {
     display: none !important;
   }
   body {
     background: #ffffff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .notebook-card {
     box-shadow: none !important;
     border: 1px solid #999 !important;
+    break-inside: avoid;
+  }
+  .katex {
+    font-family: KaTeX_Main, "Times New Roman", serif !important;
+    color: #000000 !important;
+  }
+  .math-block-scroll,
+  .math-inline-wrap {
+    overflow: visible !important;
   }
 }
