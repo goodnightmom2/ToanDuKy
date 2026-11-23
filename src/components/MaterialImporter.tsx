@@ -58,7 +58,7 @@ import {
 } from '../services/importBatchService.ts';
 import {
   clusterToDefaultStation,
-  parseDocxArrayBuffer,
+  parseDocxDetailed,
   parseSection11Json,
 } from '../services/materialImport.ts';
 import {
@@ -139,7 +139,10 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const taxonomy = React.useMemo(() => dataService.getTaxonomy(false), [existingQuestions.length]);
   const savedBatches = React.useMemo(() => dataService.getImportBatches(user), [user, existingQuestions.length]);
   const confidenceThreshold = settings.autoApproveConfidenceThreshold ?? 0.85;
-  const activeModel = settings.aiModel?.trim() || 'gemini-3.1-flash-lite';
+  const activeModel =
+    settings.aiModel?.trim() && settings.aiModel.trim() !== 'gemini-3.1-flash-lite'
+      ? settings.aiModel.trim()
+      : 'gemini-2.5-flash';
   const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-2.5-pro';
 
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
@@ -392,7 +395,10 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     abortRef.current = ctrl;
 
     const batchBase = batchOverride ?? activeBatch;
-    const token = await dataService.getAccessToken();
+    let token = await dataService.getAccessToken();
+    if (!token) {
+      token = await dataService.getAccessToken(true);
+    }
     const customPatterns = customPatternsText
       .split(/\r?\n/)
       .map((s) => s.trim())
@@ -589,12 +595,29 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       ).length;
       const verifiedCount = stitched.filter((d) => d.verified_by_code === 'pass').length;
       const failCount = stitched.filter((d) => d.verified_by_code === 'fail').length;
+      const failedPages = updatedPagesState.filter((p) => p.status === 'error');
+      const firstPageError = failedPages.find((p) => p.errorMessage)?.errorMessage;
 
-      setStatusMsg(
-        `Hoàn tất tách ${stitched.length} câu hỏi (${stitched.length - outCount} câu Chương III${outCount > 0 ? `, ${outCount} câu Ngoài chương` : ''}). ` +
-          `Ghép đáp án: ${merged.matchedCount} câu · Code kiểm chứng khớp: ${verifiedCount}${failCount > 0 ? `, lệch: ${failCount}` : ''} · ` +
-          `Đã dùng ${aiCallsUsed} lượt AI${cacheHits > 0 ? ` (tái dùng cache ${cacheHits} nhóm = 0 lượt)` : ''}.`,
-      );
+      if (failedPages.length > 0 && stitched.length === 0) {
+        setErrorMsg(
+          `Không tách được câu hỏi nào (${failedPages.length}/${updatedPagesState.length} trang lỗi): ${
+            firstPageError || 'Máy chủ AI tạm thời không phản hồi.'
+          } Bạn có thể bấm "Thử lại" trên từng trang hoặc kiểm tra đăng nhập/hạn mức AI.`,
+        );
+      } else {
+        if (failedPages.length > 0) {
+          setErrorMsg(
+            `Có ${failedPages.length} trang lỗi (${failedPages.map((p) => `Tr.${p.pagePdf}`).join(', ')}): ${
+              firstPageError || 'Hãy bấm "Thử lại" ở từng trang bị lỗi.'
+            }`,
+          );
+        }
+        setStatusMsg(
+          `Hoàn tất tách ${stitched.length} câu hỏi (${stitched.length - outCount} câu Chương III${outCount > 0 ? `, ${outCount} câu Ngoài chương` : ''}). ` +
+            `Ghép đáp án: ${merged.matchedCount} câu · Code kiểm chứng khớp: ${verifiedCount}${failCount > 0 ? `, lệch: ${failCount}` : ''} · ` +
+            `Đã dùng ${aiCallsUsed} lượt AI${cacheHits > 0 ? ` (tái dùng cache ${cacheHits} nhóm = 0 lượt)` : ''}.`,
+        );
+      }
     } finally {
       setBusy(false);
       setBusyMessage('');
@@ -630,7 +653,8 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         return;
       }
 
-      const token = await dataService.getAccessToken();
+      let token = await dataService.getAccessToken();
+      if (!token) token = await dataService.getAccessToken(true);
       const res = await extractWindowViaAi({
         pages: [targetPage],
         fileName: sourceName,
@@ -710,44 +734,95 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
     setBusy(true);
     setStepperStep(3);
-    setBusyMessage('Đang trích xuất & phân dạng từ văn bản dán...');
+    setBusyMessage('Đang trích xuất & phân dạng từ văn bản...');
     try {
-      const token = await dataService.getAccessToken();
-      const sha = await computeSha256Hex(new TextEncoder().encode(importText));
-      const res = await extractWindowViaAi({
-        pages: [],
-        pastedText: importText,
-        fileName: sourceName,
-        fileSha256: sha,
-        driveFileId,
-        accessToken: token,
-        maxDaily: settings.aiDailyQuotaLimit,
-        aiEnabled: settings.aiEnabled,
-        classificationMode,
-        taxonomy,
-        model: activeModel,
-      });
-      if (res.quota) {
-        setAiStatus((prev) => ({
-          configured: prev?.configured ?? true,
-          model: res.usedModel || prev?.model || activeModel,
-          dailyUsed: res.quota!.used,
-          dailyLimit: res.quota!.limit,
-          remaining: res.quota!.remaining,
-          date: res.quota!.date,
-        }));
+      let token = await dataService.getAccessToken();
+      if (!token) token = await dataService.getAccessToken(true);
+
+      // Split long Word/text documents into ~6,500-char chunks at question/paragraph boundaries
+      const MAX_CHUNK = 6500;
+      const chunks: string[] = [];
+      if (importText.length <= MAX_CHUNK) {
+        chunks.push(importText);
+      } else {
+        const lines = importText.split(/\r?\n/);
+        let cur = '';
+        for (const ln of lines) {
+          const isQuestionStart = /^(?:Câu\s+\d+|Bài\s+\d+|\[Mức độ|PHẦN\s+[I123])/i.test(ln.trim());
+          if (cur.length > 3500 && (isQuestionStart || cur.length + ln.length > MAX_CHUNK)) {
+            chunks.push(cur.trim());
+            cur = ln;
+          } else {
+            cur = cur ? `${cur}\n${ln}` : ln;
+          }
+        }
+        if (cur.trim()) chunks.push(cur.trim());
       }
-      if (res.error) {
-        setErrorMsg(res.error);
+
+      const allItems: QuestionItem[] = [];
+      const allKeys: AnswerKeyEntry[] = [];
+      let lastErr = '';
+
+      for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
+        setBusyMessage(
+          chunks.length > 1
+            ? `Đang trích xuất đoạn ${cIdx + 1}/${chunks.length} bằng AI...`
+            : 'Đang trích xuất & phân dạng từ văn bản...',
+        );
+        const chunkText = chunks[cIdx];
+        const sha = await computeSha256Hex(new TextEncoder().encode(chunkText));
+        const res = await extractWindowViaAi({
+          pages: [],
+          pastedText: chunkText,
+          fileName: sourceName,
+          fileSha256: sha,
+          driveFileId,
+          accessToken: token,
+          maxDaily: settings.aiDailyQuotaLimit,
+          aiEnabled: settings.aiEnabled,
+          classificationMode,
+          taxonomy,
+          model: activeModel,
+        });
+        if (res.quota) {
+          setAiStatus((prev) => ({
+            configured: prev?.configured ?? true,
+            model: res.usedModel || prev?.model || activeModel,
+            dailyUsed: res.quota!.used,
+            dailyLimit: res.quota!.limit,
+            remaining: res.quota!.remaining,
+            date: res.quota!.date,
+          }));
+        }
+        if (res.error) {
+          lastErr = res.error;
+          if (res.quotaExceeded) break;
+          continue;
+        }
+        allItems.push(...res.items);
+        allKeys.push(...res.answerKeys);
+      }
+
+      if (allItems.length === 0 && lastErr) {
+        setErrorMsg(lastErr);
         setShowManualFallback(true);
         return;
       }
-      const merged = applyAnswerKeysToDrafts(res.items, res.answerKeys);
+
+      const deduped = stitchAndDedupeExtractedDrafts(allItems);
+      if (allKeys.length === 0) {
+        allKeys.push(...parseAnswerKeyTableText(importText));
+      }
+      const merged = applyAnswerKeysToDrafts(deduped, allKeys);
+      setAnswerKeys(allKeys);
       setDraftItems(merged.items);
       setSelectedIds(merged.items.filter((d) => d.pattern_id !== 'OUT-00').map((d) => d.id));
       setStepperStep(5);
+      if (lastErr) {
+        setErrorMsg(`Một phần văn bản gặp lỗi khi trích xuất: ${lastErr}`);
+      }
       setStatusMsg(
-        `Đã trích xuất ${merged.items.length} câu từ văn bản dán (gắn cờ không có ảnh — no_image).`,
+        `Đã trích xuất ${merged.items.length} câu từ văn bản (${chunks.length} đoạn). Hãy kiểm tra công thức và bấm "Đã đối chiếu công thức" trước khi lưu ngân hàng.`,
       );
     } finally {
       setBusy(false);
@@ -808,10 +883,21 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         setStatusMsg(`Đã đọc ${enriched.length} câu từ JSON (${fileName}). Tất cả ở trạng thái Chờ Admin duyệt.`);
       } else if (lower.endsWith('.docx')) {
         setBusy(true);
-        const extracted = await parseDocxArrayBuffer(buf);
-        setImportText(extracted);
+        const docxRes = await parseDocxDetailed(buf);
+        setImportText(docxRes.text);
         setStepperStep(2);
-        setStatusMsg(`Đã tách văn bản từ Word (${fileName}, ${extracted.length} ký tự). Bấm "Trích xuất câu hỏi bằng AI" để tách & phân dạng.`);
+        if (docxRes.warning_vi) {
+          setErrorMsg(docxRes.warning_vi);
+        }
+        setStatusMsg(
+          docxRes.ommlCount > 0
+            ? `Đã đọc tệp Word (${fileName}, ${docxRes.text.length} ký tự) và khôi phục ${docxRes.ommlCount} công thức Toán sang LaTeX. Bấm "Trích xuất & phân dạng bằng AI" bên dưới.`
+            : `Đã tách văn bản từ Word (${fileName}, ${docxRes.text.length} ký tự). ${
+                docxRes.hasMissingMathTypeEquations
+                  ? 'Tệp có công thức MathType nhúng — khuyến nghị lưu sang PDF rồi tải lên để AI đọc trực tiếp từ ảnh.'
+                  : 'Bấm "Trích xuất & phân dạng bằng AI" để tách & phân dạng.'
+              }`,
+        );
       } else {
         const text = new TextDecoder('utf-8').decode(buf);
         setImportText(text);

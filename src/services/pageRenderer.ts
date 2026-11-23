@@ -142,10 +142,15 @@ export async function renderPdfPageToImages(
 ): Promise<CachedPageImage | null> {
   if (typeof document === 'undefined') return null;
 
-  const scale = options?.scale ?? 2.2;
-  const quality = options?.quality ?? 0.84;
+  const scale = options?.scale ?? 1.75;
+  const quality = options?.quality ?? 0.8;
 
-  const viewport = pdfPage.getViewport({scale});
+  const baseViewport = pdfPage.getViewport({scale});
+  // Cap width at 1400px so 2 pages in a window stay well under Vercel's 4.5 MB body limit
+  const maxWidth = 1400;
+  const effectiveScale =
+    baseViewport.width > maxWidth ? scale * (maxWidth / baseViewport.width) : scale;
+  const viewport = pdfPage.getViewport({scale: effectiveScale});
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(viewport.width));
   canvas.height = Math.max(1, Math.round(viewport.height));
@@ -156,11 +161,11 @@ export async function renderPdfPageToImages(
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await pdfPage.render({canvasContext: ctx, viewport, canvas}).promise;
 
-  // Compress JPEG so payload stays <= 1.2 MB even on dense exam pages
+  // Compress JPEG so each page stays <= 650 KB dataURL (~480 KB binary) -> 2 pages <= 1.3 MB!
   let q = quality;
   let dataUrl = canvas.toDataURL('image/jpeg', q);
-  while (dataUrl.length > 1_550_000 && q > 0.45) {
-    q -= 0.1;
+  while (dataUrl.length > 680_000 && q > 0.42) {
+    q -= 0.08;
     dataUrl = canvas.toDataURL('image/jpeg', q);
   }
   const imageBase64 = dataUrl.split(',')[1] ?? '';

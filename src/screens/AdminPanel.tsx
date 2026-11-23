@@ -236,7 +236,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [mapUploadMsg, setMapUploadMsg] = React.useState('');
   const [aiEnabled, setAiEnabled] = React.useState(settings.aiEnabled);
   const [aiQuota, setAiQuota] = React.useState(settings.aiDailyQuotaLimit);
-  const [aiModel, setAiModel] = React.useState(settings.aiModel ?? 'gemini-3.1-flash-lite');
+  const [aiModel, setAiModel] = React.useState(settings.aiModel ?? 'gemini-2.5-flash');
   const [aiHardPageModel, setAiHardPageModel] = React.useState(
     settings.aiHardPageModel ?? 'gemini-2.5-pro',
   );
@@ -2823,7 +2823,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 value={aiModel}
                 onChange={(e) => setAiModel(e.target.value)}
                 disabled={!isAdmin}
-                placeholder="gemini-3.1-flash-lite"
+                placeholder="gemini-2.5-flash"
                 className="w-full px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-mono"
               />
             </div>

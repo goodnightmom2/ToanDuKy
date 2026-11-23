@@ -1,8 +1,7 @@
-import {ThinkingLevel, Type} from '@google/genai';
 import {
-  AI_FALLBACK_MODEL,
   AI_HARD_PAGE_MODEL,
   AI_MODEL,
+  buildModelFallbackChain,
   checkAndConsumeQuota,
   DAILY_QUOTA_DEFAULT,
   fixLatexControlChars,
@@ -41,48 +40,117 @@ interface ExtractBody {
   customPatterns?: string[];
   modelOverride?: string;
   useHardPageModel?: boolean;
-  doubleCheck?: boolean;
-  latexFixError?: string;
 }
 
-const APPENDIX_B_SYSTEM_PROMPT = `Bạn là trợ lý số hóa đề Toán THPT Việt Nam (${PROMPT_VERSION}, chuẩn latex-1). Bạn nhận ảnh độ phân giải cao và/hoặc văn bản của 1–3 trang PDF. Hãy tách TỪNG câu hỏi và chỉ trả về JSON đúng lược đồ, không thêm giải thích hay markdown.
+const APPENDIX_B_SYSTEM_PROMPT = `Bạn là trợ lý số hóa đề Toán THPT Việt Nam (${PROMPT_VERSION}, chuẩn latex-1). Bạn nhận ảnh và/hoặc văn bản của 1–3 trang đề Toán. Hãy tách TỪNG câu hỏi và CHỈ trả về JSON hợp lệ (không thêm giải thích hay markdown).
 Quy tắc BẮT BUỘC:
-(1) Chỉ dựa vào nội dung đang thấy, KHÔNG bịa đề, KHÔNG "đẹp hóa" hay tự sửa số liệu; chỗ không chắc ghi flags ("formula_uncertain", "figure_missing", "cut_off_at_page_end", "cut_off_at_page_start") và hạ confidence. Thiếu đáp án -> expected_answer_key="", expected_numeric=null, thêm cờ "missing_answer".
+(1) Chỉ dựa vào nội dung đang thấy, KHÔNG bịa đề hay tự sửa số liệu; chỗ không chắc ghi vào flags ("formula_uncertain", "figure_missing", "cut_off_at_page_end", "cut_off_at_page_start") và hạ confidence. Thiếu đáp án -> expected_answer_key="", expected_numeric=null, thêm cờ "missing_answer".
 (2) Chuẩn LaTeX Chương III (đặt trong $...$ hoặc $$...$$; chữ tiếng Việt để NGOÀI $...$):
-    - Góc: $\\widehat{BAC}$, $\\widehat{A}$ (KHÔNG dùng ∠ hay \\angle). Độ: $50^\\circ$ (KHÔNG dùng ° trần trong $...$).
-    - Hàm lượng giác: $\\sin 60^\\circ$, $\\cos A$, $\\tan\\alpha$, $\\cot\\alpha$ (đổi tg→\\tan, cotg→\\cot).
+    - Góc: $\\widehat{BAC}$, $\\widehat{A}$. Độ: $50^\\circ$.
+    - Hàm lượng giác: $\\sin 60^\\circ$, $\\cos A$, $\\tan\\alpha$, $\\cot\\alpha$.
     - Phân số: $\\dfrac{AC}{\\sin 60^\\circ}$; Căn: $\\sqrt{3}$; Nhân: $\\cdot$; Tam giác: $\\triangle ABC$; Vuông góc: $AB\\perp CH$; Vectơ: $\\overrightarrow{AB}$.
-    - Số thập phân kiểu Việt trong công thức bọc ngoặc nhọn: $55{,}3$; đơn vị ngắn: $55{,}3\\ \\mathrm{m}$, $259{,}8\\ \\mathrm{m}^2$, $0{,}75\\ \\mathrm{km}$. Tọa độ: $(35{,}54;\\ 0;\\ 42{,}36)$.
-    - Ví dụ chuẩn (few-shot):
+    - Số thập phân kiểu Việt trong công thức bọc ngoặc nhọn: $55{,}3$; đơn vị ngắn: $55{,}3\\ \\mathrm{m}$, $259{,}8\\ \\mathrm{m}^2$, $0{,}75\\ \\mathrm{km}$.
+    - Ví dụ chuẩn:
       • "AC = 60·sin60°/sin70° ≈ 55,3 m" → "$AC=\\dfrac{60\\sin 60^\\circ}{\\sin 70^\\circ}\\approx 55{,}3\\ \\mathrm{m}$"
       • "cosA = (b²+c²−a²)/(2bc)" → "$\\cos A=\\dfrac{b^2+c^2-a^2}{2bc}$"
-      • "đu quay có đường kính 115 m, BC cách nhau 345 m, góc BAC nhỏ nhất" → "đu quay có đường kính $115\\ \\mathrm{m}$, $BC$ cách nhau $345\\ \\mathrm{m}$, góc $\\widehat{BAC}$ nhỏ nhất"
-(3) Nhận diện part ("I", "II", "III" hoặc ""), type ("mcq", "true_false_multi", "short_numeric", "matching", "fill_relation", "error_spot", "open_explain"), number (ví dụ "1", "17"), source_pattern_label ("Dạng n ..."), và nếu nhìn thấy vị trí câu trên trang ảnh thì điền question_bbox {page, x, y, w, h trong 0..1}.
-(4) Trắc nghiệm: mỗi lựa chọn một phần tử options[{key, text}] (A, B, C, D); đúng/sai nhiều ý: statements[{key, text}].
-(5) Nếu đề nhắc "như hình", "hình dưới", "hình vẽ": needs_figure=true; ưu tiên figure_spec, nếu không mô tả được điền figure_bbox {page, x, y, w, h trong 0..1}.
-(6) Trích givens (a, b, c, A_deg, B_deg, C_deg, R, r, S, d, alpha_deg, beta_deg, trig_fn, trig_value, quadrant, target, unit, decimal_places, v1, v2, t, value, fromUnit, toUnit) để máy tự giải kiểm chứng.
-(7) Phân loại theo taxonomy kèm theo: topic ("NEN"|"LG"|"COS"|"SIN"|"DT"|"MH"|"OUT"), pattern_id, level (1–4), skill_ids, anticipated_error_ids (E01–E12), hints_vi đúng 2 mức (mức 1 KHÔNG lộ đáp án), confidence (0..1), ai_reason. Ngoài Chương III -> topic="OUT", pattern_id="OUT-00".
-(8) Chỉ trang chứa "Đáp án / Lời giải / Hướng dẫn giải" mới trả answer_key: {number, part, examCode, answer, solution_vi}.
-(9) Câu bị cắt giữa hai trang: trả phần đang thấy và gắn cờ "cut_off_at_page_end" hoặc "cut_off_at_page_start".`;
+(3) Nhận diện part ("I", "II", "III" hoặc ""), type ("mcq", "true_false_multi", "short_numeric", "matching", "fill_relation", "error_spot", "open_explain"), number (ví dụ "1", "17"), source_pattern_label ("Dạng n ...").
+(4) Trắc nghiệm: options = [{"key":"A","text":"..."}, ...]; Đúng/sai 4 ý: statements = [{"key":"a","text":"...","is_true":true}, ...].
+(5) Nếu đề nhắc "như hình", "hình dưới", "hình vẽ": đặt needs_figure=true; ưu tiên figure_spec, nếu không mô tả được điền figure_bbox {"page":1,"x":0.1,"y":0.2,"w":0.4,"h":0.3}.
+(6) Trích givens (a, b, c, A_deg, B_deg, C_deg, R, r, S, d, alpha_deg, beta_deg, trig_fn, trig_value, quadrant, target, unit, decimal_places) để máy tự giải kiểm chứng.
+(7) Phân loại theo danh mục taxonomy kèm theo: topic ("NEN"|"LG"|"COS"|"SIN"|"DT"|"MH"|"OUT"), pattern_id, level (1–4), skill_ids, anticipated_error_ids (E01–E12), hints_vi đúng 2 mức (mức 1 KHÔNG lộ đáp án), confidence (0..1), ai_reason. Ngoài Chương III -> topic="OUT", pattern_id="OUT-00".
+(8) Nếu trang có bảng "Đáp án / Lời giải": trả thêm mảng answer_key = [{"number":"1","part":"I","examCode":"","answer":"A","solution_vi":"...","page_pdf":1}].
+(9) Lược đồ JSON BẮT BUỘC trả về:
+{
+  "items": [
+    {
+      "number": "1",
+      "part": "I",
+      "source_pattern_label": "",
+      "type": "mcq",
+      "stem_latex": "Cho tam giác $ABC$...",
+      "options": [{"key": "A", "text": "$...$"}, {"key": "B", "text": "$...$"}],
+      "statements": [],
+      "expected_answer_key": "A",
+      "expected_numeric": null,
+      "decimal_places": 1,
+      "unit": "m",
+      "solution_vi": "...",
+      "needs_figure": false,
+      "figure_spec": null,
+      "figure_bbox": null,
+      "givens": {},
+      "topic": "COS",
+      "pattern_id": "COS-01",
+      "proposed_pattern": "",
+      "level": 2,
+      "skill_ids": ["cos"],
+      "anticipated_error_ids": ["E05"],
+      "hints_vi": ["Gợi ý 1 không lộ đáp án", "Gợi ý 2"],
+      "confidence": 0.9,
+      "ai_reason": "...",
+      "flags": [],
+      "page_pdf": 1,
+      "page_print": "",
+      "source_excerpt": ""
+    }
+  ],
+  "answer_key": []
+}`;
+
+function parseJsonLoose(raw: string): Record<string, unknown> {
+  const cleaned = String(raw ?? '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch {
+    // Try locating outermost JSON object `{ ... }`
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      return JSON.parse(cleaned.slice(first, last + 1)) as Record<string, unknown>;
+    }
+    throw new Error('JSON_PARSE_FAILED');
+  }
+}
+
+function summarizeProviderError(rawMsg: string): string {
+  const m = rawMsg.toLowerCase();
+  if (m.includes('api key') || m.includes('permission_denied') || m.includes('403') || m.includes('401')) {
+    return 'Khóa GEMINI_API_KEY trên Vercel không hợp lệ hoặc bị hạn chế quyền.';
+  }
+  if (m.includes('resource_exhausted') || m.includes('quota') || m.includes('429')) {
+    return 'Tài khoản Google AI Studio (GEMINI_API_KEY) tạm chạm giới hạn tốc độ / hạn mức miễn phí (429). Hãy chờ 1 phút rồi thử lại.';
+  }
+  if (m.includes('404') || m.includes('not found')) {
+    return 'Model AI cấu hình trong Cài đặt không tồn tại trên Google AI Studio. Hệ thống đã tự thử các model dự phòng.';
+  }
+  if (m.includes('too large') || m.includes('413')) {
+    return 'Dung lượng ảnh trang PDF quá lớn — hãy đọc khoảng trang nhỏ hơn.';
+  }
+  return 'Máy chủ AI tạm thời không phản hồi cho nhóm trang này. Vui lòng thử lại sau vài giây.';
+}
 
 export async function POST(request: Request): Promise<Response> {
   const auth = await verifyRequestAuth(request, {requireStaff: true});
   if (!auth.ok) {
-    return jsonResponse({error: auth.error, fallbackToManual: true}, auth.status);
+    return jsonResponse({error: auth.error}, auth.status);
   }
 
   let body: ExtractBody = {};
   try {
     body = (await request.json()) as ExtractBody;
   } catch {
-    return jsonResponse({error: 'Dữ liệu JSON không hợp lệ.'}, 400);
+    return jsonResponse({error: 'Dữ liệu gửi lên vượt giới hạn hoặc không đúng định dạng JSON.'}, 400);
   }
 
   const {
     text = '',
     pages = [],
     pdfBase64 = '',
-    sourceName = 'Tài liệu tải lên',
+    sourceName = 'tai-lieu',
     driveFileId = '',
     maxDaily = DAILY_QUOTA_DEFAULT,
     aiEnabled = true,
@@ -95,24 +163,18 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!aiEnabled) {
     return jsonResponse(
-      {
-        error: 'Trợ lý AI đang tắt trong mục Cài đặt Quản trị. Hãy bật lại hoặc chuyển sang nhập tay.',
-        fallbackToManual: true,
-      },
+      {error: 'Trợ lý AI đang tắt trong Cài đặt. Vui lòng bật lại hoặc chuyển sang nhập tay.', fallbackToManual: true},
       403,
     );
   }
 
-  const trimmedText = typeof text === 'string' ? text.trim().slice(0, 28000) : '';
-  const validPages = Array.isArray(pages) ? pages.slice(0, 4) : [];
+  const trimmedText = typeof text === 'string' ? text.trim().slice(0, 26000) : '';
+  const validPages = Array.isArray(pages) ? pages.slice(0, 3) : [];
   const hasPages = validPages.length > 0;
-  const hasPdf = typeof pdfBase64 === 'string' && pdfBase64.length > 20;
+  const hasPdf = typeof pdfBase64 === 'string' && pdfBase64.length > 100;
 
   if (!trimmedText && !hasPages && !hasPdf) {
-    return jsonResponse(
-      {error: 'Vui lòng cung cấp văn bản, trang PDF hoặc tài liệu cần trích xuất.'},
-      400,
-    );
+    return jsonResponse({error: 'Chưa có văn bản hoặc ảnh trang PDF cần trích xuất.'}, 400);
   }
 
   const ai = getGenAIClient();
@@ -143,23 +205,21 @@ export async function POST(request: Request): Promise<Response> {
     Array.isArray(taxonomy) && taxonomy.length > 0
       ? taxonomy.map((t) => `${t.id} (${t.topic}): ${t.name}`).join('\n')
       : [
-          'NEN-01 (NEN): Tổng ba góc',
-          'NEN-02 (NEN): Cạnh đối diện góc',
-          'NEN-03 (NEN): Hệ thức tam giác vuông, đổi đơn vị, làm tròn',
-          'LG-01..LG-04 (LG): Giá trị lượng giác 0°–180°, góc bù, dấu góc tù, hệ thức sin²+cos²=1',
-          'COS-01..COS-04 (COS): Định lí Côsin tìm cạnh, tìm góc, nhận dạng tam giác, thực tế',
-          'SIN-01..SIN-03 (SIN): Định lí Sin tìm cạnh, tìm góc, bán kính ngoại tiếp R',
-          'DT-01..DT-05 (DT): Diện tích ½bc·sinA, Heron, S=pr, S=abc/4R, thực tế',
-          'MH-01..MH-06 (MH): Đo khoảng cách, đo chiều cao 2 góc ngắm, giải tam giác, chuyển động, tìm lỗi sai, tối ưu',
+          'NEN-01..03 (NEN): Tổng ba góc, cạnh–góc đối diện, tam giác vuông/đổi đơn vị',
+          'LG-01..04 (LG): Giá trị lượng giác 0°–180°, góc bù, dấu góc tù, hệ thức sin²+cos²=1',
+          'COS-01..04 (COS): Định lí Côsin tìm cạnh, tìm góc, nhận dạng tam giác, thực tế',
+          'SIN-01..03 (SIN): Định lí Sin tìm cạnh, tìm góc, bán kính ngoại tiếp R',
+          'DT-01..05 (DT): Diện tích ½bc·sinA, Heron, S=pr, S=abc/4R, thực tế',
+          'MH-01..06 (MH): Đo khoảng cách, đo chiều cao 2 góc ngắm, giải tam giác, chuyển động, tìm lỗi sai, tối ưu',
           'OUT-00 (OUT): Ngoài Chương III',
         ].join('\n');
 
   const modeNote =
     classificationMode === 'document_patterns'
-      ? `Chế độ B (Theo dạng tài liệu/giáo viên): Ưu tiên giữ đúng nhãn "Dạng n ..." trong tài liệu vào source_pattern_label${
-          customPatterns.length > 0 ? ` hoặc chọn từ danh sách giáo viên cung cấp: ${customPatterns.join('; ')}` : ''
-        }, đồng thời vẫn gợi ý pattern_id gần nhất trong taxonomy web.`
-      : 'Chế độ A (Theo danh mục dạng của web): Phân loại trực tiếp vào mã pattern_id trong danh mục taxonomy bên dưới.';
+      ? `Chế độ B (Theo dạng tài liệu/giáo viên): Ưu tiên giữ nhãn "Dạng n ..." trong tài liệu vào source_pattern_label${
+          customPatterns.length > 0 ? ` hoặc chọn từ: ${customPatterns.join('; ')}` : ''
+        }, đồng thời gợi ý pattern_id gần nhất trong taxonomy.`
+      : 'Chế độ A (Theo danh mục dạng của web): Phân loại trực tiếp vào mã pattern_id trong taxonomy bên dưới.';
 
   const contents: Array<Record<string, unknown>> = [];
   const pageTextParts: string[] = [];
@@ -175,7 +235,7 @@ export async function POST(request: Request): Promise<Response> {
         contents.push({
           inlineData: {
             mimeType: pg.mimeType || 'image/jpeg',
-            data: pg.imageBase64!.slice(0, 2_500_000),
+            data: pg.imageBase64!.slice(0, 1_800_000),
           },
         });
       }
@@ -187,7 +247,7 @@ export async function POST(request: Request): Promise<Response> {
     contents.push({
       inlineData: {
         mimeType: 'application/pdf',
-        data: pdfBase64.slice(0, 3_500_000),
+        data: pdfBase64.slice(0, 3_000_000),
       },
     });
   }
@@ -195,218 +255,71 @@ export async function POST(request: Request): Promise<Response> {
   const combinedTextInput = [trimmedText, pageTextParts.join('\n\n')]
     .filter(Boolean)
     .join('\n\n')
-    .slice(0, 28000);
+    .slice(0, 26000);
 
   contents.push({
     text: `${APPENDIX_B_SYSTEM_PROMPT}\n\n${modeNote}\n\nDANH MỤC DẠNG (taxonomy):\n${taxonomySummary}\n\nNguồn tài liệu: ${String(sourceName).slice(0, 140)}${driveFileId ? ` (Drive ID: ${String(driveFileId).slice(0, 80)})` : ''}\n\nVăn bản trích xuất (nếu có):\n${combinedTextInput || '(Đọc trực tiếp từ các ảnh trang đính kèm ở trên)'}`,
   });
 
-  const extractSchema = {
-    type: Type.OBJECT,
-    properties: {
-      items: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            number: {type: Type.STRING},
-            part: {type: Type.STRING},
-            source_pattern_label: {type: Type.STRING},
-            type: {type: Type.STRING},
-            stem_latex: {type: Type.STRING},
-            options: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  key: {type: Type.STRING},
-                  text: {type: Type.STRING},
-                },
-                required: ['key', 'text'],
-              },
-            },
-            statements: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  key: {type: Type.STRING},
-                  text: {type: Type.STRING},
-                  is_true: {type: Type.BOOLEAN},
-                },
-                required: ['key', 'text'],
-              },
-            },
-            expected_answer_key: {type: Type.STRING},
-            expected_numeric: {type: Type.NUMBER},
-            decimal_places: {type: Type.INTEGER},
-            unit: {type: Type.STRING},
-            solution_vi: {type: Type.STRING},
-            needs_figure: {type: Type.BOOLEAN},
-            figure_spec: {
-              type: Type.OBJECT,
-              properties: {
-                vertices: {type: Type.ARRAY, items: {type: Type.STRING}},
-                description: {type: Type.STRING},
-                sides: {
-                  type: Type.OBJECT,
-                  properties: {
-                    a: {type: Type.NUMBER},
-                    b: {type: Type.NUMBER},
-                    c: {type: Type.NUMBER},
-                    AB: {type: Type.STRING},
-                    BC: {type: Type.STRING},
-                    AC: {type: Type.STRING},
-                  },
-                },
-                angles: {
-                  type: Type.OBJECT,
-                  properties: {
-                    A: {type: Type.NUMBER},
-                    B: {type: Type.NUMBER},
-                    C: {type: Type.NUMBER},
-                  },
-                },
-              },
-            },
-            figure_bbox: {
-              type: Type.OBJECT,
-              properties: {
-                page: {type: Type.INTEGER},
-                x: {type: Type.NUMBER},
-                y: {type: Type.NUMBER},
-                w: {type: Type.NUMBER},
-                h: {type: Type.NUMBER},
-              },
-            },
-            givens: {
-              type: Type.OBJECT,
-              properties: {
-                a: {type: Type.NUMBER},
-                b: {type: Type.NUMBER},
-                c: {type: Type.NUMBER},
-                A_deg: {type: Type.NUMBER},
-                B_deg: {type: Type.NUMBER},
-                C_deg: {type: Type.NUMBER},
-                R: {type: Type.NUMBER},
-                r: {type: Type.NUMBER},
-                S: {type: Type.NUMBER},
-                d: {type: Type.NUMBER},
-                alpha_deg: {type: Type.NUMBER},
-                beta_deg: {type: Type.NUMBER},
-                trig_fn: {type: Type.STRING},
-                trig_value: {type: Type.NUMBER},
-                quadrant: {type: Type.STRING},
-                target: {type: Type.STRING},
-                unit: {type: Type.STRING},
-                decimal_places: {type: Type.INTEGER},
-                v1: {type: Type.NUMBER},
-                v2: {type: Type.NUMBER},
-                t: {type: Type.NUMBER},
-                value: {type: Type.NUMBER},
-                fromUnit: {type: Type.STRING},
-                toUnit: {type: Type.STRING},
-              },
-            },
-            topic: {type: Type.STRING},
-            pattern_id: {type: Type.STRING},
-            proposed_pattern: {type: Type.STRING},
-            level: {type: Type.INTEGER},
-            skill_ids: {type: Type.ARRAY, items: {type: Type.STRING}},
-            anticipated_error_ids: {type: Type.ARRAY, items: {type: Type.STRING}},
-            hints_vi: {type: Type.ARRAY, items: {type: Type.STRING}},
-            confidence: {type: Type.NUMBER},
-            ai_reason: {type: Type.STRING},
-            flags: {type: Type.ARRAY, items: {type: Type.STRING}},
-            page_pdf: {type: Type.INTEGER},
-            page_print: {type: Type.STRING},
-            source_excerpt: {type: Type.STRING},
-          },
-          required: [
-            'type',
-            'stem_latex',
-            'topic',
-            'level',
-            'skill_ids',
-            'anticipated_error_ids',
-            'hints_vi',
-            'confidence',
-            'ai_reason',
-          ],
-        },
-      },
-      answer_key: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            number: {type: Type.STRING},
-            part: {type: Type.STRING},
-            examCode: {type: Type.STRING},
-            answer: {type: Type.STRING},
-            solution_vi: {type: Type.STRING},
-            page_pdf: {type: Type.INTEGER},
-          },
-          required: ['number', 'answer'],
-        },
-      },
-    },
-    required: ['items'],
-  };
-
-  const primaryModel = useHardPageModel
+  const requestedModel = useHardPageModel
     ? (modelOverride.trim() || AI_HARD_PAGE_MODEL)
     : (modelOverride.trim() || AI_MODEL);
+  const modelChain = buildModelFallbackChain(requestedModel, useHardPageModel);
 
-  const runModelOnce = async (parts: Array<Record<string, unknown>>, modelName: string) => {
-    try {
-      const resp = await ai.models.generateContent({
-        model: modelName,
-        contents: {parts},
-        config: {
-          temperature: 0,
-          responseMimeType: 'application/json',
-          responseSchema: extractSchema,
-        },
-      });
-      return {text: resp.text ?? '{"items":[]}', usedModel: modelName};
-    } catch (err) {
-      console.warn('[api/ai/extract] Fallback model triggered:', err instanceof Error ? err.message : err);
-      const fallback = modelName === AI_FALLBACK_MODEL ? AI_MODEL : AI_FALLBACK_MODEL;
-      const resp = await ai.models.generateContent({
-        model: fallback,
-        contents: {parts},
-        config: {
-          temperature: 0,
-          responseMimeType: 'application/json',
-          responseSchema: extractSchema,
-          thinkingConfig: {thinkingLevel: ThinkingLevel.LOW},
-        },
-      });
-      return {text: resp.text ?? '{"items":[]}', usedModel: fallback};
+  const runWithFallbackChain = async (parts: Array<Record<string, unknown>>) => {
+    const errors: string[] = [];
+    for (const modelName of modelChain) {
+      try {
+        const resp = await ai.models.generateContent({
+          model: modelName,
+          contents: {parts},
+          config: {
+            temperature: 0,
+            responseMimeType: 'application/json',
+          },
+        });
+        const textOut = resp.text ?? '';
+        if (textOut.trim()) {
+          return {text: textOut, usedModel: modelName};
+        }
+        errors.push(`${modelName}: phản hồi rỗng`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[api/ai/extract] Model ${modelName} failed:`, msg);
+        errors.push(`${modelName}: ${msg.slice(0, 160)}`);
+        // If API key itself is invalid/unauthorized, stop trying other models immediately
+        if (/api key|permission_denied|unauthenticated/i.test(msg)) {
+          throw new Error(msg);
+        }
+      }
     }
+    throw new Error(errors.join(' | ') || 'All Gemini models failed');
   };
 
   try {
-    let {text: rawJson, usedModel} = await runModelOnce(contents, primaryModel);
+    let {text: rawJson, usedModel} = await runWithFallbackChain(contents);
 
-    // Parse with 1 automatic JSON-repair retry if invalid (Section 3.1)
+    // Parse with 1 automatic JSON-repair retry if malformed
     let parsed: {items?: Array<Record<string, unknown>>; answer_key?: Array<Record<string, unknown>>};
     try {
-      parsed = JSON.parse(rawJson);
+      parsed = parseJsonLoose(rawJson) as typeof parsed;
     } catch {
       const repairParts = [
         {
-          text: `Đoạn JSON dưới đây bị lỗi cú pháp. Hãy sửa lại thành JSON hợp lệ đúng lược đồ {items: [...], answer_key: [...]}, không thêm markdown hay giải thích:\n\n${rawJson.slice(0, 24000)}`,
+          text: `Đoạn JSON dưới đây bị lỗi cú pháp. Hãy sửa lại thành JSON hợp lệ dạng {"items": [...], "answer_key": [...]}, chỉ trả về JSON thuần:\n\n${rawJson.slice(0, 22000)}`,
         },
       ];
-      const repaired = await runModelOnce(repairParts, AI_MODEL);
+      const repaired = await runWithFallbackChain(repairParts);
       rawJson = repaired.text;
       usedModel = repaired.usedModel;
-      parsed = JSON.parse(rawJson);
+      parsed = parseJsonLoose(rawJson) as typeof parsed;
     }
 
-    const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const rawItems = Array.isArray(parsed.items)
+      ? parsed.items
+      : Array.isArray((parsed as {questions?: unknown[]}).questions)
+        ? ((parsed as {questions: Array<Record<string, unknown>>}).questions)
+        : [];
     const rawAnswerKeys = Array.isArray(parsed.answer_key) ? parsed.answer_key : [];
 
     const cleanedItems = rawItems.map((item) => ({
@@ -423,18 +336,20 @@ export async function POST(request: Request): Promise<Response> {
               ? {key: '', text: fixLatexControlChars(o)}
               : {
                   key: String((o as Record<string, unknown>).key ?? ''),
-                  text: fixLatexControlChars((o as Record<string, unknown>).text),
+                  text: fixLatexControlChars((o as Record<string, unknown>).text ?? (o as Record<string, unknown>).label),
                 },
           )
         : undefined,
       statements: Array.isArray(item.statements)
         ? item.statements.map((s) => ({
-            key: String((s as Record<string, unknown>).key ?? ''),
-            text: fixLatexControlChars((s as Record<string, unknown>).text),
+            key: String((s as Record<string, unknown>).key ?? (s as Record<string, unknown>).id ?? ''),
+            text: fixLatexControlChars((s as Record<string, unknown>).text ?? (s as Record<string, unknown>).label),
             is_true:
               typeof (s as Record<string, unknown>).is_true === 'boolean'
                 ? Boolean((s as Record<string, unknown>).is_true)
-                : undefined,
+                : typeof (s as Record<string, unknown>).isTrue === 'boolean'
+                  ? Boolean((s as Record<string, unknown>).isTrue)
+                  : undefined,
           }))
         : undefined,
     }));
@@ -461,12 +376,13 @@ export async function POST(request: Request): Promise<Response> {
       },
     });
   } catch (err) {
-    // Do NOT deduct quota on network / model error (Section 2.5)
     const refunded = refundQuota();
-    console.error('[api/ai/extract] Error:', err);
+    const rawErr = err instanceof Error ? err.message : String(err);
+    console.error('[api/ai/extract] All models failed:', rawErr);
     return jsonResponse(
       {
-        error: 'Hệ thống AI tạm thời không phản hồi cho nhóm trang này. Bạn có thể bấm "Thử lại trang này" hoặc chuyển sang nhập tay.',
+        error: summarizeProviderError(rawErr),
+        diagnostic: rawErr.slice(0, 240),
         fallbackToManual: true,
         quota: {
           used: refunded.used,

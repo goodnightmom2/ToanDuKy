@@ -1,4 +1,4 @@
-import mammoth from 'mammoth';
+import {parseDocxWithMath, type DocxMathParseResult} from './docxMathParser.ts';
 import type {
   MathVerificationParams,
   QuestionItem,
@@ -337,11 +337,16 @@ export function parseSection11Json(
 }
 
 /**
- * Extracts raw text from a .docx file using mammoth.
+ * Extracts text + Word OMML math formulas (converted to $LaTeX$) from a .docx file,
+ * and detects embedded MathType OLE objects.
  */
 export async function parseDocxArrayBuffer(arrayBuffer: ArrayBuffer): Promise<string> {
-  const res = await mammoth.extractRawText({arrayBuffer});
-  return res.value.trim();
+  const res = await parseDocxWithMath(arrayBuffer);
+  return res.text;
+}
+
+export async function parseDocxDetailed(arrayBuffer: ArrayBuffer): Promise<DocxMathParseResult> {
+  return parseDocxWithMath(arrayBuffer);
 }
 
 /**

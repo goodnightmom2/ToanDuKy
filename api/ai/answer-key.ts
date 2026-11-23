@@ -1,7 +1,6 @@
-import {ThinkingLevel, Type} from '@google/genai';
 import {
-  AI_FALLBACK_MODEL,
   AI_MODEL,
+  buildModelFallbackChain,
   checkAndConsumeQuota,
   DAILY_QUOTA_DEFAULT,
   fixLatexControlChars,
@@ -72,7 +71,7 @@ export async function POST(request: Request): Promise<Response> {
     'Hãy đọc kỹ mọi bảng đáp án (kể cả bảng ngang dạng "Câu 17 18 19 20 21 22 | A B C D...", bảng Phần I trắc nghiệm, Phần II Đúng/Sai a-Đ b-S c-Đ d-S, Phần III trả lời ngắn, hoặc hướng dẫn giải chi tiết).',
     'Nếu tài liệu có nhiều mã đề (vd: Mã đề 101, Mã đề 102), ghi rõ mã đề vào trường examCode và liệt kê tất cả vào examCodes.',
     'Với phần II đúng/sai, định dạng answer dạng "a:Đ,b:S,c:Đ,d:S". Với phần I trả "A"|"B"|"C"|"D". Với phần III trả số (vd "55,3").',
-    'Chỉ trả JSON theo lược đồ, không bịa đáp án nếu không nhìn thấy.',
+    'Chỉ trả về JSON thuần đúng cấu trúc: {"examCodes": ["101"], "entries": [{"number": "1", "part": "I", "examCode": "", "answer": "A", "solution_vi": "", "page_pdf": 1}]}. Không bịa đáp án nếu không nhìn thấy.',
   ].join('\n');
 
   const parts: Array<Record<string, unknown>> = [];
@@ -96,50 +95,31 @@ export async function POST(request: Request): Promise<Response> {
   if (trimmedText) textChunks.push(trimmedText);
   parts.push({text: `${prompt}\n\nVăn bản trang đáp án:\n${textChunks.join('\n\n').slice(0, 20000)}`});
 
-  const schema = {
-    type: Type.OBJECT,
-    properties: {
-      examCodes: {type: Type.ARRAY, items: {type: Type.STRING}},
-      entries: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            number: {type: Type.STRING},
-            part: {type: Type.STRING},
-            examCode: {type: Type.STRING},
-            answer: {type: Type.STRING},
-            solution_vi: {type: Type.STRING},
-            page_pdf: {type: Type.INTEGER},
-          },
-          required: ['number', 'answer'],
-        },
-      },
-    },
-    required: ['entries'],
-  };
-
   try {
-    let response;
-    try {
-      response = await ai.models.generateContent({
-        model: AI_MODEL,
-        contents: {parts},
-        config: {responseMimeType: 'application/json', responseSchema: schema},
-      });
-    } catch {
-      response = await ai.models.generateContent({
-        model: AI_FALLBACK_MODEL,
-        contents: {parts},
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-          thinkingConfig: {thinkingLevel: ThinkingLevel.LOW},
-        },
-      });
+    let responseText = '';
+    let lastErr = '';
+    for (const modelName of buildModelFallbackChain(AI_MODEL, false)) {
+      try {
+        const resp = await ai.models.generateContent({
+          model: modelName,
+          contents: {parts},
+          config: {temperature: 0, responseMimeType: 'application/json'},
+        });
+        if (resp.text && resp.text.trim()) {
+          responseText = resp.text.trim();
+          break;
+        }
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+      }
     }
+    if (!responseText) throw new Error(lastErr || 'Empty answer-key response');
 
-    const parsed = JSON.parse(response.text ?? '{"entries":[]}') as {
+    const cleanedJson = responseText
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    const parsed = JSON.parse(cleanedJson || '{"entries":[]}') as {
       examCodes?: string[];
       entries?: Array<Record<string, unknown>>;
     };

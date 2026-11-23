@@ -735,16 +735,34 @@ export async function extractWindowViaAi(params: {
       }),
     });
 
-    const data = (await resp.json()) as {
+    const rawBodyText = await resp.text();
+    let data: {
       items?: unknown;
       answer_key?: unknown;
       model?: string;
       error?: string;
+      diagnostic?: string;
       quotaExceeded?: boolean;
       quota?: {used: number; limit: number; remaining: number; date: string};
-    };
+    } = {};
+    try {
+      data = rawBodyText ? (JSON.parse(rawBodyText) as typeof data) : {};
+    } catch {
+      // Non-JSON response (e.g., Vercel 413 Payload Too Large or 504 Gateway Timeout)
+    }
 
     if (!resp.ok) {
+      if (data.diagnostic) {
+        console.error('[aiExtractor] Server diagnostic:', resp.status, data.diagnostic);
+      }
+      const fallbackMsg =
+        resp.status === 413
+          ? 'Ảnh nhóm trang PDF quá lớn (HTTP 413). Hãy thử bấm "Thử lại" từng trang riêng lẻ.'
+          : resp.status === 504
+            ? 'Máy chủ AI xử lý quá thời gian cho phép (HTTP 504). Hãy thử bấm "Thử lại" từng trang riêng lẻ.'
+            : resp.status === 401
+              ? 'Phiên đăng nhập đã hết hạn (HTTP 401). Hãy đăng xuất rồi đăng nhập lại tài khoản Quản trị/Giáo viên.'
+              : `Chưa thể trích xuất nhóm trang này (HTTP ${resp.status}).`;
       return {
         items: [],
         answerKeys: [],
@@ -752,7 +770,7 @@ export async function extractWindowViaAi(params: {
         usedModel: params.model,
         quota: data.quota,
         quotaExceeded: data.quotaExceeded,
-        error: data.error ?? 'Chưa thể trích xuất nhóm trang này.',
+        error: data.error ?? fallbackMsg,
       };
     }
 

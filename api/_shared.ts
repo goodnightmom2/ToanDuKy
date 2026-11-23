@@ -1,10 +1,36 @@
 import {GoogleGenAI} from '@google/genai';
 
-export const AI_MODEL = 'gemini-3.1-flash-lite';
+export const AI_MODEL = 'gemini-2.5-flash';
 export const AI_HARD_PAGE_MODEL = 'gemini-2.5-pro';
-export const AI_FALLBACK_MODEL = 'gemini-4-hydrogen';
+export const AI_FALLBACK_MODEL = 'gemini-2.5-flash-lite';
+export const AI_MODEL_CHAIN: string[] = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-3.1-flash-lite-preview',
+];
 export const DAILY_QUOTA_DEFAULT = 50;
-export const PROMPT_VERSION = 'v2.0';
+export const PROMPT_VERSION = 'v2.1';
+
+/**
+ * Builds a deduplicated fallback list of valid Google Gemini API models.
+ * Ensures invalid/deprecated overrides (or preview models unavailable on a key)
+ * transparently fall back to live production models.
+ */
+export function buildModelFallbackChain(primary?: string, preferHard = false): string[] {
+  const raw = preferHard
+    ? [primary, AI_HARD_PAGE_MODEL, ...AI_MODEL_CHAIN]
+    : [primary, ...AI_MODEL_CHAIN];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of raw) {
+    const clean = (m ?? '').trim();
+    if (!clean || clean === 'gemini-4-hydrogen' || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+  }
+  return out;
+}
 
 let quotaDate = new Date().toISOString().slice(0, 10);
 let dailyUsed = 0;
