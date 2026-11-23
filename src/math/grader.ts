@@ -40,7 +40,11 @@ export function normalizeUnit(rawUnit?: string): string {
  * Examples: "55,3 m", "55.30", "70 độ", "70°", "750m", "0,5".
  */
 export function parseVietnameseNumber(raw: string): ParsedNumericInput {
-  const trimmed = raw.trim();
+  // Tolerate mobile keyboard autocorrect spaces around comma/dot (e.g. "6, 5") and trailing period (e.g. "6,5 m.")
+  const trimmed = raw
+    .trim()
+    .replace(/(\d)\s*([.,])\s*(\d)/g, '$1$2$3')
+    .replace(/([a-zA-ZÀ-ỹ°^2²])\.+$/, '$1');
   if (!trimmed) return {valid: false};
 
   // Match signed decimal (comma or dot) followed by optional whitespace and optional unit

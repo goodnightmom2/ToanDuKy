@@ -314,47 +314,73 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       )}
 
       {/* Input UI by question type */}
-      {question.type === 'numeric' && (
-        <div className="space-y-3">
-          <label className="block text-sm font-semibold text-[#1F3B63]">
-            Nhập kết quả của em (dùng dấu phẩy hoặc dấu chấm đều được):
-          </label>
-          <div className="flex items-center gap-2 w-full">
-            <input
-              type="text"
-              inputMode="decimal"
-              value={textAnswer}
-              onChange={(e) => setTextAnswer(e.target.value)}
-              disabled={solved}
-              placeholder={question.fixedUnitLabel ? 'Ví dụ: 55,3' : 'Ví dụ: 6,5 m'}
-              className="flex-1 min-w-0 w-full px-3.5 py-3 rounded-xl bg-white border-2 border-[#CBB17D] text-lg font-bold text-[#14284A] tabular-nums"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !solved) handleCheck();
-              }}
-            />
-            {question.fixedUnitLabel && (
-              <span className="shrink-0 px-3.5 py-3 rounded-xl bg-[#FFF4D6] border-2 border-[#D5B87E] font-bold text-[#14284A] text-base sm:text-lg">
-                {question.fixedUnitLabel}
-              </span>
+      {question.type === 'numeric' && (() => {
+        const expectedUnitRaw = question.expected_answer?.unit
+          ? String(question.expected_answer.unit)
+          : '';
+        const needsFreeUnit = Boolean(expectedUnitRaw && !question.fixedUnitLabel);
+        const quickUnits = ['m', 'cm', 'km', 'm²', '°'];
+        const applyQuickUnit = (u: string) => {
+          const baseNum = textAnswer.trim().replace(/\s*[a-zA-ZÀ-ỹ°^2²]+$/, '').trim();
+          setTextAnswer(baseNum ? `${baseNum} ${u}` : u);
+        };
+        return (
+          <div className="space-y-3">
+            <label className="block text-sm font-semibold text-[#1F3B63]">
+              Nhập kết quả của em (dùng dấu phẩy hoặc dấu chấm đều được):
+            </label>
+            <div className="flex items-center gap-2 w-full">
+              <input
+                type="text"
+                inputMode={needsFreeUnit ? 'text' : 'decimal'}
+                value={textAnswer}
+                onChange={(e) => setTextAnswer(e.target.value)}
+                disabled={solved}
+                placeholder={question.fixedUnitLabel ? 'Ví dụ: 55,3' : 'Ví dụ: 6,5 m'}
+                className="flex-1 min-w-0 w-full px-3.5 py-3 rounded-xl bg-white border-2 border-[#CBB17D] text-lg font-bold text-[#14284A] tabular-nums"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !solved) handleCheck();
+                }}
+              />
+              {question.fixedUnitLabel && (
+                <span className="shrink-0 px-3.5 py-3 rounded-xl bg-[#FFF4D6] border-2 border-[#D5B87E] font-bold text-[#14284A] text-base sm:text-lg">
+                  {question.fixedUnitLabel}
+                </span>
+              )}
+            </div>
+            {needsFreeUnit && !solved && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="font-semibold text-[#5B6B82]">Chọn nhanh đơn vị:</span>
+                {quickUnits.map((u) => (
+                  <button
+                    key={u}
+                    type="button"
+                    onClick={() => applyQuickUnit(u)}
+                    className="px-3 py-1 rounded-lg bg-[#FFF4D6] border border-[#D5B87E] font-extrabold text-[#14284A] hover:bg-[#FCE8B2] !min-h-[34px]"
+                  >
+                    + {u}
+                  </button>
+                ))}
+              </div>
+            )}
+            {requireExplanation && (
+              <div className="space-y-1.5">
+                <label className="block text-sm font-semibold text-[#1F3B63]">
+                  Giải thích ngắn cách tính (1–2 câu):
+                </label>
+                <textarea
+                  rows={2}
+                  value={explanationText}
+                  onChange={(e) => setExplanationText(e.target.value)}
+                  disabled={solved}
+                  placeholder="Ví dụ: Em tính góc C = 75°, rồi ghép AC đối diện góc B = 60° theo Định lý Sin..."
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-sm text-[#14284A]"
+                />
+              </div>
             )}
           </div>
-          {requireExplanation && (
-            <div className="space-y-1.5">
-              <label className="block text-sm font-semibold text-[#1F3B63]">
-                Giải thích ngắn cách tính (1–2 câu):
-              </label>
-              <textarea
-                rows={2}
-                value={explanationText}
-                onChange={(e) => setExplanationText(e.target.value)}
-                disabled={solved}
-                placeholder="Ví dụ: Em tính góc C = 75°, rồi ghép AC đối diện góc B = 60° theo Định lý Sin..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white border-2 border-[#CBB17D] text-sm text-[#14284A]"
-              />
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {(question.type === 'mcq' || question.type === 'error_spot') && question.options && (
         <div className="space-y-2.5" role="radiogroup" aria-label="Các phương án trả lời">
