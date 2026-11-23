@@ -37,9 +37,9 @@ export const SKILL_CLUSTERS: Record<
 > = {
   NEN: {
     code: 'NEN',
-    title: 'Nền tảng tam giác & đơn vị',
+    title: 'Nền tảng hệ thức lượng tam giác',
     shortTitle: 'Nền tảng',
-    description: 'Tổng ba góc trong tam giác, cặp cạnh–góc đối diện, đổi đơn vị và làm tròn.',
+    description: 'Tổng ba góc, cặp cạnh–góc đối diện, hệ thức tam giác vuông và hệ quả góc nhọn–vuông–tù.',
     color: '#2E9C8A',
   },
   LG: {

@@ -398,23 +398,32 @@ export function generateQuestion(genId: GeneratorId, seedInput?: number): Questi
     }
 
     case 'GEN_UNITS': {
-      const kmVal = randInt(rng, 2, 18) * 0.05; // 0.10 to 0.90 km
-      const kmRounded = roundToPlaces(kmVal, 2);
-      const meters = Math.round(kmRounded * 1000);
+      const hyp = randInt(rng, 4, 24) * 2; // even integer 8..48 m
+      const side = hyp / 2;
+      const useSin = randInt(rng, 0, 1) === 0;
       return {
         id: qid,
         generatorId: genId,
         seed,
         cluster: 'NEN',
-        skill_ids: ['units'],
+        skill_ids: ['right_triangle_trig'],
         level: 1,
         type: 'numeric',
-        stem_vi: `Đổi đoạn đường mô phỏng dài $${formatViNumber(kmRounded, 2)}\\text{ km}$ sang đơn vị mét.`,
-        expected_answer: {value: meters, rounded: meters, decimal_places: 0, unit: 'm'},
+        stem_vi: useSin
+          ? `Cho tam giác $ABC$ vuông tại $A$ có cạnh huyền $BC = ${hyp}\\text{ m}$ và $\\widehat{B} = 30^\\circ$. Tính độ dài cạnh góc vuông $AC$.`
+          : `Cho tam giác $ABC$ vuông tại $A$ có cạnh huyền $BC = ${hyp}\\text{ m}$ và $\\widehat{B} = 60^\\circ$. Tính độ dài cạnh góc vuông $AB$.`,
+        expected_answer: {value: side, rounded: side, decimal_places: 0, unit: 'm'},
         fixedUnitLabel: 'm',
-        solution_vi: `$${formatViNumber(kmRounded, 2)} \\times 1000 = ${meters}\\text{ m}$.`,
-        anticipated_error_ids: ['E07'],
-        hints_vi: ['$1\\text{ km} = 1000\\text{ m}$.', 'Nhân số đo kilômét với $1000$.'],
+        solution_vi: useSin
+          ? `$AC = BC\\cdot\\sin 30^\\circ = ${hyp} \\cdot 0{,}5 = ${side}\\text{ m}$.`
+          : `$AB = BC\\cdot\\cos 60^\\circ = ${hyp} \\cdot 0{,}5 = ${side}\\text{ m}$.`,
+        anticipated_error_ids: ['E06', 'E01'],
+        hints_vi: [
+          useSin
+            ? 'Trong tam giác vuông tại $A$, cạnh $AC$ đối diện góc $\\widehat{B}$ nên $AC = BC\\cdot\\sin B$.'
+            : 'Trong tam giác vuông tại $A$, cạnh $AB$ kề góc $\\widehat{B}$ nên $AB = BC\\cdot\\cos B$.',
+          useSin ? 'Thay $\\sin 30^\\circ = 0{,}5$ để tính.' : 'Thay $\\cos 60^\\circ = 0{,}5$ để tính.',
+        ],
         review_status: 'approved',
         source_refs: ['GEN_UNITS'],
         is_adapted: true,
@@ -422,25 +431,26 @@ export function generateQuestion(genId: GeneratorId, seedInput?: number): Questi
     }
 
     case 'GEN_ROUND': {
-      const whole = randInt(rng, 12, 95);
-      const tenths = randInt(rng, 0, 8);
-      const hundredths = randInt(rng, 1, 9);
-      const rawVal = Number(`${whole}.${tenths}${hundredths}`);
-      const rounded = roundToPlaces(rawVal, 1);
+      const a = randInt(rng, 6, 20) * 2; // 12..40 m
+      const exactB = (a * Math.sin(degToRad(45))) / Math.sin(degToRad(30));
+      const roundedB = roundToPlaces(exactB, 1);
       return {
         id: qid,
         generatorId: genId,
         seed,
         cluster: 'NEN',
-        skill_ids: ['rounding'],
-        level: 1,
+        skill_ids: ['sine_law', 'rounding'],
+        level: 2,
         type: 'numeric',
-        stem_vi: `Làm tròn kết quả đo $${formatViNumber(rawVal, 2)}\\text{ m}$ đến hàng phần mười ($0{,}1\\text{ m}$).`,
-        expected_answer: {exact_numeric: rawVal, rounded, decimal_places: 1, unit: 'm'},
+        stem_vi: `Cho tam giác $ABC$ có cạnh $a = ${a}\\text{ m}$, $\\widehat{A} = 30^\\circ$ và $\\widehat{B} = 45^\\circ$. Tính độ dài cạnh $b$ (làm tròn đến $0{,}1\\text{ m}$).`,
+        expected_answer: {exact_numeric: exactB, rounded: roundedB, decimal_places: 1, unit: 'm'},
         fixedUnitLabel: 'm',
-        solution_vi: `Chữ số hàng phần trăm là $${hundredths}$ nên kết quả làm tròn đến $0{,}1\\text{ m}$ là $${formatViNumber(rounded, 1)}\\text{ m}$.`,
-        anticipated_error_ids: ['E07'],
-        hints_vi: ['Quan sát chữ số hàng phần trăm ngay sau hàng phần mười.', 'Nếu $\\ge 5$ thì cộng thêm $1$ vào hàng phần mười.'],
+        solution_vi: `Theo Định lí Sin: $b = \\frac{${a}\\sin 45^\\circ}{\\sin 30^\\circ} = ${a}\\sqrt{2} \\approx ${formatViNumber(roundedB, 1)}\\text{ m}$.`,
+        anticipated_error_ids: ['E04', 'E05', 'E07'],
+        hints_vi: [
+          'Áp dụng Định lí Sin: $\\frac{a}{\\sin A} = \\frac{b}{\\sin B}$.',
+          'Thay $\\sin 30^\\circ = 0{,}5$, $\\sin 45^\\circ = \\frac{\\sqrt{2}}{2}$ rồi làm tròn kết quả cuối đến $0{,}1\\text{ m}$.',
+        ],
         review_status: 'approved',
         source_refs: ['GEN_ROUND'],
         is_adapted: true,
