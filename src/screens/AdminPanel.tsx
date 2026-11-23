@@ -1462,6 +1462,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           )}
 
+          {isAdmin && pendingQuestionsCount > 0 && (
+            <div className="p-3.5 rounded-2xl bg-[#FFF4D6] border-2 border-[#E0A93B] text-xs text-[#8A5108] flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-[#B9831E] shrink-0" />
+                Có <strong>{pendingQuestionsCount}</strong> câu hỏi / đề xuất do Giáo viên hoặc Nhập liệu gửi lên đang chờ Admin xét duyệt.
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setBankFilterStatus((prev) =>
+                    prev === 'pending_teacher_review' ? 'ALL' : 'pending_teacher_review',
+                  )
+                }
+                className="px-3 py-1.5 rounded-xl bg-[#14284A] text-[#FFFBF0] font-bold !min-h-[32px]"
+              >
+                {bankFilterStatus === 'pending_teacher_review'
+                  ? 'Hiện tất cả câu hỏi'
+                  : `Lọc ${pendingQuestionsCount} câu chờ duyệt`}
+              </button>
+            </div>
+          )}
+
           {bankActionMsg && (
             <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#145B4F] flex items-center justify-between gap-2">
               <span>{bankActionMsg}</span>
@@ -2068,12 +2090,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 className="px-3 py-2 rounded-xl bg-white border border-[#CBB17D] text-xs"
               />
             </div>
-            <button
-              type="button"
-              onClick={() => {
+            {(() => {
+              const submitManualQuestion = (directApprove: boolean) => {
                 if (!manualStem.trim()) return;
+                const nowIso = new Date().toISOString();
+                const effectiveApproved = isAdmin && directApprove;
                 const baseItem: QuestionItem = {
-                  id: generateId('gv'),
+                  id: generateId(isAdmin ? 'adm' : 'gv'),
                   cluster: manualCluster,
                   skill_ids: [manualCluster.toLowerCase()],
                   level: manualLevel,
@@ -2086,13 +2109,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     manualHint.trim() || 'Kiểm tra lại công thức và đơn vị đo.',
                     'Thực hiện lần lượt từng bước biến đổi rồi đối chiếu kết quả.',
                   ],
-                  review_status: 'pending_teacher_review',
-                  source_refs: ['GV_BIEN_SOAN'],
+                  review_status: effectiveApproved ? 'approved' : 'pending_teacher_review',
+                  reviewedBy: effectiveApproved ? user.displayName : undefined,
+                  reviewedAt: effectiveApproved ? nowIso : undefined,
+                  approved_by: effectiveApproved ? user.displayName : undefined,
+                  approved_at: effectiveApproved ? nowIso : undefined,
+                  math_format: 'latex-1',
+                  math_verified: effectiveApproved ? true : false,
+                  math_verified_by: effectiveApproved ? user.displayName : undefined,
+                  math_verified_at: effectiveApproved ? nowIso : undefined,
+                  source_refs: [isAdmin ? 'ADMIN_BIEN_SOAN' : 'GV_BIEN_SOAN'],
                   is_adapted: false,
                 };
                 if (manualType === 'numeric') {
                   const num = Number(manualNumericAns.replace(',', '.'));
-                  if (!Number.isFinite(num)) return;
+                  if (!Number.isFinite(num)) {
+                    setBankActionMsg('Vui lòng nhập đáp án số hợp lệ trước khi lưu.');
+                    return;
+                  }
                   baseItem.expected_answer = {rounded: num, value: num, decimal_places: 1, unit: manualUnit};
                   baseItem.fixedUnitLabel = manualUnit || undefined;
                   baseItem.solution_vi = manualSolution.trim() || `Đáp án là ${num} ${manualUnit}.`;
@@ -2106,7 +2140,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   baseItem.statements = stmts;
                   baseItem.expected_answer = {statements: {a: true, b: true, c: false, d: false}};
                 } else {
-                  if (!manualOptA.trim() || !manualOptB.trim()) return;
+                  if (!manualOptA.trim() || !manualOptB.trim()) {
+                    setBankActionMsg('Vui lòng nhập ít nhất Phương án A (đúng) và Phương án B.');
+                    return;
+                  }
                   baseItem.options = [
                     {id: 'a', label: manualOptA.trim()},
                     {id: 'b', label: manualOptB.trim(), errorCode: manualErrorCode},
@@ -2118,12 +2155,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 dataService.upsertQuestion(
                   user,
                   baseItem,
-                  isAdmin ? 'Admin tạo thủ công' : 'Giáo viên đề xuất thêm câu hỏi mới',
+                  effectiveApproved
+                    ? 'Admin thêm trực tiếp vào ngân hàng (đã duyệt)'
+                    : isAdmin
+                      ? 'Admin tạo thủ công (chờ duyệt)'
+                      : 'Giáo viên đề xuất thêm câu hỏi mới',
                 );
                 setBankActionMsg(
-                  isAdmin
-                    ? 'Đã thêm câu hỏi mới vào ngân hàng (trạng thái Chờ duyệt).'
-                    : 'Đã gửi câu hỏi mới vào hàng chờ Admin chấp nhận. Câu hỏi sẽ chỉ hiển thị với học sinh sau khi Admin duyệt.',
+                  effectiveApproved
+                    ? 'Admin đã thêm trực tiếp câu hỏi mới vào Ngân hàng (trạng thái Đã duyệt — sẵn sàng dùng trong Set nhiệm vụ & game).'
+                    : isAdmin
+                      ? 'Đã thêm câu hỏi mới vào ngân hàng (trạng thái Chờ duyệt).'
+                      : 'Đã gửi câu hỏi mới vào hàng chờ Admin xét duyệt. Câu hỏi sẽ tự động hiện lên với học sinh sau khi Admin chấp nhận.',
                 );
                 setManualStem('');
                 setManualNumericAns('');
@@ -2134,12 +2177,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 setManualSolution('');
                 setManualHint('');
                 refresh();
-              }}
-              className="btn-tactile btn-jade text-xs py-2 px-4"
-            >
-              <Plus className="w-4 h-4" />{' '}
-              {isAdmin ? 'Lưu vào ngân hàng (Chờ duyệt)' : 'Gửi Admin duyệt'}
-            </button>
+              };
+
+              return (
+                <div className="flex flex-wrap gap-2">
+                  {isAdmin ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => submitManualQuestion(true)}
+                        className="btn-tactile btn-jade text-xs py-2 px-4"
+                      >
+                        <Plus className="w-4 h-4" /> Thêm &amp; Duyệt ngay vào Ngân hàng
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => submitManualQuestion(false)}
+                        className="btn-tactile btn-paper text-xs py-2 px-4"
+                      >
+                        Lưu chờ duyệt
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => submitManualQuestion(false)}
+                      className="btn-tactile btn-jade text-xs py-2 px-4"
+                    >
+                      <Plus className="w-4 h-4" /> Gửi Admin xét duyệt
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Question List */}

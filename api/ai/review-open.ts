@@ -4,6 +4,7 @@ import {
   DAILY_QUOTA_DEFAULT,
   getGenAIClient,
   jsonResponse,
+  resolveLiveModelChain,
   verifyRequestAuth,
 } from '../_shared.ts';
 
@@ -61,8 +62,10 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    const liveModels = await resolveLiveModelChain(AI_MODEL, false);
+    const chosenModel = liveModels[0] ?? AI_MODEL;
     const response = await ai.models.generateContent({
-      model: AI_MODEL,
+      model: chosenModel,
       contents: [
         'Bạn là giáo viên Toán lớp 10 thân thiện. Hãy nhận xét lập luận mở của học sinh bằng tiếng Việt theo ĐÚNG 3 mục ngắn gọn (mỗi mục 1 câu):',
         '1. Điểm em làm đúng: ...',

@@ -1,12 +1,12 @@
 import {
   AI_MODEL,
-  buildModelFallbackChain,
   checkAndConsumeQuota,
   DAILY_QUOTA_DEFAULT,
   fixLatexControlChars,
   getGenAIClient,
   jsonResponse,
   refundQuota,
+  resolveLiveModelChain,
   verifyRequestAuth,
 } from '../_shared.ts';
 
@@ -98,11 +98,12 @@ export async function POST(request: Request): Promise<Response> {
   try {
     let responseText = '';
     let lastErr = '';
-    for (const modelName of buildModelFallbackChain(AI_MODEL, false)) {
+    const liveModels = await resolveLiveModelChain(AI_MODEL, false);
+    for (const modelName of liveModels) {
       try {
         const resp = await ai.models.generateContent({
           model: modelName,
-          contents: {parts},
+          contents: [{role: 'user', parts}],
           config: {temperature: 0, responseMimeType: 'application/json'},
         });
         if (resp.text && resp.text.trim()) {

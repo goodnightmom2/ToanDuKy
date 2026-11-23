@@ -1,7 +1,6 @@
 import {
   AI_HARD_PAGE_MODEL,
   AI_MODEL,
-  buildModelFallbackChain,
   checkAndConsumeQuota,
   DAILY_QUOTA_DEFAULT,
   fixLatexControlChars,
@@ -9,6 +8,7 @@ import {
   jsonResponse,
   PROMPT_VERSION,
   refundQuota,
+  resolveLiveModelChain,
   verifyRequestAuth,
 } from '../_shared.ts';
 
@@ -118,19 +118,24 @@ function parseJsonLoose(raw: string): Record<string, unknown> {
 
 function summarizeProviderError(rawMsg: string): string {
   const m = rawMsg.toLowerCase();
+  const safeSnippet = rawMsg
+    .replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[KEY]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
   if (m.includes('api key') || m.includes('permission_denied') || m.includes('403') || m.includes('401')) {
-    return 'Khóa GEMINI_API_KEY trên Vercel không hợp lệ hoặc bị hạn chế quyền.';
+    return `Khóa GEMINI_API_KEY trên Vercel không hợp lệ hoặc bị hạn chế quyền. (${safeSnippet})`;
   }
   if (m.includes('resource_exhausted') || m.includes('quota') || m.includes('429')) {
-    return 'Tài khoản Google AI Studio (GEMINI_API_KEY) tạm chạm giới hạn tốc độ / hạn mức miễn phí (429). Hãy chờ 1 phút rồi thử lại.';
+    return `Tài khoản Google AI Studio (GEMINI_API_KEY) tạm chạm giới hạn tốc độ / hạn mức (429). Hãy chờ 1 phút rồi thử lại. (${safeSnippet})`;
   }
   if (m.includes('404') || m.includes('not found')) {
-    return 'Model AI cấu hình trong Cài đặt không tồn tại trên Google AI Studio. Hệ thống đã tự thử các model dự phòng.';
+    return `Không tìm thấy model Gemini khả dụng cho khóa API hiện tại. (${safeSnippet})`;
   }
   if (m.includes('too large') || m.includes('413')) {
-    return 'Dung lượng ảnh trang PDF quá lớn — hãy đọc khoảng trang nhỏ hơn.';
+    return `Dung lượng ảnh trang PDF quá lớn — hãy đọc khoảng trang nhỏ hơn. (${safeSnippet})`;
   }
-  return 'Máy chủ AI tạm thời không phản hồi cho nhóm trang này. Vui lòng thử lại sau vài giây.';
+  return `Máy chủ AI tạm thời không phản hồi cho nhóm trang này. (${safeSnippet})`;
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -264,7 +269,7 @@ export async function POST(request: Request): Promise<Response> {
   const requestedModel = useHardPageModel
     ? (modelOverride.trim() || AI_HARD_PAGE_MODEL)
     : (modelOverride.trim() || AI_MODEL);
-  const modelChain = buildModelFallbackChain(requestedModel, useHardPageModel);
+  const modelChain = await resolveLiveModelChain(requestedModel, useHardPageModel);
 
   const runWithFallbackChain = async (parts: Array<Record<string, unknown>>) => {
     const errors: string[] = [];
@@ -272,7 +277,7 @@ export async function POST(request: Request): Promise<Response> {
       try {
         const resp = await ai.models.generateContent({
           model: modelName,
-          contents: {parts},
+          contents: [{role: 'user', parts}],
           config: {
             temperature: 0,
             responseMimeType: 'application/json',

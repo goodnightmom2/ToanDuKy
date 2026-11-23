@@ -1,4 +1,9 @@
-import {getQuotaStatus, jsonResponse, verifyRequestAuth} from '../_shared.ts';
+import {
+  getQuotaStatus,
+  jsonResponse,
+  resolveLiveModelChain,
+  verifyRequestAuth,
+} from '../_shared.ts';
 
 export async function GET(request: Request): Promise<Response> {
   try {
@@ -12,7 +17,15 @@ export async function GET(request: Request): Promise<Response> {
       return jsonResponse({configured: status.configured}, 200);
     }
 
-    return jsonResponse(status, 200);
+    const liveChain = status.configured ? await resolveLiveModelChain(undefined, false) : [];
+    return jsonResponse(
+      {
+        ...status,
+        model: liveChain[0] || status.model,
+        availableModels: liveChain,
+      },
+      200,
+    );
   } catch (err) {
     console.error('[api/ai/status] Error:', err);
     return jsonResponse({error: 'Không thể kiểm tra trạng thái AI.'}, 500);

@@ -139,13 +139,10 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const taxonomy = React.useMemo(() => dataService.getTaxonomy(false), [existingQuestions.length]);
   const savedBatches = React.useMemo(() => dataService.getImportBatches(user), [user, existingQuestions.length]);
   const confidenceThreshold = settings.autoApproveConfidenceThreshold ?? 0.85;
-  const activeModel =
-    settings.aiModel?.trim() && settings.aiModel.trim() !== 'gemini-3.1-flash-lite'
-      ? settings.aiModel.trim()
-      : 'gemini-2.5-flash';
-  const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-2.5-pro';
+  const hardPageModel = settings.aiHardPageModel?.trim() || 'gemini-4-carbon';
 
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
+  const activeModel = aiStatus?.model || settings.aiModel?.trim() || 'gemini-3.1-flash-lite';
   const [autoRunAfterUpload, setAutoRunAfterUpload] = React.useState(true);
   const [previewZoom, setPreviewZoom] = React.useState<1 | 1.5 | 2>(1);
   const [showGalleryVerify, setShowGalleryVerify] = React.useState(false);
@@ -2081,7 +2078,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     onClick={() => {
                       const ids = new Set(galleryCandidates.map((g) => g.id));
                       const now = new Date().toISOString();
-                      setDrafts((prev) =>
+                      setDraftItems((prev) =>
                         prev.map((d) =>
                           ids.has(d.id)
                             ? {
@@ -2287,18 +2284,19 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                               type="button"
                               onClick={async () => {
                                 const bbox = item.question_bbox ?? item.figure_bbox ?? {page: item.page_pdf ?? 1, x: 0.04, y: 0.05, w: 0.92, h: 0.35};
-                                const cropped = await cropFigureFromPageDataUrl(pageImgUrl, bbox, 145);
+                                const cropped = await cropFigureFromPageDataUrl(pageImgUrl, bbox, 150 * 1024);
                                 if (cropped) {
+                                  const kbSize = Math.round(cropped.approxBytes / 1024);
                                   updateDraft(item.id, (prev) => ({
                                     ...prev,
                                     formula_image: {
                                       dataUrl: cropped.dataUrl,
                                       alt: prev.stem_vi.slice(0, 140) || 'Ảnh công thức gốc (nội bộ lớp)',
-                                      kbSize: cropped.kbSize,
+                                      kbSize,
                                       privateClassOnly: true,
                                     },
                                   }));
-                                  setStatusMsg(`Đã lưu ảnh cắt công thức an toàn (${cropped.kbSize} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}.`);
+                                  setStatusMsg(`Đã lưu ảnh cắt công thức an toàn (${kbSize} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}.`);
                                 }
                               }}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]"
@@ -2392,6 +2390,21 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                             >
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               {item.math_verified ? 'Đã đối chiếu công thức ✓' : 'Đã đối chiếu công thức'}
+                            </button>
+                          )}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              disabled={questionContainsMath(item) && !item.math_verified}
+                              title={
+                                questionContainsMath(item) && !item.math_verified
+                                  ? 'Hãy bấm "Đã đối chiếu công thức" trước khi duyệt trực tiếp vào Ngân hàng'
+                                  : 'Duyệt trực tiếp câu này vào Ngân hàng câu hỏi'
+                              }
+                              onClick={() => commitDrafts([item.id], 'approved', false)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2E9C8A] text-white font-bold disabled:opacity-45"
+                            >
+                              <Check className="w-3.5 h-3.5" /> Duyệt vào Ngân hàng
                             </button>
                           )}
                           <button
