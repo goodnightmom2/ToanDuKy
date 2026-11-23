@@ -1074,25 +1074,39 @@ export class DataService {
         // Eagerly check setup state on startup so new devices land directly on Login
         void this.checkFirstAdminSetupAsync();
 
-        // Check existing session on startup
-        void client.auth.getSession().then(({data}) => {
-          const uid = data.session?.user?.id ?? null;
+        // Check existing session on startup (auto-refresh if expired; clear stale ghost session if truly signed out)
+        void client.auth.getSession().then(async ({data}) => {
+          let session = data.session;
+          if (!session && this.isOnline && this.db.currentUid) {
+            try {
+              const refreshed = await client.auth.refreshSession();
+              session = refreshed.data.session ?? null;
+            } catch {
+              session = null;
+            }
+          }
+          const uid = session?.user?.id ?? null;
           this.supabaseSignedInUid = uid;
           if (uid) {
             this.adapterMode = 'supabase';
             void this.hydrateUserFromSupabase(uid);
+          } else if (this.isOnline && this.db.currentUid) {
+            // Clear stale cached currentUid when cloud session is no longer valid
+            this.save({...this.db, currentUid: null});
           }
           this.notify();
         });
 
         const {
           data: {subscription},
-        } = client.auth.onAuthStateChange((_event, session) => {
+        } = client.auth.onAuthStateChange((event, session) => {
           const uid = session?.user?.id ?? null;
           this.supabaseSignedInUid = uid;
           if (uid) {
             this.adapterMode = 'supabase';
             void this.hydrateUserFromSupabase(uid);
+          } else if (event === 'SIGNED_OUT' && this.db.currentUid) {
+            this.save({...this.db, currentUid: null});
           }
           this.notify();
         });
@@ -1936,11 +1950,24 @@ export class DataService {
     return {ok: true, user};
   }
 
-  async getAccessToken(): Promise<string | null> {
+  async getAccessToken(forceRefresh = false): Promise<string | null> {
     if (!this.supabase) return null;
     try {
-      const {data} = await this.supabase.auth.getSession();
-      return data.session?.access_token ?? null;
+      if (!forceRefresh) {
+        const {data} = await this.supabase.auth.getSession();
+        const sess = data.session;
+        const expiresAtMs = (sess?.expires_at ?? 0) * 1000;
+        if (sess?.access_token && (!expiresAtMs || expiresAtMs > Date.now() + 60_000)) {
+          this.supabaseSignedInUid = sess.user?.id ?? this.supabaseSignedInUid;
+          return sess.access_token;
+        }
+      }
+      const {data: refreshed} = await this.supabase.auth.refreshSession();
+      if (refreshed.session?.access_token) {
+        this.supabaseSignedInUid = refreshed.session.user?.id ?? this.supabaseSignedInUid;
+        return refreshed.session.access_token;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -3650,10 +3677,12 @@ export class DataService {
     params: {
       classId: string;
       students: Array<{displayName: string; username: string; password: string}>;
+      onProgress?: (done: number, total: number) => void;
     },
   ): Promise<{
     ok: boolean;
     error?: string;
+    needsRelogin?: boolean;
     createdCount: number;
     failedCount: number;
     results: Array<{
@@ -3720,23 +3749,26 @@ export class DataService {
       },
     };
 
-    // 1. Supabase mode: use dedicated server API (Auth Admin API -> zero public signup rate limits)
+    // 1. Supabase mode: use dedicated server API in fast chunks of 10 students to avoid serverless timeouts
     if (this.isSupabaseConfigured() && this.supabase && this.isOnline) {
       try {
-        const token = await this.getAccessToken();
-        const resp = await fetch('/api/admin/bulk-create-students', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? {Authorization: `Bearer ${token}`} : {}),
-          },
-          body: JSON.stringify({
-            classId: cls.id,
-            students: params.students,
-            initialProfile,
-          }),
-        });
-        const data = (await resp.json()) as {
+        let token = await this.getAccessToken();
+        if (!token) {
+          return {
+            ok: false,
+            needsRelogin: true,
+            error:
+              'Phiên đăng nhập máy chủ đã hết hạn. Vui lòng đăng xuất rồi đăng nhập lại tài khoản Giáo viên để tiếp tục cấp tài khoản.',
+            createdCount: 0,
+            failedCount: params.students.length,
+            results: [],
+          };
+        }
+
+        // Ensure target class exists on server before creating students into it
+        await this.supabase.from('classes').upsert(classToRow(cls), {onConflict: 'id'});
+
+        type ServerBulkResp = {
           ok?: boolean;
           error?: string;
           createdCount?: number;
@@ -3755,53 +3787,118 @@ export class DataService {
           }>;
         };
 
-        if (!resp.ok || !data.ok || !Array.isArray(data.results)) {
-          return {
-            ok: false,
-            error: data.error ?? 'Không thể cấp tài khoản hàng loạt trên máy chủ.',
-            createdCount: 0,
-            failedCount: params.students.length,
-            results: [],
-          };
-        }
+        const CHUNK_SIZE = 10;
+        const allCleanResults: Array<{
+          stt: number;
+          studentCode: string;
+          displayName: string;
+          className: string;
+          classCode: string;
+          username: string;
+          password: string;
+          status: 'created' | 'failed';
+          error?: string;
+          uid?: string;
+        }> = [];
+        const allNewUsers: UserAccount[] = [];
 
-        const newUsers: UserAccount[] = [];
-        const cleanResults = data.results.map((r) => {
-          let uid: string | undefined;
-          if (r.status === 'created' && r.userRow) {
-            const mapped = rowToUser(r.userRow);
-            if (mapped.uid) {
-              uid = mapped.uid;
-              newUsers.push(mapped);
+        for (let offset = 0; offset < params.students.length; offset += CHUNK_SIZE) {
+          const chunk = params.students.slice(offset, offset + CHUNK_SIZE);
+
+          const callChunk = async (authToken: string) =>
+            fetch('/api/admin/bulk-create-students', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${authToken}`,
+              },
+              body: JSON.stringify({
+                classId: cls.id,
+                students: chunk,
+                initialProfile,
+              }),
+            });
+
+          let resp = await callChunk(token);
+          if (resp.status === 401) {
+            const freshToken = await this.getAccessToken(true);
+            if (freshToken) {
+              token = freshToken;
+              resp = await callChunk(token);
             }
           }
-          return {
-            stt: r.stt,
-            studentCode: r.studentCode,
-            displayName: r.displayName,
-            className: r.className,
-            classCode: r.classCode,
-            username: r.username,
-            password: r.password,
-            status: r.status,
-            error: r.error,
-            uid,
-          };
-        });
 
-        if (newUsers.length > 0) {
-          const newUidSet = new Set(newUsers.map((u) => u.uid));
+          let data: ServerBulkResp = {};
+          try {
+            data = (await resp.json()) as ServerBulkResp;
+          } catch {
+            data = {error: `Máy chủ phản hồi lỗi (HTTP ${resp.status}).`};
+          }
+
+          if (!resp.ok || !data.ok || !Array.isArray(data.results)) {
+            if (allNewUsers.length > 0) {
+              const newUidSet = new Set(allNewUsers.map((u) => u.uid));
+              this.save({
+                ...this.db,
+                users: [...this.db.users.filter((u) => !newUidSet.has(u.uid)), ...allNewUsers],
+              });
+            }
+            return {
+              ok: false,
+              needsRelogin: resp.status === 401,
+              error:
+                resp.status === 401
+                  ? 'Phiên đăng nhập máy chủ đã hết hạn. Vui lòng đăng xuất rồi đăng nhập lại tài khoản Giáo viên và thử lại.'
+                  : data.error ?? 'Không thể cấp tài khoản hàng loạt trên máy chủ.',
+              createdCount: allNewUsers.length,
+              failedCount: params.students.length - allNewUsers.length,
+              results: allCleanResults,
+            };
+          }
+
+          for (const r of data.results) {
+            let uid: string | undefined;
+            if (r.status === 'created' && r.userRow) {
+              const mapped = rowToUser(r.userRow);
+              if (mapped.uid) {
+                uid = mapped.uid;
+                allNewUsers.push(mapped);
+              }
+            }
+            allCleanResults.push({
+              stt: offset + r.stt,
+              studentCode: r.studentCode,
+              displayName: r.displayName,
+              className: r.className,
+              classCode: r.classCode,
+              username: r.username,
+              password: r.password,
+              status: r.status,
+              error: r.error,
+              uid,
+            });
+          }
+
+          params.onProgress?.(
+            Math.min(params.students.length, offset + chunk.length),
+            params.students.length,
+          );
+        }
+
+        if (allNewUsers.length > 0) {
+          const newUidSet = new Set(allNewUsers.map((u) => u.uid));
           this.save({
             ...this.db,
-            users: [...this.db.users.filter((u) => !newUidSet.has(u.uid)), ...newUsers],
+            users: [...this.db.users.filter((u) => !newUidSet.has(u.uid)), ...allNewUsers],
           });
         }
 
+        const totalCreated = allCleanResults.filter((r) => r.status === 'created').length;
         return {
           ok: true,
-          createdCount: data.createdCount ?? newUsers.length,
-          failedCount: data.failedCount ?? 0,
-          results: cleanResults,
+          createdCount: totalCreated,
+          failedCount: allCleanResults.length - totalCreated,
+          results: allCleanResults,
         };
       } catch (err) {
         return {

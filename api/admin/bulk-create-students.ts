@@ -105,10 +105,10 @@ export async function POST(request: Request): Promise<Response> {
       },
     );
     const existingClassStudents = (countRes.ok ? await countRes.json() : []) as Array<{uid: string}>;
-    let nextSeq = existingClassStudents.length;
+    const baseSeq = existingClassStudents.length;
 
     const baseProfile = body.initialProfile ?? {};
-    const results: Array<{
+    type BulkRowResult = {
       stt: number;
       studentCode: string;
       displayName: string;
@@ -119,16 +119,15 @@ export async function POST(request: Request): Promise<Response> {
       status: 'created' | 'failed';
       error?: string;
       userRow?: Record<string, unknown>;
-    }> = [];
+    };
 
-    for (let i = 0; i < students.length; i++) {
-      const item = students[i];
+    const processStudent = async (item: BulkStudentInput, i: number): Promise<BulkRowResult> => {
       const displayName = String(item.displayName ?? '').trim();
       const baseUsername = String(item.username ?? '').trim().toLowerCase();
       const password = String(item.password ?? '').trim() || '11111111';
 
       if (!displayName || displayName.length < 2) {
-        results.push({
+        return {
           stt: i + 1,
           studentCode: '',
           displayName: displayName || '(Trống)',
@@ -138,11 +137,10 @@ export async function POST(request: Request): Promise<Response> {
           password,
           status: 'failed',
           error: 'Họ tên học sinh trống hoặc quá ngắn.',
-        });
-        continue;
+        };
       }
       if (!USERNAME_RE.test(baseUsername)) {
-        results.push({
+        return {
           stt: i + 1,
           studentCode: '',
           displayName,
@@ -152,11 +150,10 @@ export async function POST(request: Request): Promise<Response> {
           password,
           status: 'failed',
           error: 'Tên đăng nhập không hợp lệ (3–24 ký tự a-z, 0-9, . _ -).',
-        });
-        continue;
+        };
       }
       if (password.length < 8) {
-        results.push({
+        return {
           stt: i + 1,
           studentCode: '',
           displayName,
@@ -166,8 +163,7 @@ export async function POST(request: Request): Promise<Response> {
           password,
           status: 'failed',
           error: 'Mật khẩu phải tối thiểu 8 ký tự.',
-        });
-        continue;
+        };
       }
 
       // Attempt Auth Admin create user (auto-suffixing if username already exists on server)
@@ -207,7 +203,7 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       if (!createdUid) {
-        results.push({
+        return {
           stt: i + 1,
           studentCode: '',
           displayName,
@@ -217,12 +213,11 @@ export async function POST(request: Request): Promise<Response> {
           password,
           status: 'failed',
           error: lastAuthErr.slice(0, 120) || 'Không thể tạo tài khoản Auth.',
-        });
-        continue;
+        };
       }
 
-      nextSeq += 1;
-      const studentCode = `HS-${cls.name}-${String(nextSeq).padStart(2, '0')}`;
+      const seqNum = baseSeq + i + 1;
+      const studentCode = `HS-${cls.name}-${String(seqNum).padStart(2, '0')}`;
       const nowIso = new Date().toISOString();
       const rowPayload = {
         uid: createdUid,
@@ -271,7 +266,7 @@ export async function POST(request: Request): Promise<Response> {
 
       if (!insertRes.ok) {
         const dbErr = await insertRes.text();
-        results.push({
+        return {
           stt: i + 1,
           studentCode,
           displayName,
@@ -281,12 +276,11 @@ export async function POST(request: Request): Promise<Response> {
           password,
           status: 'failed',
           error: `Đã tạo Auth nhưng lỗi lưu hồ sơ: ${dbErr.slice(0, 100)}`,
-        });
-        continue;
+        };
       }
 
       const insertedArr = (await insertRes.json()) as Array<Record<string, unknown>>;
-      results.push({
+      return {
         stt: i + 1,
         studentCode,
         displayName,
@@ -296,7 +290,20 @@ export async function POST(request: Request): Promise<Response> {
         password,
         status: 'created',
         userRow: insertedArr[0] ?? rowPayload,
-      });
+      };
+    };
+
+    // Process up to 4 students concurrently to keep latency well under Vercel function limits
+    const results: BulkRowResult[] = new Array(students.length);
+    const CONCURRENCY = 4;
+    for (let start = 0; start < students.length; start += CONCURRENCY) {
+      const slice = students.slice(start, start + CONCURRENCY);
+      const batchOut = await Promise.all(
+        slice.map((item, offset) => processStudent(item, start + offset)),
+      );
+      for (let j = 0; j < batchOut.length; j++) {
+        results[start + j] = batchOut[j];
+      }
     }
 
     const createdCount = results.filter((r) => r.status === 'created').length;

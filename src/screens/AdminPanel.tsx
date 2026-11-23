@@ -128,7 +128,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [bulkDraftRows, setBulkDraftRows] = React.useState<BulkStudentDraftRow[]>([]);
   const [bulkParsing, setBulkParsing] = React.useState(false);
   const [bulkCreating, setBulkCreating] = React.useState(false);
+  const [bulkProgress, setBulkProgress] = React.useState<{done: number; total: number} | null>(null);
   const [bulkError, setBulkError] = React.useState('');
+  const [bulkNeedsRelogin, setBulkNeedsRelogin] = React.useState(false);
   const [lastBulkCreated, setLastBulkCreated] = React.useState<BulkCreatedStudentRow[]>([]);
   const [issuedPassByUid, setIssuedPassByUid] = React.useState<Record<string, string>>({});
   const [testAccMsg, setTestAccMsg] = React.useState('');
@@ -650,7 +652,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="space-y-0.5">
                             <p className="font-extrabold text-[#14284A]">
-                              Nhập file Excel danh sách học sinh Lớp {selectedCls.name} (Mã lớp: {selectedCls.code})
+                              Nhập file Excel danh sách học sinh{' '}
+                              {selectedCls.name.toLowerCase().startsWith('lớp')
+                                ? selectedCls.name
+                                : `Lớp ${selectedCls.name}`}{' '}
+                              (Mã lớp: {selectedCls.code})
                             </p>
                             <p className="text-[11px] text-[#5B6B82]">
                               Tự động tạo tên đăng nhập theo <strong>Tên HS + Mã lớp</strong>, mật khẩu mặc định{' '}
@@ -697,9 +703,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
 
                         {bulkError && (
-                          <p className="p-2.5 rounded-xl bg-[#FCE8E6] border border-[#C8392B] text-[#99261B] font-semibold">
-                            {bulkError}
-                          </p>
+                          <div className="p-2.5 rounded-xl bg-[#FCE8E6] border border-[#C8392B] text-[#99261B] font-semibold flex flex-wrap items-center justify-between gap-2">
+                            <span>{bulkError}</span>
+                            {bulkNeedsRelogin && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  dataService.logout();
+                                  window.location.reload();
+                                }}
+                                className="px-3 py-1 rounded-lg bg-[#99261B] text-white text-xs font-extrabold shrink-0"
+                              >
+                                Đăng xuất để đăng nhập lại
+                              </button>
+                            )}
+                          </div>
                         )}
 
                         {bulkDraftRows.length > 0 && (
@@ -788,6 +806,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 onClick={async () => {
                                   setBulkCreating(true);
                                   setBulkError('');
+                                  setBulkNeedsRelogin(false);
+                                  setBulkProgress({done: 0, total: bulkDraftRows.length});
                                   const res = await dataService.staffBulkCreateStudents(user, {
                                     classId: selectedCls.id,
                                     students: bulkDraftRows.map((r) => ({
@@ -795,10 +815,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                       username: r.username,
                                       password: r.password,
                                     })),
+                                    onProgress: (done, total) => setBulkProgress({done, total}),
                                   });
                                   setBulkCreating(false);
+                                  setBulkProgress(null);
                                   if (!res.ok) {
                                     setBulkError(res.error ?? 'Chưa thể cấp tài khoản hàng loạt.');
+                                    setBulkNeedsRelogin(Boolean(res.needsRelogin));
+                                    if (res.results.length > 0) {
+                                      setLastBulkCreated(res.results);
+                                      refresh();
+                                    }
                                     return;
                                   }
                                   const createdMap: Record<string, string> = {};
@@ -811,7 +838,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   setLastBulkCreated(res.results);
                                   setBulkDraftRows([]);
                                   setTestAccMsg(
-                                    `Đã cấp thành công ${res.createdCount}/${res.results.length} tài khoản học sinh vào Lớp ${selectedCls.name} (${selectedCls.code})${res.failedCount > 0 ? ` · ${res.failedCount} dòng lỗi` : ''}. Bấm "Xuất bảng Excel tài khoản & mật khẩu" bên dưới để lưu gửi lớp!`,
+                                    `Đã cấp thành công ${res.createdCount}/${res.results.length} tài khoản học sinh vào ${selectedCls.name.toLowerCase().startsWith('lớp') ? selectedCls.name : `Lớp ${selectedCls.name}`} (${selectedCls.code})${res.failedCount > 0 ? ` · ${res.failedCount} dòng lỗi` : ''}. Bấm "Xuất bảng Excel tài khoản & mật khẩu" bên dưới để lưu gửi lớp!`,
                                   );
                                   refresh();
                                 }}
@@ -819,7 +846,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               >
                                 <UserPlus className="w-4 h-4" />
                                 {bulkCreating
-                                  ? `Đang cấp ${bulkDraftRows.length} tài khoản lên máy chủ...`
+                                  ? bulkProgress
+                                    ? `Đang cấp ${bulkProgress.done}/${bulkProgress.total} học sinh lên máy chủ...`
+                                    : `Đang cấp ${bulkDraftRows.length} tài khoản lên máy chủ...`
                                   : `Xác nhận cấp hàng loạt (${bulkDraftRows.length} học sinh)`}
                               </button>
                             </div>

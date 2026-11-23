@@ -113,7 +113,11 @@ export async function verifyRequestAuth(
   const authHeader = request.headers.get('authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token || token.length < 20) {
-    return {ok: false, status: 401, error: 'Vui lòng đăng nhập để sử dụng tính năng AI.'};
+    return {
+      ok: false,
+      status: 401,
+      error: 'Phiên đăng nhập đã hết hạn hoặc chưa được xác thực. Vui lòng đăng xuất rồi đăng nhập lại.',
+    };
   }
 
   try {
@@ -159,7 +163,7 @@ export async function verifyRequestAuth(
       return {
         ok: false,
         status: 403,
-        error: 'Chỉ Quản trị viên hoặc Giáo viên mới có quyền dùng AI trích xuất học liệu.',
+        error: 'Chỉ Quản trị viên hoặc Giáo viên mới có quyền thực hiện thao tác này.',
       };
     }
 
