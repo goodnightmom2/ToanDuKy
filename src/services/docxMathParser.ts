@@ -1,5 +1,5 @@
 import mammoth from 'mammoth';
-import {decodeMathTypeOleToLatex} from './mathtypeDecoder.ts';
+import {decodeMathTypeOleToLatex, decodeMathTypeWmfToLatex} from './mathtypeDecoder.ts';
 
 export interface DocxEmbeddedImage {
   index: number; // 1-based index matching [HÌNH_VẼ_k] marker in extracted text
@@ -408,15 +408,23 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
       }
     }
 
-    // 2. Pre-decode all MathType OLE binaries (`word/embeddings/oleObject*.bin`) into a cache
+    // 2. Pre-decode all MathType / Equation 3.0 OLE binaries (`word/embeddings/*`) AND WMF comment fallbacks (`word/media/*.wmf`)
     const decodedOleByTarget = new Map<string, string>();
     for (const e of entries) {
-      if (!/^word\/embeddings\/.+\.bin$/i.test(e.name)) continue;
-      const oleRaw = await readZipEntryBytes(bytes, e);
-      if (!oleRaw) continue;
-      const latex = decodeMathTypeOleToLatex(oleRaw);
-      if (latex) {
-        decodedOleByTarget.set(e.name.toLowerCase(), latex);
+      if (/^word\/embeddings\//i.test(e.name)) {
+        const oleRaw = await readZipEntryBytes(bytes, e);
+        if (!oleRaw) continue;
+        const latex = decodeMathTypeOleToLatex(oleRaw);
+        if (latex) {
+          decodedOleByTarget.set(e.name.toLowerCase(), latex);
+        }
+      } else if (/^word\/media\/.+\.wmf$/i.test(e.name)) {
+        const wmfRaw = await readZipEntryBytes(bytes, e);
+        if (!wmfRaw) continue;
+        const latex = decodeMathTypeWmfToLatex(wmfRaw);
+        if (latex) {
+          decodedOleByTarget.set(e.name.toLowerCase(), latex);
+        }
       }
     }
 
@@ -476,11 +484,31 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
             return null;
           };
 
+          const tryDecodeOleContainer = (container: Element): string | null => {
+            const oleEl = findDescendant(container, 'OLEObject');
+            const rId = oleEl ? getAttrByLocalName(oleEl, 'id') : null;
+            const target = rId ? relMap.get(rId) : undefined;
+            const decodedFromOle = target ? decodedOleByTarget.get(target.toLowerCase()) : undefined;
+            if (decodedFromOle) return decodedFromOle;
+
+            // Fallback: check `<v:imagedata r:id="..."/>` pointing to a MathType `.wmf` preview
+            const imgData = findDescendant(container, 'imagedata');
+            const imgRId = imgData ? getAttrByLocalName(imgData, 'id') : null;
+            const imgTarget = imgRId ? relMap.get(imgRId) : undefined;
+            const decodedFromWmf = imgTarget ? decodedOleByTarget.get(imgTarget.toLowerCase()) : undefined;
+            return decodedFromWmf ?? null;
+          };
+
           const walkInline = (el: Element): string => {
             const tag = getLocalName(el);
             if (tag === 't') return el.textContent ?? '';
             if (tag === 'tab') return ' ';
             if (tag === 'br' || tag === 'cr') return '\n';
+            if (tag === 'AlternateContent') {
+              // Walk <mc:Choice> only if present to avoid duplicating equations/drawings in <mc:Fallback>
+              const choice = getDirectChild(el, 'Choice');
+              if (choice) return walkInline(choice);
+            }
             if (tag === 'oMathPara') {
               ommlCount += 1;
               const inner = ommlChildrenToLatex(el).replace(/\s{2,}/g, ' ').trim();
@@ -493,10 +521,7 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
             }
             if (tag === 'object') {
               oleObjectCount += 1;
-              const oleEl = findDescendant(el, 'OLEObject');
-              const rId = oleEl ? getAttrByLocalName(oleEl, 'id') : null;
-              const target = rId ? relMap.get(rId) : undefined;
-              const decoded = target ? decodedOleByTarget.get(target.toLowerCase()) : undefined;
+              const decoded = tryDecodeOleContainer(el);
               if (decoded) {
                 oleDecodedCount += 1;
                 return ` $${decoded}$ `;
@@ -514,14 +539,26 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
               return '';
             }
             if (tag === 'pict') {
-              // Non-OLE legacy Word image (<w:pict><v:shape><v:imagedata r:id="..."/></v:shape></w:pict>)
               if (findDescendant(el, 'OLEObject')) {
-                return '';
+                oleObjectCount += 1;
+                const decoded = tryDecodeOleContainer(el);
+                if (decoded) {
+                  oleDecodedCount += 1;
+                  return ` $${decoded}$ `;
+                }
+                return ' [CÔNG_THỨC_MATHTYPE] ';
               }
               const imgData = findDescendant(el, 'imagedata');
               const rId = imgData ? getAttrByLocalName(imgData, 'id') : null;
               const target = rId ? relMap.get(rId) : undefined;
               if (target) {
+                // Might also be a standalone MathType WMF equation pasted without OLEObject!
+                const wmfLatex = decodedOleByTarget.get(target.toLowerCase());
+                if (wmfLatex) {
+                  oleObjectCount += 1;
+                  oleDecodedCount += 1;
+                  return ` $${wmfLatex}$ `;
+                }
                 const idx = registerDiagramTarget(target);
                 if (idx) return ` [HÌNH_VẼ_${idx}] `;
               }

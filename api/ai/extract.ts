@@ -30,9 +30,16 @@ interface TaxonomyPromptEntry {
   name: string;
 }
 
+interface DocxFigureInput {
+  index: number;
+  mimeType?: string;
+  imageBase64?: string;
+}
+
 interface ExtractBody {
   text?: string;
   pages?: ExtractPageInput[];
+  docxFigures?: DocxFigureInput[];
   pdfBase64?: string;
   sourceName?: string;
   driveFileId?: string;
@@ -251,6 +258,7 @@ export async function POST(request: Request): Promise<Response> {
   const {
     text = '',
     pages = [],
+    docxFigures = [],
     pdfBase64 = '',
     sourceName = 'tai-lieu',
     driveFileId = '',
@@ -356,6 +364,23 @@ export async function POST(request: Request): Promise<Response> {
         data: pdfBase64.slice(0, 3_000_000),
       },
     });
+  }
+
+  // Attach up to 4 extracted DOCX diagram images so Gemini sees numbers/labels on diagrams directly
+  if (Array.isArray(docxFigures) && docxFigures.length > 0) {
+    for (const fig of docxFigures.slice(0, 4)) {
+      if (fig?.imageBase64 && fig.imageBase64.length > 50) {
+        contents.push({
+          text: `[HÌNH_VẼ_${fig.index}] (Ảnh hình vẽ minh họa tách từ tệp Word — dùng để đối chiếu đỉnh, góc, số đo trên hình):`,
+        });
+        contents.push({
+          inlineData: {
+            mimeType: fig.mimeType || 'image/jpeg',
+            data: fig.imageBase64.slice(0, 800_000),
+          },
+        });
+      }
+    }
   }
 
   const combinedTextInput = [trimmedText, pageTextParts.join('\n\n')]

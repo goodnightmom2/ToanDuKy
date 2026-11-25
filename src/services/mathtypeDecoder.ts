@@ -1,6 +1,7 @@
 /**
- * Pure-TypeScript OLE2 Compound Binary File (CFB) + MathType MTEF v5/v3 decoder.
- * Decodes `word/embeddings/oleObject*.bin` (`Equation Native` stream) inside `.docx` files
+ * Pure-TypeScript OLE2 Compound Binary File (CFB) + MathType MTEF v5 & MTEF v3 (Equation 3.0)
+ * + WMF Comment fallback decoder.
+ * Decodes `word/embeddings/oleObject*.bin` and `word/media/image*.wmf` inside `.docx` files
  * directly into clean KaTeX-compatible LaTeX in the browser — zero dependencies.
  */
 
@@ -66,7 +67,7 @@ function readMiniChain(
  * Extracts the raw `Equation Native` stream from an OLE2 Compound File (`oleObject*.bin`).
  */
 function extractEquationNativeStream(bytes: Uint8Array): Uint8Array | null {
-  if (bytes.length < 512) return null;
+  if (bytes.length < 256) return null;
   for (let i = 0; i < 8; i++) {
     if (bytes[i] !== CFB_MAGIC[i]) return null;
   }
@@ -85,7 +86,6 @@ function extractEquationNativeStream(bytes: Uint8Array): Uint8Array | null {
   const firstDifatSector = view.getUint32(68, true);
   const numDifatSectors = view.getUint32(72, true);
 
-  // Collect FAT sector IDs from header DIFAT (109 entries at offset 76) + extended DIFAT chain
   const fatSectorIds: number[] = [];
   for (let i = 0; i < 109; i++) {
     const sid = view.getUint32(76 + i * 4, true);
@@ -96,27 +96,31 @@ function extractEquationNativeStream(bytes: Uint8Array): Uint8Array | null {
   for (let d = 0; d < numDifatSectors && difatSec <= MAXREGSECT && !visitedDifat.has(difatSec); d++) {
     visitedDifat.add(difatSec);
     const off = (difatSec + 1) * sectorSize;
-    if (off + sectorSize > bytes.length) break;
-    const entriesPerSec = sectorSize / 4 - 1;
+    if (off + 4 > bytes.length) break;
+    const entriesPerSec = Math.floor(Math.min(sectorSize, bytes.length - off) / 4) - 1;
     for (let i = 0; i < entriesPerSec; i++) {
       const sid = view.getUint32(off + i * 4, true);
       if (sid <= MAXREGSECT) fatSectorIds.push(sid);
     }
-    difatSec = view.getUint32(off + entriesPerSec * 4, true);
+    if (off + entriesPerSec * 4 + 4 <= bytes.length) {
+      difatSec = view.getUint32(off + entriesPerSec * 4, true);
+    } else {
+      break;
+    }
   }
 
-  // Assemble FAT table
   const fatEntriesPerSec = sectorSize / 4;
-  const fat = new Uint32Array(fatSectorIds.length * fatEntriesPerSec);
+  const fat = new Uint32Array(Math.max(1, fatSectorIds.length) * fatEntriesPerSec);
+  fat.fill(0xffffffff);
   for (let i = 0; i < fatSectorIds.length; i++) {
     const off = (fatSectorIds[i] + 1) * sectorSize;
-    if (off + sectorSize > bytes.length) continue;
-    for (let j = 0; j < fatEntriesPerSec; j++) {
+    if (off >= bytes.length) continue;
+    const availEntries = Math.min(fatEntriesPerSec, Math.floor((bytes.length - off) / 4));
+    for (let j = 0; j < availEntries; j++) {
       fat[i * fatEntriesPerSec + j] = view.getUint32(off + j * 4, true);
     }
   }
 
-  // Read Directory stream
   const dirBytes = readRegularChain(bytes, fat, firstDirSector, sectorSize, 256 * 1024);
   if (dirBytes.length < 128) return null;
   const dirView = new DataView(dirBytes.buffer, dirBytes.byteOffset, dirBytes.byteLength);
@@ -140,11 +144,15 @@ function extractEquationNativeStream(bytes: Uint8Array): Uint8Array | null {
     }
     const startSec = dirView.getUint32(base + 116, true);
     const sizeLow = dirView.getUint32(base + 120, true);
+    const cleanName = name.replace(/^[\x00-\x1f]+/, '').trim().toLowerCase();
 
     if (objType === 5) {
       rootStart = startSec;
       rootSize = sizeLow;
-    } else if (objType === 2 && name.toLowerCase() === 'equation native') {
+    } else if (
+      objType === 2 &&
+      (cleanName === 'equation native' || cleanName === 'contents' || cleanName === 'ole10native')
+    ) {
       eqStart = startSec;
       eqSize = sizeLow;
     }
@@ -172,20 +180,184 @@ function extractEquationNativeStream(bytes: Uint8Array): Uint8Array | null {
   return readRegularChain(bytes, fat, eqStart, sectorSize, eqSize);
 }
 
+const SYMBOL_LOWER_GREEK: Record<string, string> = {
+  a: '\\alpha ',
+  b: '\\beta ',
+  g: '\\gamma ',
+  d: '\\delta ',
+  e: '\\varepsilon ',
+  z: '\\zeta ',
+  h: '\\eta ',
+  q: '\\theta ',
+  i: '\\iota ',
+  k: '\\kappa ',
+  l: '\\lambda ',
+  m: '\\mu ',
+  n: '\\nu ',
+  x: '\\xi ',
+  o: 'o',
+  p: '\\pi ',
+  r: '\\rho ',
+  s: '\\sigma ',
+  t: '\\tau ',
+  u: '\\upsilon ',
+  f: '\\varphi ',
+  c: '\\chi ',
+  y: '\\psi ',
+  w: '\\omega ',
+  v: '\\varpi ',
+  j: '\\varphi ',
+};
+
+const SYMBOL_UPPER_GREEK: Record<string, string> = {
+  G: '\\Gamma ',
+  D: '\\triangle ',
+  Q: '\\Theta ',
+  L: '\\Lambda ',
+  X: '\\Xi ',
+  P: '\\Pi ',
+  S: '\\Sigma ',
+  U: '\\Upsilon ',
+  F: '\\Phi ',
+  Y: '\\Psi ',
+  W: '\\Omega ',
+};
+
+function symbolByteToLatex(b: number, isGreekLower: boolean, isGreekUpper: boolean): string {
+  if (b >= 0x20 && b <= 0x7e) {
+    const ch = String.fromCharCode(b);
+    if (isGreekLower && SYMBOL_LOWER_GREEK[ch]) return SYMBOL_LOWER_GREEK[ch];
+    if (isGreekUpper && SYMBOL_UPPER_GREEK[ch]) return SYMBOL_UPPER_GREEK[ch];
+    if (ch === 'D' && !isGreekLower) return '\\triangle ';
+    if (ch === '^') return '\\perp ';
+    if (ch === '*') return '\\ast ';
+    if (ch === '-') return '-';
+    return asciiCharToLatex(ch);
+  }
+
+  switch (b) {
+    case 0xa0:
+      return ' ';
+    case 0xa3:
+      return '\\le ';
+    case 0xa4:
+      return '/';
+    case 0xa5:
+      return '\\infty ';
+    case 0xab:
+      return '\\leftrightarrow ';
+    case 0xac:
+      return '\\leftarrow ';
+    case 0xae:
+      return '\\rightarrow ';
+    case 0xb0:
+      return '^\\circ';
+    case 0xb1:
+      return '\\pm ';
+    case 0xb2:
+      return "''";
+    case 0xb3:
+      return '\\ge ';
+    case 0xb4:
+      return '\\times ';
+    case 0xb5:
+      return '\\propto ';
+    case 0xb7:
+    case 0xd7:
+      return '\\cdot ';
+    case 0xb8:
+      return '\\div ';
+    case 0xb9:
+      return '\\ne ';
+    case 0xba:
+      return '\\equiv ';
+    case 0xbb:
+      return '\\approx ';
+    case 0xc4:
+      return '\\otimes ';
+    case 0xc5:
+      return '\\oplus ';
+    case 0xc6:
+      return '\\varnothing ';
+    case 0xc7:
+      return '\\cap ';
+    case 0xc8:
+      return '\\cup ';
+    case 0xcc:
+      return '\\subset ';
+    case 0xcd:
+      return '\\subseteq ';
+    case 0xce:
+      return '\\in ';
+    case 0xcf:
+      return '\\notin ';
+    case 0xd0:
+      return '\\angle ';
+    case 0xd6:
+      return '\\sqrt{}';
+    case 0xdb:
+      return '\\Leftrightarrow ';
+    case 0xdc:
+      return '\\Leftarrow ';
+    case 0xde:
+      return '\\Rightarrow ';
+    case 0xe0:
+      return '\\diamond ';
+    default:
+      return '';
+  }
+}
+
+function asciiCharToLatex(ch: string): string {
+  if (ch === '{') return '\\{';
+  if (ch === '}') return '\\}';
+  if (ch === '%') return '\\%';
+  if (ch === '$') return '\\$';
+  if (ch === '&') return '\\&';
+  if (ch === '#') return '\\#';
+  return ch;
+}
+
 /**
- * Maps a MathType MTCode (UTF-16 codepoint / MathType private-use codepoint) to KaTeX LaTeX.
+ * Maps a MathType MTCode / font codepoint to KaTeX LaTeX, taking into account
+ * the style/font (fnLCGREEK=4, fnUCGREEK=5, fnSYMBOL=6, or explicit Symbol font).
  */
-function mtCodeToLatex(code: number): string {
-  // Standard ASCII printable
+function mtCodeToLatex(
+  code: number,
+  styleOrFont: {fnStyle: number; fontName: string},
+): string {
+  const fontLow = styleOrFont.fontName.toLowerCase();
+  const isSymbolFont =
+    styleOrFont.fnStyle === 4 ||
+    styleOrFont.fnStyle === 5 ||
+    styleOrFont.fnStyle === 6 ||
+    fontLow.includes('symbol');
+  const isGreekLower = styleOrFont.fnStyle === 4;
+  const isGreekUpper = styleOrFont.fnStyle === 5;
+
+  // Windows Symbol-charset Private Use Area (0xF020..0xF0FF)
+  if (code >= 0xf020 && code <= 0xf0ff) {
+    const low = code & 0xff;
+    if (isSymbolFont) {
+      return symbolByteToLatex(low, isGreekLower, isGreekUpper);
+    }
+    if (low >= 0x20 && low <= 0x7e) {
+      return asciiCharToLatex(String.fromCharCode(low));
+    }
+    return symbolByteToLatex(low, false, false);
+  }
+
+  // Standard 8-bit Symbol font codes in MTEF v3 (when fnStyle is 4, 5, or 6)
+  if (isSymbolFont && code >= 0x20 && code <= 0xff) {
+    // Only use Symbol table if it's Greek/high-byte/special ('D' -> \triangle in fnUCGREEK/fnSYMBOL)
+    if (isGreekLower || isGreekUpper || code >= 0x80 || code === 0x44 || code === 0x5e) {
+      const sym = symbolByteToLatex(code, isGreekLower, isGreekUpper);
+      if (sym) return sym;
+    }
+  }
+
   if (code >= 0x20 && code <= 0x7e) {
-    const ch = String.fromCharCode(code);
-    if (ch === '{') return '\\{';
-    if (ch === '}') return '\\}';
-    if (ch === '%') return '\\%';
-    if (ch === '$') return '\\$';
-    if (ch === '&') return '\\&';
-    if (ch === '#') return '\\#';
-    return ch;
+    return asciiCharToLatex(String.fromCharCode(code));
   }
 
   switch (code) {
@@ -256,8 +428,9 @@ function mtCodeToLatex(code: number): string {
       return '\\perp ';
     case 0x25b3:
     case 0x0394:
+    case 0x2206:
       return '\\triangle ';
-    // Greek letters
+    // Greek Unicode
     case 0x03b1:
       return '\\alpha ';
     case 0x03b2:
@@ -299,6 +472,7 @@ function mtCodeToLatex(code: number): string {
     case 0xef03:
     case 0xef04:
     case 0xef05:
+    case 0xef08:
       return ' ';
     default:
       if (code >= 0x00c0 && code <= 0x1ef9) {
@@ -313,6 +487,8 @@ class MtefReader {
   private view: DataView;
   private pos = 0;
   private ver = 5;
+  private platform = 1; // 1 = Windows, 0 = Mac
+  private fontDefs: string[] = ['']; // 1-indexed FONT_DEF names
 
   constructor(buf: Uint8Array) {
     this.buf = buf;
@@ -333,7 +509,17 @@ class MtefReader {
       this.pos = this.buf.length;
       return 0;
     }
-    const v = this.view.getUint16(this.pos, true);
+    const v = this.view.getUint16(this.pos, this.platform !== 0);
+    this.pos += 2;
+    return v;
+  }
+
+  private readI16(): number {
+    if (this.pos + 2 > this.buf.length) {
+      this.pos = this.buf.length;
+      return 0;
+    }
+    const v = this.view.getInt16(this.pos, true);
     this.pos += 2;
     return v;
   }
@@ -343,10 +529,20 @@ class MtefReader {
     return b === 0xff ? this.readU16() : b;
   }
 
-  private skipCString(): void {
+  private readMtefSint(): number {
+    const b = this.readU8();
+    return b === 0xff ? this.readI16() : b - 128;
+  }
+
+  private readCString(): string {
+    const start = this.pos;
     while (this.pos < this.buf.length) {
-      if (this.buf[this.pos++] === 0) break;
+      if (this.buf[this.pos] === 0) break;
+      this.pos++;
     }
+    const str = new TextDecoder('utf-8', {fatal: false}).decode(this.buf.subarray(start, this.pos));
+    if (this.pos < this.buf.length && this.buf[this.pos] === 0) this.pos++;
+    return str;
   }
 
   private skipNudge(): void {
@@ -363,13 +559,9 @@ class MtefReader {
   }
 
   private skipEqnPrefs(): void {
-    // MTEF 5 EQN_PREFS: options byte + 3 arrays (sizes, spaces, styles)
     this.readU8(); // options
-    // Sizes array: count byte + count dimension entries (each nibbled, terminated by 0xF)
     this.skipDimensionArray();
-    // Spaces array: count byte + count dimension entries
     this.skipDimensionArray();
-    // Styles array: count byte + entries (if fontDefIndex !== 0, followed by charStyle byte)
     const nStyles = this.readU8();
     for (let i = 0; i < nStyles && !this.eof(); i++) {
       const fd = this.readMtefUint();
@@ -398,7 +590,7 @@ class MtefReader {
     }
   }
 
-  private readEmbellishments(): number[] {
+  private readEmbellishmentsV5(): number[] {
     const list: number[] = [];
     while (!this.eof()) {
       const tag = this.readU8();
@@ -407,8 +599,27 @@ class MtefReader {
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
         list.push(this.readU8());
+      } else if (tag >= 100) {
+        const skip = this.readMtefUint();
+        this.pos = Math.min(this.buf.length, this.pos + skip);
       } else {
-        // Unexpected tag inside embell list; rewind 1 byte and stop
+        this.pos -= 1;
+        break;
+      }
+    }
+    return list;
+  }
+
+  private readEmbellishmentsV3(): number[] {
+    const list: number[] = [];
+    while (!this.eof()) {
+      const raw = this.readU8();
+      if (raw === 0) break;
+      if ((raw & 0x0f) === 6) {
+        const opts = (raw >> 4) & 0x0f;
+        if (opts & 0x08) this.skipNudge();
+        list.push(this.readU8());
+      } else {
         this.pos -= 1;
         break;
       }
@@ -432,27 +643,7 @@ class MtefReader {
     return out;
   }
 
-  private readTemplate(depth: number): string {
-    const opts = this.readU8();
-    if (opts & 0x01) this.skipNudge();
-    const selector = this.readU8();
-    let variation = this.readU8();
-    if (variation & 0x80) {
-      const v2 = this.readU8();
-      variation = (variation & 0x7f) | (v2 << 8);
-    }
-    this.readU8(); // template-specific options
-
-    const slots: string[] = [];
-    while (!this.eof()) {
-      const peek = this.buf[this.pos];
-      if (peek === 0) {
-        this.pos += 1;
-        break;
-      }
-      slots.push(this.readRecord(depth + 1));
-    }
-
+  private formatTemplate(selector: number, variation: number, slots: string[]): string {
     const s0 = (slots[0] ?? '').trim();
     const s1 = (slots[1] ?? '').trim();
     const s2 = (slots[2] ?? '').trim();
@@ -508,66 +699,95 @@ class MtefReader {
     }
   }
 
-  private readRecord(depth: number): string {
-    if (depth > 32 || this.eof()) return '';
+  private resolveStyleAndFont(signedTf: number): {fnStyle: number; fontName: string} {
+    if (signedTf > 0) {
+      return {fnStyle: signedTf, fontName: ''};
+    }
+    const idx = -signedTf;
+    return {fnStyle: 0, fontName: this.fontDefs[idx] ?? ''};
+  }
+
+  private readRecordV5(depth: number): string {
+    if (depth > 40 || this.eof()) return '';
     const tag = this.readU8();
 
+    if (tag >= 100) {
+      // MTEF v5 future/extension record: length-prefixed! Skip cleanly and continue!
+      const payloadLen = this.readMtefUint();
+      this.pos = Math.min(this.buf.length, this.pos + payloadLen);
+      return '';
+    }
+
     switch (tag) {
-      case 0: // END
+      case 0:
         return '';
 
       case 1: {
-        // LINE
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
-        if (opts & 0x02) this.pos = Math.min(this.buf.length, this.pos + 2); // line spacing
-        if (opts & 0x08) {
-          // inline RULER record (tag 7 follows)
-          if (this.buf[this.pos] === 7) {
-            this.pos += 1;
-            this.skipRuler();
-          }
+        if (opts & 0x02) this.pos = Math.min(this.buf.length, this.pos + 2);
+        if (opts & 0x08 && this.buf[this.pos] === 7) {
+          this.pos += 1;
+          this.skipRuler();
         }
-        if (opts & 0x04) return ''; // xfNULL (empty slot, no END byte!)
+        if (opts & 0x04) return '';
         let out = '';
         while (!this.eof()) {
           if (this.buf[this.pos] === 0) {
             this.pos += 1;
             break;
           }
-          out += this.readRecord(depth + 1);
+          out += this.readRecordV5(depth + 1);
         }
         return out;
       }
 
       case 2: {
-        // CHAR
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
-        this.readU8(); // typeface
+        const signedTf = this.readMtefSint();
         let mtcode = 0;
+        let fontPos = 0;
         if (!(opts & 0x10)) {
           mtcode = this.readU16();
         }
-        if (opts & 0x04) this.readU8(); // 8-bit font position
-        if (opts & 0x08) this.readU16(); // 16-bit font position
-        let ch = mtcode ? mtCodeToLatex(mtcode) : '';
+        if (opts & 0x04) fontPos = this.readU8();
+        if (opts & 0x08) fontPos = this.readU16();
+        const effectiveCode = mtcode || fontPos;
+        let ch = effectiveCode ? mtCodeToLatex(effectiveCode, this.resolveStyleAndFont(signedTf)) : '';
         if (opts & 0x02) {
-          const embells = this.readEmbellishments();
+          const embells = this.readEmbellishmentsV5();
           if (ch) ch = this.applyEmbellishments(ch, embells);
         }
         return ch;
       }
 
-      case 3: // TMPL
-        return this.readTemplate(depth);
-
-      case 4: {
-        // PILE
+      case 3: {
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
-        this.readU8(); // halign
-        this.readU8(); // valign
+        const selector = this.readU8();
+        let variation = this.readU8();
+        if (variation & 0x80) {
+          const v2 = this.readU8();
+          variation = (variation & 0x7f) | (v2 << 8);
+        }
+        this.readU8(); // template options
+        const slots: string[] = [];
+        while (!this.eof()) {
+          if (this.buf[this.pos] === 0) {
+            this.pos += 1;
+            break;
+          }
+          slots.push(this.readRecordV5(depth + 1));
+        }
+        return this.formatTemplate(selector, variation, slots);
+      }
+
+      case 4: {
+        const opts = this.readU8();
+        if (opts & 0x01) this.skipNudge();
+        this.readU8();
+        this.readU8();
         if (opts & 0x08 && this.buf[this.pos] === 7) {
           this.pos += 1;
           this.skipRuler();
@@ -578,19 +798,18 @@ class MtefReader {
             this.pos += 1;
             break;
           }
-          const r = this.readRecord(depth + 1).trim();
+          const r = this.readRecordV5(depth + 1).trim();
           if (r) rows.push(r);
         }
         return rows.join(' \\\\ ');
       }
 
       case 5: {
-        // MATRIX
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
-        this.readU8(); // valign
-        this.readU8(); // h_just
-        this.readU8(); // v_just
+        this.readU8();
+        this.readU8();
+        this.readU8();
         const rows = this.readU8();
         const cols = this.readU8();
         const rowPartBytes = Math.ceil((rows + 1) / 4);
@@ -602,7 +821,7 @@ class MtefReader {
             this.pos += 1;
             break;
           }
-          cells.push(this.readRecord(depth + 1).trim());
+          cells.push(this.readRecordV5(depth + 1).trim());
         }
         if (rows <= 0 || cols <= 0) return cells.join(' ');
         const lines: string[] = [];
@@ -613,24 +832,22 @@ class MtefReader {
       }
 
       case 6: {
-        // Stray EMBELL
         const opts = this.readU8();
         if (opts & 0x01) this.skipNudge();
         this.readU8();
         return '';
       }
 
-      case 7: // RULER
+      case 7:
         this.skipRuler();
         return '';
 
-      case 8: // FONT_STYLE_DEF
+      case 8:
         this.readMtefUint();
         this.readU8();
         return '';
 
       case 9: {
-        // SIZE
         const lsize = this.readU8();
         if (lsize === 101) this.readU16();
         else if (lsize === 100) {
@@ -649,58 +866,224 @@ class MtefReader {
       case 14:
         return '';
 
-      case 15: // COLOR
+      case 15:
         this.readMtefUint();
         return '';
 
       case 16: {
-        // COLOR_DEF
         const opts = this.readU8();
         const nVals = opts & 0x01 ? 4 : 3;
         this.pos = Math.min(this.buf.length, this.pos + nVals * 2);
-        if (opts & 0x04) this.skipCString();
+        if (opts & 0x04) this.readCString();
         return '';
       }
 
-      case 17: // FONT_DEF
+      case 17: {
+        // FONT_DEF: enc_def_index + null-terminated font name
         this.readMtefUint();
-        this.skipCString();
+        const fontName = this.readCString();
+        this.fontDefs.push(fontName);
         return '';
+      }
 
-      case 18: // EQN_PREFS
+      case 18:
         this.skipEqnPrefs();
         return '';
 
-      case 19: // ENCODING_DEF
-        this.skipCString();
+      case 19:
+        this.readCString();
         return '';
 
       default:
-        // Unknown or future record (>= 100): abort cleanly to avoid desync garbage
+        this.pos = this.buf.length;
+        return '';
+    }
+  }
+
+  /**
+   * MTEF v3 (Microsoft Equation 3.0 / MathType 3.x) record reader.
+   * Record type is low nibble `raw & 0x0F`, options are high nibble `(raw >> 4) & 0x0F`.
+   */
+  private readRecordV3(depth: number): string {
+    if (depth > 40 || this.eof()) return '';
+    const raw = this.readU8();
+    const recType = raw & 0x0f;
+    const opts = (raw >> 4) & 0x0f;
+
+    switch (recType) {
+      case 0:
+        return '';
+
+      case 1: {
+        // LINE (v3: 0x08=nudge, 0x04=ruler, 0x02=lspace, 0x01=null)
+        if (opts & 0x08) this.skipNudge();
+        if (opts & 0x02) this.pos = Math.min(this.buf.length, this.pos + 2);
+        if (opts & 0x04 && (this.buf[this.pos] & 0x0f) === 7) {
+          this.pos += 1;
+          this.skipRuler();
+        }
+        if (opts & 0x01) return '';
+        let out = '';
+        while (!this.eof()) {
+          if (this.buf[this.pos] === 0) {
+            this.pos += 1;
+            break;
+          }
+          out += this.readRecordV3(depth + 1);
+        }
+        return out;
+      }
+
+      case 2: {
+        // CHAR (v3: 0x08=nudge, 0x02=embell; 1-byte typeface + 16-bit char on Windows / 8-bit on Mac)
+        if (opts & 0x08) this.skipNudge();
+        const rawTf = this.readU8();
+        const signedTf = rawTf - 128;
+        const code = this.platform === 0 ? this.readU8() : this.readU16();
+        let ch = code ? mtCodeToLatex(code, this.resolveStyleAndFont(signedTf)) : '';
+        if (opts & 0x02) {
+          const embells = this.readEmbellishmentsV3();
+          if (ch) ch = this.applyEmbellishments(ch, embells);
+        }
+        return ch;
+      }
+
+      case 3: {
+        // TMPL (v3: 0x08=nudge; 1-byte selector, 1-byte variation, 1-byte options)
+        if (opts & 0x08) this.skipNudge();
+        const selector = this.readU8();
+        const variation = this.readU8();
+        this.readU8(); // template options
+        const slots: string[] = [];
+        while (!this.eof()) {
+          if (this.buf[this.pos] === 0) {
+            this.pos += 1;
+            break;
+          }
+          slots.push(this.readRecordV3(depth + 1));
+        }
+        return this.formatTemplate(selector, variation, slots);
+      }
+
+      case 4: {
+        if (opts & 0x08) this.skipNudge();
+        this.readU8();
+        this.readU8();
+        if (opts & 0x04 && (this.buf[this.pos] & 0x0f) === 7) {
+          this.pos += 1;
+          this.skipRuler();
+        }
+        const rows: string[] = [];
+        while (!this.eof()) {
+          if (this.buf[this.pos] === 0) {
+            this.pos += 1;
+            break;
+          }
+          const r = this.readRecordV3(depth + 1).trim();
+          if (r) rows.push(r);
+        }
+        return rows.join(' \\\\ ');
+      }
+
+      case 5: {
+        if (opts & 0x08) this.skipNudge();
+        this.readU8();
+        this.readU8();
+        this.readU8();
+        const rows = this.readU8();
+        const cols = this.readU8();
+        const rowPartBytes = Math.ceil((rows + 1) / 4);
+        const colPartBytes = Math.ceil((cols + 1) / 4);
+        this.pos = Math.min(this.buf.length, this.pos + rowPartBytes + colPartBytes);
+        const cells: string[] = [];
+        while (!this.eof()) {
+          if (this.buf[this.pos] === 0) {
+            this.pos += 1;
+            break;
+          }
+          cells.push(this.readRecordV3(depth + 1).trim());
+        }
+        if (rows <= 0 || cols <= 0) return cells.join(' ');
+        const lines: string[] = [];
+        for (let r = 0; r < rows; r++) {
+          lines.push(cells.slice(r * cols, (r + 1) * cols).join(' & '));
+        }
+        return lines.join(' \\\\ ');
+      }
+
+      case 6: {
+        if (opts & 0x08) this.skipNudge();
+        this.readU8();
+        return '';
+      }
+
+      case 7:
+        this.skipRuler();
+        return '';
+
+      case 8: {
+        // FONT in MTEF v3: tface (1..n), style, null-terminated font name
+        const tface = this.readU8();
+        this.readU8(); // style
+        const fontName = this.readCString();
+        if (tface > 0 && tface < 64) {
+          this.fontDefs[tface] = fontName;
+        }
+        return '';
+      }
+
+      case 9: {
+        const lsize = this.readU8();
+        if (lsize === 101) this.readU16();
+        else if (lsize === 100) {
+          this.readU8();
+          this.readU16();
+        } else {
+          this.readU8();
+        }
+        return '';
+      }
+
+      case 10:
+      case 11:
+      case 12:
+      case 13:
+      case 14:
+        return '';
+
+      default:
         this.pos = this.buf.length;
         return '';
     }
   }
 
   public decode(): string | null {
-    if (this.buf.length < 8) return null;
+    if (this.buf.length < 6) return null;
     this.ver = this.readU8();
-    if (this.ver !== 5) {
-      // MTEF v3 fallback is less common; return null cleanly so caller can warn
-      return null;
-    }
-    // platform, product, prodVer, prodSubVer
-    this.pos += 4;
-    // null-terminated application key (e.g., "DSMT4\0" or "DSMT6\0" or "DSMT7\0")
-    this.skipCString();
-    // equation options byte
-    this.readU8();
+    this.platform = this.readU8();
 
     let out = '';
-    while (!this.eof()) {
-      const peek = this.buf[this.pos];
-      if (peek === 0) break;
-      out += this.readRecord(0);
+    if (this.ver === 5) {
+      // product, prodVer, prodSubVer
+      this.pos += 3;
+      // null-terminated application key (e.g., "DSMT4\0", "DSMT6\0", "DSMT7\0")
+      this.readCString();
+      // equation options byte
+      this.readU8();
+
+      while (!this.eof()) {
+        if (this.buf[this.pos] === 0) break;
+        out += this.readRecordV5(0);
+      }
+    } else if (this.ver >= 1 && this.ver <= 4) {
+      // MTEF v3 (Equation Editor 3.0): product, prodVer, prodSubVer (3 bytes), then records immediately!
+      this.pos += 3;
+      while (!this.eof()) {
+        if (this.buf[this.pos] === 0) break;
+        out += this.readRecordV3(0);
+      }
+    } else {
+      return null;
     }
 
     const cleaned = out
@@ -711,7 +1094,7 @@ class MtefReader {
       .replace(/(^|[^\\a-zA-Z])cotg\b/g, '$1\\cot ')
       // Normalize Vietnamese decimal comma inside formulas: 16,78 -> 16{,}78
       .replace(/(\d),(\d)/g, '$1{,}$2')
-      // Normalize degree superscript written as ^0 or ^{0} right after a number in Vietnamese MathType docs (e.g. 40^0 -> 40^\circ)
+      // Normalize degree superscript written as ^0 or ^{0} right after a number in Vietnamese MathType docs
       .replace(/(\d)\s*\^\s*\{?\s*0\s*\}?(?!\d)/g, '$1^\\circ')
       .replace(/\s{2,}/g, ' ')
       .trim();
@@ -720,20 +1103,113 @@ class MtefReader {
   }
 }
 
+export function decodeRawMtefBytes(mtefPayload: Uint8Array): string | null {
+  try {
+    const reader = new MtefReader(mtefPayload);
+    return reader.decode();
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Decodes a MathType OLE2 binary (`word/embeddings/oleObject*.bin`) into clean KaTeX LaTeX.
- * Returns `null` if not a valid MathType MTEF v5 equation.
+ * Decodes a MathType / Equation 3.0 OLE2 binary (`word/embeddings/*.bin`) into clean KaTeX LaTeX.
  */
 export function decodeMathTypeOleToLatex(oleBytes: Uint8Array): string | null {
   try {
     const eqStream = extractEquationNativeStream(oleBytes);
-    if (!eqStream || eqStream.length < 34) return null;
-    const hdrView = new DataView(eqStream.buffer, eqStream.byteOffset, eqStream.byteLength);
-    const cbHdr = hdrView.getUint16(0, true);
-    if (cbHdr < 16 || cbHdr >= eqStream.length) return null;
-    const mtefPayload = eqStream.subarray(cbHdr);
-    const reader = new MtefReader(mtefPayload);
-    return reader.decode();
+    if (eqStream && eqStream.length >= 16) {
+      const hdrView = new DataView(eqStream.buffer, eqStream.byteOffset, eqStream.byteLength);
+      const cbHdr = hdrView.getUint16(0, true);
+      if (cbHdr >= 16 && cbHdr < eqStream.length) {
+        const res = decodeRawMtefBytes(eqStream.subarray(cbHdr));
+        if (res) return res;
+      }
+    }
+
+    // Fallback: scan raw bytes for embedded MTEF v5 ("DSMT") signature
+    for (let i = 5; i + 8 < oleBytes.length; i++) {
+      if (
+        oleBytes[i] === 0x44 && // 'D'
+        oleBytes[i + 1] === 0x53 && // 'S'
+        oleBytes[i + 2] === 0x4d && // 'M'
+        oleBytes[i + 3] === 0x54 && // 'T'
+        oleBytes[i - 5] === 5
+      ) {
+        const res = decodeRawMtefBytes(oleBytes.subarray(i - 5));
+        if (res) return res;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fallback decoder for MathType preview metafiles (`word/media/image*.wmf`) which embed MTEF
+ * inside `AppsMFCC` chunked comments or `"MathType\0"` comments!
+ */
+export function decodeMathTypeWmfToLatex(wmfBytes: Uint8Array): string | null {
+  try {
+    // 1. Check for MathType 6/7 `AppsMFCC` chunked comment blocks and reassemble data
+    const chunks: Array<{index: number; data: Uint8Array}> = [];
+    for (let i = 0; i + 28 < wmfBytes.length; i++) {
+      if (
+        wmfBytes[i] === 0x41 && // 'A'
+        wmfBytes[i + 1] === 0x70 && // 'p'
+        wmfBytes[i + 2] === 0x70 && // 'p'
+        wmfBytes[i + 3] === 0x73 && // 's'
+        wmfBytes[i + 4] === 0x4d && // 'M'
+        wmfBytes[i + 5] === 0x46 && // 'F'
+        wmfBytes[i + 6] === 0x43 && // 'C'
+        wmfBytes[i + 7] === 0x43 // 'C'
+      ) {
+        const v = new DataView(wmfBytes.buffer, wmfBytes.byteOffset + i, wmfBytes.byteLength - i);
+        const dataLen = v.getUint32(16, true);
+        let sigEnd = 24;
+        while (sigEnd < 80 && i + sigEnd < wmfBytes.length && wmfBytes[i + sigEnd] !== 0) {
+          sigEnd++;
+        }
+        const sig = new TextDecoder('ascii').decode(wmfBytes.subarray(i + 24, i + sigEnd));
+        if (sig.toLowerCase().includes('mathtype') && dataLen > 0 && i + sigEnd + 1 + dataLen <= wmfBytes.length) {
+          chunks.push({
+            index: chunks.length,
+            data: wmfBytes.subarray(i + sigEnd + 1, i + sigEnd + 1 + dataLen),
+          });
+        }
+      }
+    }
+    if (chunks.length > 0) {
+      const total = chunks.reduce((s, c) => s + c.data.length, 0);
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c.data, off);
+        off += c.data.length;
+      }
+      const res = decodeRawMtefBytes(merged);
+      if (res) return res;
+    }
+
+    // 2. Direct `"MathType\0"` WMF comment (MTEF v3 / MathType 4–5)
+    for (let i = 0; i + 16 < wmfBytes.length; i++) {
+      if (
+        wmfBytes[i] === 0x4d && // 'M'
+        wmfBytes[i + 1] === 0x61 && // 'a'
+        wmfBytes[i + 2] === 0x74 && // 't'
+        wmfBytes[i + 3] === 0x68 && // 'h'
+        wmfBytes[i + 4] === 0x54 && // 'T'
+        wmfBytes[i + 5] === 0x79 && // 'y'
+        wmfBytes[i + 6] === 0x70 && // 'p'
+        wmfBytes[i + 7] === 0x65 && // 'e'
+        wmfBytes[i + 8] === 0x00
+      ) {
+        const res = decodeRawMtefBytes(wmfBytes.subarray(i + 9));
+        if (res) return res;
+      }
+    }
+    return null;
   } catch {
     return null;
   }

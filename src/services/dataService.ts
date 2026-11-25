@@ -1510,7 +1510,12 @@ export class DataService {
         for (const q of this.db.questions) remoteMap.set(q.id, q);
         for (const row of qRows) {
           const item = rowToQuestion(row as Record<string, unknown>);
-          if (item?.id) remoteMap.set(item.id, item);
+          if (!item?.id) continue;
+          const localExisting = remoteMap.get(item.id);
+          // Server row wins unless local has a strictly higher edited version not yet synced
+          if (!localExisting || (item.version ?? 1) >= (localExisting.version ?? 1)) {
+            remoteMap.set(item.id, item);
+          }
         }
         this.save({...this.db, questions: Array.from(remoteMap.values())});
       }
@@ -2522,18 +2527,50 @@ export class DataService {
           );
         }
         if (this.db.questions.length > 0) {
+          // Pull latest remote questions first so newer server versions (e.g. Admin edits on another device)
+          // are never overwritten by stale local copies, while missing/newer local questions get pushed!
+          const {data: remoteQRows} = await sb.from('questions').select('*');
+          const remoteById = new Map<string, QuestionItem>();
+          if (Array.isArray(remoteQRows)) {
+            for (const r of remoteQRows) {
+              const rq = rowToQuestion(r as Record<string, unknown>);
+              if (rq?.id) remoteById.set(rq.id, rq);
+            }
+          }
+
           const questionsToPush =
             mergedUser.role === 'admin'
-              ? this.db.questions
-              : this.db.questions.filter(
-                  (q) =>
-                    q.review_status === 'pending_teacher_review' &&
-                    q.proposedByUid === authUid,
-                );
+              ? this.db.questions.filter((q) => {
+                  const rem = remoteById.get(q.id);
+                  return !rem || (q.version ?? 1) > (rem.version ?? 1);
+                })
+              : this.db.questions.filter((q) => {
+                  if (q.review_status !== 'pending_teacher_review' || q.proposedByUid !== authUid) {
+                    return false;
+                  }
+                  const rem = remoteById.get(q.id);
+                  return !rem || (q.version ?? 1) > (rem.version ?? 1);
+                });
+
           if (questionsToPush.length > 0) {
             await sb
               .from('questions')
               .upsert(questionsToPush.map(questionToRow), {onConflict: 'id'});
+            for (const pushed of questionsToPush) {
+              remoteById.set(pushed.id, pushed);
+            }
+          }
+
+          if (remoteById.size > 0) {
+            const mergedQMap = new Map<string, QuestionItem>();
+            for (const lq of this.db.questions) mergedQMap.set(lq.id, lq);
+            for (const [id, rq] of remoteById.entries()) {
+              const lq = mergedQMap.get(id);
+              if (!lq || (rq.version ?? 1) >= (lq.version ?? 1)) {
+                mergedQMap.set(id, rq);
+              }
+            }
+            this.db.questions = Array.from(mergedQMap.values());
           }
         }
         if (mergedUser.role === 'admin') {
@@ -3309,8 +3346,22 @@ export class DataService {
     }
 
     this.save({...this.db, questions: nextList});
-    if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
-      void this.supabase.from('questions').upsert(questionToRow(savedQuestion), {onConflict: 'id'});
+    if (this.supabase && this.isOnline) {
+      const sb = this.supabase;
+      const row = questionToRow(savedQuestion);
+      void this.getAccessToken()
+        .then(async (tok) => {
+          if (!tok) return;
+          const {error} = await sb.from('questions').upsert(row, {onConflict: 'id'});
+          if (error) {
+            console.warn('[Supabase] Question upsert warning, retrying with refreshed session:', error.message);
+            await this.getAccessToken(true);
+            await sb.from('questions').upsert(row, {onConflict: 'id'});
+          }
+        })
+        .catch((err) => {
+          console.warn('[Supabase] Question upsert deferred until next sync:', err);
+        });
     }
     return true;
   }

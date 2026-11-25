@@ -726,6 +726,18 @@ export async function extractWindowViaAi(params: {
     sendMode: pg.state.sendMode,
   }));
 
+  const docxFiguresPayload = (params.embeddedImages ?? [])
+    .slice(0, 4)
+    .map((img) => {
+      const commaIdx = img.dataUrl.indexOf(',');
+      return {
+        index: img.index,
+        mimeType: img.mimeType || 'image/jpeg',
+        imageBase64: commaIdx >= 0 ? img.dataUrl.slice(commaIdx + 1) : '',
+      };
+    })
+    .filter((f) => f.imageBase64.length > 50);
+
   try {
     const resp = await fetchWithBackoff('/api/ai/extract', {
       method: 'POST',
@@ -738,6 +750,7 @@ export async function extractWindowViaAi(params: {
       body: JSON.stringify({
         text: params.pastedText ?? '',
         pages: payloadPages,
+        docxFigures: docxFiguresPayload,
         sourceName: params.fileName,
         driveFileId: params.driveFileId,
         maxDaily: params.maxDaily,
