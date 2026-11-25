@@ -13,7 +13,7 @@ export const AI_STATIC_FALLBACK_CHAIN: string[] = [
   'gemini-4-hydrogen',
 ];
 export const DAILY_QUOTA_DEFAULT = 50;
-export const PROMPT_VERSION = 'v2.5';
+export const PROMPT_VERSION = 'v2.6';
 
 // In-memory cache of live generateContent models discovered per API key fingerprint
 const cachedDiscoveredModelsByKey = new Map<string, {fetchedAt: number; models: string[]}>();
@@ -343,11 +343,19 @@ export function resolveApiKeyForCaller(
 
 export function fixLatexControlChars(val: unknown): string {
   if (typeof val !== 'string') return '';
-  return val
+  const fixedCtrl = val
     .replace(/\t(?=(?:imes|ext|an|heta|o\b|riangle))/g, '\\t')
     .replace(/\f(?=(?:rac))/g, '\\f')
     .replace(/\r(?=(?:ight|ad|ho))/g, '\\r')
     .replace(/\x08(?=(?:egin|eta|ar))/g, '\\b');
+  // Normalize combining hats/arrows inside $...$ math segments without touching Vietnamese prose outside $...$
+  return fixedCtrl.replace(/\$\$[\s\S]*?\$\$|\$[^$]+\$/g, (mathSeg) =>
+    mathSeg
+      .replace(/([A-Za-z]{1,4})\s*[\u0302\u0306\u030c\u02c6\u2322\u2323\u0311]/g, '\\widehat{$1}')
+      .replace(/([A-Za-z]{1,4})\s*[\u20d7\u20d6\u20e1]/g, '\\overrightarrow{$1}')
+      .replace(/([A-Za-z]{1,4})\s*[\u0304\u0305]/g, '\\overline{$1}')
+      .replace(/[\u0300-\u036f\u20d0-\u20ff]/g, ''),
+  );
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {

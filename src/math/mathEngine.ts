@@ -261,6 +261,19 @@ const katexRenderCache = new Map<string, KatexRenderResult>();
 const MAX_KATEX_CACHE = 600;
 
 /**
+ * Converts Unicode combining accents/hats/arrows inside a LaTeX math segment
+ * (e.g. `CAD\u0302` -> `\widehat{CAD}`, `AB\u20D7` -> `\overrightarrow{AB}`)
+ * and strips any remaining orphan combining marks so KaTeX never throws ParseError.
+ */
+export function sanitizeCombiningMarksInLatex(rawLatex: string): string {
+  return String(rawLatex ?? '')
+    .replace(/([A-Za-z]{1,4})\s*[\u0302\u0306\u030c\u02c6\u2322\u2323\u0311]/g, '\\widehat{$1}')
+    .replace(/([A-Za-z]{1,4})\s*[\u20d7\u20d6\u20e1]/g, '\\overrightarrow{$1}')
+    .replace(/([A-Za-z]{1,4})\s*[\u0304\u0305]/g, '\\overline{$1}')
+    .replace(/[\u0300-\u036f\u20d0-\u20ff]/g, '');
+}
+
+/**
  * Renders a single LaTeX expression securely via KaTeX with:
  * - `trust: false`, `maxSize: 10`, `maxExpand: 200`, `output: 'htmlAndMathml'`
  * - Dangerous command blocklist (`\href`, `\url`, `\includegraphics`, `\htmlClass`, ...)
@@ -272,7 +285,7 @@ export function renderKatexSafe(
 ): KatexRenderResult {
   const displayMode = Boolean(options?.displayMode);
   const strictMode = Boolean(options?.strictMode);
-  const trimmed = String(latex ?? '').trim();
+  const trimmed = sanitizeCombiningMarksInLatex(String(latex ?? '')).trim();
 
   if (!trimmed) {
     return {ok: true, html: ''};
@@ -440,7 +453,7 @@ export function compareSymbolSignatures(
  * Helper: transforms raw math body (inside `$...$`) into canonical Chapter III LaTeX (Section 4).
  */
 function normalizeMathInner(rawMath: string): string {
-  let s = rawMath.trim();
+  let s = sanitizeCombiningMarksInLatex(rawMath).trim();
 
   // 1. Unicode dashes / operators / symbols
   s = s
@@ -490,11 +503,12 @@ function normalizeMathInner(rawMath: string): string {
     .replace(/√\s*\(([^()]+)\)/g, '\\sqrt{$1}')
     .replace(/√\s*(\d+(?:[.,]\d+)?|[a-zA-Z]+)/g, '\\sqrt{$1}');
 
-  // 7. Vietnamese trig aliases & spacing: tg -> \tan, cotg -> \cot, sin60° -> \sin 60^\circ
+  // 7. Vietnamese trig aliases & spacing: tg -> \tan, cotg -> \cot, sin60° -> \sin 60^\circ, ABsinC -> AB\sin C
   s = s
     .replace(/(^|[^\\a-zA-Z])cotg(?=\s|[^a-zA-Z]|$)/g, '$1\\cot ')
     .replace(/(^|[^\\a-zA-Z])tg(?=\s|[^a-zA-Z]|$)/g, '$1\\tan ')
-    .replace(/(^|[^\\a-zA-Z])(sin|cos|tan|cot)(?=\s*[\d(A-Zαβγ\\])/g, '$1\\$2 ');
+    .replace(/(^|[^\\a-z])(sin|cos|tan|cot)(?=\s*[\d(A-Zαβγ\\^])/g, '$1\\$2 ')
+    .replace(/([a-z])(sin|cos|tan|cot)(?=\s*[\d(A-Zαβγ\\^])/g, '$1\\$2 ');
 
   // Clean trig power/arg spacing: \sin 60° -> \sin 60^\circ, \sin \alpha -> \sin\alpha
   s = s

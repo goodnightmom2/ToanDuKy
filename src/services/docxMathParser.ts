@@ -131,6 +131,10 @@ function getAttrByLocalName(el: Element, localName: string): string | null {
 
 function normalizeOmmlTextToken(raw: string): string {
   return raw
+    .replace(/([A-Za-z]{1,4})\s*[\u0302\u0306\u030c\u02c6\u2322\u2323\u0311]/g, '\\widehat{$1}')
+    .replace(/([A-Za-z]{1,4})\s*[\u20d7\u20d6\u20e1]/g, '\\overrightarrow{$1}')
+    .replace(/([A-Za-z]{1,4})\s*[\u0304\u0305]/g, '\\overline{$1}')
+    .replace(/[\u0300-\u036f\u20d0-\u20ff]/g, '')
     .replace(/[−–—]/g, '-')
     .replace(/×/g, '\\cdot ')
     .replace(/·/g, '\\cdot ')
@@ -360,8 +364,18 @@ export async function compressImageBytesToDataUrl(
 }
 
 function normalizeRelTarget(target: string): string {
-  const clean = target.replace(/^\/+/, '').replace(/^\.\.\//, '');
-  return clean.startsWith('word/') ? clean : `word/${clean}`;
+  let decoded = target;
+  try {
+    decoded = decodeURIComponent(target);
+  } catch {
+    // keep raw target
+  }
+  const clean = decoded
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^(?:\.\/)+/, '')
+    .replace(/^(?:\.\.\/)+/, '');
+  return clean.toLowerCase().startsWith('word/') ? clean : `word/${clean}`;
 }
 
 /**
@@ -386,7 +400,6 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
 
     const docEntry = entryByName.get('word/document.xml');
     const relsEntry = entryByName.get('word/_rels/document.xml.rels');
-    const embeddingCount = entries.filter((e) => /^word\/embeddings\//i.test(e.name)).length;
     imageCount = entries.filter((e) => /^word\/media\//i.test(e.name)).length;
 
     // 1. Parse document relationships (`rId -> word/media/...` or `word/embeddings/...`)
@@ -408,7 +421,7 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
       }
     }
 
-    // 2. Pre-decode all MathType / Equation 3.0 OLE binaries (`word/embeddings/*`) AND WMF comment fallbacks (`word/media/*.wmf`)
+    // 2. Pre-decode all MathType / Equation 3.0 OLE binaries (`word/embeddings/*`) AND WMF/EMF comment fallbacks (`word/media/*.{wmf,emf}`)
     const decodedOleByTarget = new Map<string, string>();
     for (const e of entries) {
       if (/^word\/embeddings\//i.test(e.name)) {
@@ -418,7 +431,7 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
         if (latex) {
           decodedOleByTarget.set(e.name.toLowerCase(), latex);
         }
-      } else if (/^word\/media\/.+\.wmf$/i.test(e.name)) {
+      } else if (/^word\/media\/.+\.(?:wmf|emf)$/i.test(e.name)) {
         const wmfRaw = await readZipEntryBytes(bytes, e);
         if (!wmfRaw) continue;
         const latex = decodeMathTypeWmfToLatex(wmfRaw);
@@ -471,8 +484,21 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
         const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
         const parseErr = doc.getElementsByTagName('parsererror')[0];
         if (!parseErr) {
+          const hasSkippedParagraphAncestor = (el: Element): boolean => {
+            let cur: Element | null = el.parentElement;
+            while (cur) {
+              const ln = getLocalName(cur);
+              // Skip duplicate <mc:Fallback> blocks and diagram floating shape textboxes (<w:txbxContent>)
+              if (ln === 'Fallback' || ln === 'txbxContent' || ln === 'textbox') {
+                return true;
+              }
+              cur = cur.parentElement;
+            }
+            return false;
+          };
+
           const paragraphs = Array.from(doc.getElementsByTagName('*')).filter(
-            (el) => getLocalName(el) === 'p',
+            (el) => getLocalName(el) === 'p' && !hasSkippedParagraphAncestor(el),
           );
           const lines: string[] = [];
 
@@ -588,7 +614,6 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
             }
           }
 
-          oleObjectCount = Math.max(oleObjectCount, embeddingCount);
           const text = lines.join('\n').trim();
           const undecodedCount = Math.max(0, oleObjectCount - oleDecodedCount);
           const hasMissingMathTypeEquations = undecodedCount > 0 && text.includes('[CÔNG_THỨC_MATHTYPE]');
