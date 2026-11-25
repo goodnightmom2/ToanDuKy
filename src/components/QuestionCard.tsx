@@ -100,6 +100,7 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
   const [showRebuttalModal, setShowRebuttalModal] = React.useState(false);
   const [rebuttalReasoning, setRebuttalReasoning] = React.useState('');
   const [rebuttalSent, setRebuttalSent] = React.useState(false);
+  const [zoomedFigureOpen, setZoomedFigureOpen] = React.useState(false);
 
   // Reset when question changes
   React.useEffect(() => {
@@ -300,15 +301,54 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
         <MathText text={question.stem_vi} formulaImage={question.formula_image} />
       </div>
 
-      {/* Optional cropped private figure from PDF import */}
+      {/* Optional cropped/embedded figure from PDF/DOCX import (with tap-to-zoom for mobile clarity) */}
       {question.figure_crop && !question.diagramData && (
-        <div className="p-2.5 rounded-xl bg-white border border-[#D9C293] flex justify-center">
-          <img
-            src={question.figure_crop}
-            alt="Hình minh họa câu hỏi"
-            className="max-h-56 w-auto rounded-lg object-contain"
-            loading="lazy"
-          />
+        <div className="p-2.5 rounded-xl bg-white border border-[#D9C293] flex flex-col items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setZoomedFigureOpen(true)}
+            className="w-full flex justify-center cursor-zoom-in focus:outline-none"
+            title="Chạm để phóng to hình vẽ"
+          >
+            <img
+              src={question.figure_crop}
+              alt="Hình minh họa đề bài"
+              className="max-h-64 w-auto max-w-full rounded-lg object-contain"
+              loading="lazy"
+            />
+          </button>
+          <span className="text-[11px] font-semibold text-[#5B6B82]">
+            Hình minh họa đề bài · chạm vào hình để phóng to
+          </span>
+          {zoomedFigureOpen && (
+            <div
+              className="fixed inset-0 z-50 bg-[#14284A]/75 flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              onClick={() => setZoomedFigureOpen(false)}
+            >
+              <div
+                className="bg-white rounded-2xl p-3 max-w-3xl w-full max-h-[90dvh] overflow-auto space-y-2 shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between text-xs font-extrabold text-[#14284A]">
+                  <span>Hình minh họa đề bài</span>
+                  <button
+                    type="button"
+                    onClick={() => setZoomedFigureOpen(false)}
+                    className="px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#D5B87E] !min-h-[30px]"
+                  >
+                    Đóng
+                  </button>
+                </div>
+                <img
+                  src={question.figure_crop}
+                  alt="Hình minh họa phóng to"
+                  className="w-full h-auto object-contain rounded-lg"
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -4,13 +4,20 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  Clipboard,
   Cloud,
   Crop,
   Edit3,
+  ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   FolderOpen,
   HardDriveUpload,
+  HelpCircle,
   History,
+  Image as ImageIcon,
+  KeyRound,
   Layers,
   LayoutGrid,
   PenLine,
@@ -21,6 +28,7 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Upload,
   XCircle,
   ZoomIn,
 } from 'lucide-react';
@@ -62,6 +70,10 @@ import {
   parseSection11Json,
 } from '../services/materialImport.ts';
 import {
+  compressImageBytesToDataUrl,
+  type DocxEmbeddedImage,
+} from '../services/docxMathParser.ts';
+import {
   cropFigureFromPageDataUrl,
   getCachedPageImage,
 } from '../services/pageRenderer.ts';
@@ -89,6 +101,9 @@ import {MathText} from './MathText.tsx';
 
 interface AiStatusInfo {
   configured: boolean;
+  requiresPersonalKey?: boolean;
+  usingPersonalKey?: boolean;
+  keyError?: string;
   model: string;
   availableModels?: string[];
   dailyUsed: number;
@@ -144,6 +159,36 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
   const [aiStatus, setAiStatus] = React.useState<AiStatusInfo | null>(null);
   const [selectedModelOverride, setSelectedModelOverride] = React.useState('');
+  const personalKeyStorageKey = `toanduky_personal_gemini_key_${user.uid}`;
+  const [personalApiKey, setPersonalApiKey] = React.useState<string>(() => {
+    try {
+      return localStorage.getItem(`toanduky_personal_gemini_key_${user.uid}`)?.trim() ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [personalKeyInput, setPersonalKeyInput] = React.useState<string>(personalApiKey);
+  const [showPersonalKey, setShowPersonalKey] = React.useState(false);
+  const [showKeyGuide, setShowKeyGuide] = React.useState<boolean>(() => !isAdmin && !personalApiKey);
+
+  React.useEffect(() => {
+    try {
+      const saved = localStorage.getItem(personalKeyStorageKey)?.trim() ?? '';
+      setPersonalApiKey(saved);
+      setPersonalKeyInput(saved);
+      setShowKeyGuide(!isAdmin && !saved);
+    } catch {
+      setPersonalApiKey('');
+      setPersonalKeyInput('');
+    }
+  }, [personalKeyStorageKey, isAdmin]);
+  const [showAdminByokBox, setShowAdminByokBox] = React.useState(false);
+  const [testingKey, setTestingKey] = React.useState(false);
+  const [keyBannerMsg, setKeyBannerMsg] = React.useState('');
+  const [docxImages, setDocxImages] = React.useState<DocxEmbeddedImage[]>([]);
+  const [manualCropDraftId, setManualCropDraftId] = React.useState<string | null>(null);
+  const [cropRect, setCropRect] = React.useState({x: 0.12, y: 0.18, w: 0.76, h: 0.35});
+
   const activeModel =
     selectedModelOverride || aiStatus?.model || settings.aiModel?.trim() || 'gemini-2.5-flash-lite';
   const [autoRunAfterUpload, setAutoRunAfterUpload] = React.useState(true);
@@ -219,25 +264,185 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   const abortRef = React.useRef<AbortController | null>(null);
   const driveConfigured = Boolean(settings.driveClientId?.trim() && settings.driveApiKey?.trim());
 
-  const fetchAiStatus = React.useCallback(() => {
-    void dataService
-      .getAccessToken()
-      .then((token) => {
-        const headers: Record<string, string> = token ? {Authorization: `Bearer ${token}`} : {};
-        return fetch(`/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`, {
-          headers,
-        });
-      })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: AiStatusInfo | null) => {
-        if (d) setAiStatus(d);
-      })
-      .catch(() => {});
-  }, [settings.aiDailyQuotaLimit]);
+  const fetchAiStatus = React.useCallback(
+    async (keyOverride?: string): Promise<AiStatusInfo | null> => {
+      const effectiveKey = (keyOverride !== undefined ? keyOverride : personalApiKey).trim();
+      try {
+        const token = await dataService.getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
+        if (effectiveKey) headers['x-gemini-api-key'] = effectiveKey;
+        const r = await fetch(
+          `/api/ai/status?maxDaily=${encodeURIComponent(settings.aiDailyQuotaLimit)}`,
+          {headers},
+        );
+        if (!r.ok) return null;
+        const d = (await r.json()) as AiStatusInfo;
+        setAiStatus(d);
+        return d;
+      } catch {
+        return null;
+      }
+    },
+    [personalApiKey, settings.aiDailyQuotaLimit],
+  );
 
   React.useEffect(() => {
-    fetchAiStatus();
+    void fetchAiStatus();
   }, [fetchAiStatus]);
+
+  const handleSaveAndTestPersonalKey = async () => {
+    const cleaned = personalKeyInput.trim();
+    setKeyBannerMsg('');
+    if (!cleaned) {
+      setErrorMsg('Hãy dán Khóa Gemini API cá nhân (bắt đầu bằng "AIza...") trước khi lưu.');
+      return;
+    }
+    if (cleaned.length < 20 || /\s/.test(cleaned)) {
+      setErrorMsg('Khóa Gemini API chưa đúng định dạng (khóa hợp lệ bắt đầu bằng "AIza..." và không chứa khoảng trắng).');
+      return;
+    }
+    setTestingKey(true);
+    clearMessages();
+    try {
+      localStorage.setItem(personalKeyStorageKey, cleaned);
+      setPersonalApiKey(cleaned);
+      setSelectedModelOverride('');
+      const st = await fetchAiStatus(cleaned);
+      if (st?.configured) {
+        setShowKeyGuide(false);
+        setKeyBannerMsg(
+          `Đã kết nối thành công Khóa Gemini API cá nhân! Tìm thấy ${st.availableModels?.length ?? 1} model khả dụng (${st.model}). Toàn bộ lượt trích xuất sẽ dùng tài nguyên Google AI Studio riêng của bạn.`,
+        );
+      } else {
+        setErrorMsg(
+          st?.keyError ||
+            'Không xác minh được Khóa Gemini API này. Hãy kiểm tra lại khóa trên Google AI Studio (https://aistudio.google.com/apikey).',
+        );
+      }
+    } finally {
+      setTestingKey(false);
+    }
+  };
+
+  const handleClearPersonalKey = () => {
+    try {
+      localStorage.removeItem(personalKeyStorageKey);
+    } catch {
+      // ignore storage failure
+    }
+    setPersonalApiKey('');
+    setPersonalKeyInput('');
+    setSelectedModelOverride('');
+    setKeyBannerMsg('');
+    if (!isAdmin) setShowKeyGuide(true);
+    void fetchAiStatus('');
+  };
+
+  // Attach embedded .docx diagram images to extracted questions (exact figure_image_index first, then sequential fallback)
+  const attachDocxImagesToDrafts = (
+    items: QuestionItem[],
+    images: DocxEmbeddedImage[],
+  ): {items: QuestionItem[]; attachedCount: number} => {
+    if (!images.length) return {items, attachedCount: 0};
+    const usedIndexes = new Set<number>();
+    let attachedCount = 0;
+
+    // Pass 1: exact index matched by AI (`figure_image_index` from `[HÌNH_VẼ_k]`)
+    const pass1 = items.map((q) => {
+      if (q.figure_crop) {
+        if (q.figure_image_index) usedIndexes.add(q.figure_image_index);
+        attachedCount += 1;
+        return {
+          ...q,
+          flags: (q.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+        };
+      }
+      if (typeof q.figure_image_index === 'number') {
+        const match = images.find((im) => im.index === q.figure_image_index);
+        if (match) {
+          usedIndexes.add(match.index);
+          attachedCount += 1;
+          return {
+            ...q,
+            needs_figure: true,
+            figure_crop: match.dataUrl,
+            figure_crop_private: true,
+            flags: (q.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+          };
+        }
+      }
+      return q;
+    });
+
+    // Pass 2: sequential fallback for questions mentioning "hình vẽ" / needing figure that didn't get an index
+    const remainingImages = images.filter((im) => !usedIndexes.has(im.index));
+    let nextImgCursor = 0;
+    const pass2 = pass1.map((q) => {
+      if (q.figure_crop || nextImgCursor >= remainingImages.length) return q;
+      const wantsFigure = Boolean(
+        q.needs_figure ||
+          (q.flags ?? []).includes('figure_missing') ||
+          /(?:hình\s*vẽ|hình\s*bên|như\s*hình|hình\s*dưới|sơ\s*đồ)/i.test(q.stem_vi),
+      );
+      if (!wantsFigure) return q;
+      const img = remainingImages[nextImgCursor++];
+      attachedCount += 1;
+      return {
+        ...q,
+        needs_figure: true,
+        figure_image_index: img.index,
+        figure_crop: img.dataUrl,
+        figure_crop_private: true,
+        flags: (q.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+      };
+    });
+
+    return {items: pass2, attachedCount};
+  };
+
+  // Automatically crop PDF figures (`figure_bbox`) right after AI extraction for both Admin & Teacher
+  const autoCropPdfFiguresForDrafts = async (
+    items: QuestionItem[],
+    pages: PdfReadPageResult[],
+    sha: string,
+  ): Promise<{items: QuestionItem[]; croppedCount: number}> => {
+    let croppedCount = 0;
+    const out: QuestionItem[] = [];
+    for (const q of items) {
+      if (q.figure_crop || !q.figure_bbox) {
+        out.push(q);
+        continue;
+      }
+      const pageNum = q.figure_bbox.page || q.page_pdf;
+      if (!pageNum) {
+        out.push(q);
+        continue;
+      }
+      const pageImg =
+        pages.find((p) => p.pagePdf === pageNum)?.cachedImage?.dataUrl ??
+        pagePreviewCache[pageNum] ??
+        (sha ? (await getCachedPageImage(sha, pageNum))?.dataUrl : undefined);
+      if (!pageImg) {
+        out.push(q);
+        continue;
+      }
+      const cropped = await cropFigureFromPageDataUrl(pageImg, q.figure_bbox, 150 * 1024);
+      if (cropped) {
+        croppedCount += 1;
+        out.push({
+          ...q,
+          needs_figure: true,
+          figure_crop: cropped.dataUrl,
+          figure_crop_private: true,
+          flags: (q.flags ?? []).filter((f) => f !== 'figure_missing'),
+        });
+      } else {
+        out.push(q);
+      }
+    }
+    return {items: out, croppedCount};
+  };
 
   const clearMessages = () => {
     setStatusMsg('');
@@ -388,6 +593,13 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   // ---- PHASE 2: MULTI-WINDOW AI EXTRACTION + ANSWER-KEY MERGE + MODE B MAPPING ----
   const executeFullAiExtraction = async (readRes: PdfDocumentReadResult, batchOverride?: ImportBatchRecord) => {
     clearMessages();
+    if (!isAdmin && !personalApiKey.trim()) {
+      setShowKeyGuide(true);
+      setErrorMsg(
+        'Giáo viên vui lòng nhập Khóa Gemini API cá nhân ở khung phía trên (xem Hướng dẫn 5 bước) để dùng tài nguyên AI riêng của mình.',
+      );
+      return;
+    }
     setPendingConfirmRun(null);
     setBusy(true);
     setStepperStep(3);
@@ -433,6 +645,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           driveFileId,
           batchId: batchBase?.id,
           accessToken: token,
+          personalApiKey: personalApiKey.trim() || undefined,
           maxDaily: settings.aiDailyQuotaLimit,
           aiEnabled: settings.aiEnabled,
           classificationMode,
@@ -444,6 +657,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
         if (res.quota) {
           setAiStatus((prev) => ({
+            ...prev,
             configured: prev?.configured ?? true,
             model: res.usedModel || prev?.model || activeModel,
             availableModels: prev?.availableModels,
@@ -506,6 +720,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           pages: answerPages,
           fileSha256: readRes.fileSha256,
           accessToken: token,
+          personalApiKey: personalApiKey.trim() || undefined,
           maxDaily: settings.aiDailyQuotaLimit,
           aiEnabled: settings.aiEnabled,
           model: activeModel,
@@ -513,6 +728,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         });
         if (akRes.quota) {
           setAiStatus((prev) => ({
+            ...prev,
             configured: prev?.configured ?? true,
             model: prev?.model ?? activeModel,
             availableModels: prev?.availableModels,
@@ -547,7 +763,9 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       setSelectedExamCode(defaultCode);
 
       const merged = applyAnswerKeysToDrafts(stitched, collectedKeys, defaultCode || undefined);
-      stitched = merged.items;
+      // Automatically crop figures from PDF pages for questions with `figure_bbox`
+      const autoCropped = await autoCropPdfFiguresForDrafts(merged.items, readRes.pages, readRes.fileSha256);
+      stitched = autoCropped.items;
 
       // Build Mode B pattern mapping suggestions
       const autoMap: Record<string, string> = {};
@@ -664,6 +882,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         driveFileId,
         batchId: activeBatch?.id,
         accessToken: token,
+        personalApiKey: personalApiKey.trim() || undefined,
         maxDaily: settings.aiDailyQuotaLimit,
         aiEnabled: settings.aiEnabled,
         classificationMode,
@@ -675,6 +894,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
       if (res.quota) {
         setAiStatus((prev) => ({
+          ...prev,
           configured: prev?.configured ?? true,
           model: res.usedModel || prev?.model || activeModel,
           availableModels: prev?.availableModels,
@@ -691,7 +911,8 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       }
 
       const withoutOldPage = draftItems.filter((d) => d.page_pdf !== pagePdf);
-      const mergedDrafts = stitchAndDedupeExtractedDrafts([...withoutOldPage, ...res.items]);
+      const croppedRetry = await autoCropPdfFiguresForDrafts(res.items, [targetPage], sourceSha256);
+      const mergedDrafts = stitchAndDedupeExtractedDrafts([...withoutOldPage, ...croppedRetry.items]);
       const withKeys = applyAnswerKeysToDrafts(mergedDrafts, [...answerKeys, ...res.answerKeys], selectedExamCode || undefined);
       setDraftItems(withKeys.items);
       setPdfReadResult((prev) =>
@@ -723,11 +944,18 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     }
   };
 
-  // Manual pasted text extraction (fallback without images -> flags `no_image`)
+  // Manual pasted text / DOCX extraction (with embedded DOCX figure auto-attachment!)
   const handleExtractPastedText = async () => {
     clearMessages();
     if (!importText.trim()) {
-      setErrorMsg('Hãy dán văn bản đề bài Toán 10 Chương III hoặc tải tệp PDF lên trước.');
+      setErrorMsg('Hãy dán văn bản đề bài Toán 10 Chương III hoặc tải tệp PDF/DOCX lên trước.');
+      return;
+    }
+    if (!isAdmin && !personalApiKey.trim()) {
+      setShowKeyGuide(true);
+      setErrorMsg(
+        'Giáo viên vui lòng nhập Khóa Gemini API cá nhân ở khung phía trên (xem Hướng dẫn 5 bước) để dùng tài nguyên AI riêng của mình.',
+      );
       return;
     }
     if (pdfReadResult && pdfReadResult.pages.length > 0) {
@@ -781,14 +1009,17 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           fileSha256: sha,
           driveFileId,
           accessToken: token,
+          personalApiKey: personalApiKey.trim() || undefined,
           maxDaily: settings.aiDailyQuotaLimit,
           aiEnabled: settings.aiEnabled,
           classificationMode,
           taxonomy,
           model: activeModel,
+          embeddedImages: docxImages.length > 0 ? docxImages : undefined,
         });
         if (res.quota) {
           setAiStatus((prev) => ({
+            ...prev,
             configured: prev?.configured ?? true,
             model: res.usedModel || prev?.model || activeModel,
             availableModels: prev?.availableModels,
@@ -818,15 +1049,18 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         allKeys.push(...parseAnswerKeyTableText(importText));
       }
       const merged = applyAnswerKeysToDrafts(deduped, allKeys);
+      const withDocxFigures = attachDocxImagesToDrafts(merged.items, docxImages);
       setAnswerKeys(allKeys);
-      setDraftItems(merged.items);
-      setSelectedIds(merged.items.filter((d) => d.pattern_id !== 'OUT-00').map((d) => d.id));
+      setDraftItems(withDocxFigures.items);
+      setSelectedIds(withDocxFigures.items.filter((d) => d.pattern_id !== 'OUT-00').map((d) => d.id));
       setStepperStep(5);
       if (lastErr) {
         setErrorMsg(`Một phần văn bản gặp lỗi khi trích xuất: ${lastErr}`);
       }
       setStatusMsg(
-        `Đã trích xuất ${merged.items.length} câu từ văn bản (${chunks.length} đoạn). Hãy kiểm tra công thức và bấm "Đã đối chiếu công thức" trước khi lưu ngân hàng.`,
+        `Đã trích xuất ${withDocxFigures.items.length} câu từ văn bản (${chunks.length} đoạn)` +
+          `${withDocxFigures.attachedCount > 0 ? ` · Tự động gắn ${withDocxFigures.attachedCount} hình vẽ minh họa từ tệp Word` : ''}. ` +
+          `Hãy kiểm tra công thức & hình vẽ rồi bấm "Đã đối chiếu công thức" trước khi lưu ngân hàng.`,
       );
     } finally {
       setBusy(false);
@@ -844,6 +1078,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     setSourceName(fileName);
     setDriveFileId(pickedDriveId);
     setPdfReadResult(null);
+    setDocxImages([]);
     setPendingConfirmRun(null);
     setLastUpsertSummary(null);
     const lower = fileName.toLowerCase();
@@ -889,18 +1124,23 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         setBusy(true);
         const docxRes = await parseDocxDetailed(buf);
         setImportText(docxRes.text);
+        setDocxImages(docxRes.embeddedImages);
         setStepperStep(2);
         if (docxRes.warning_vi) {
           setErrorMsg(docxRes.warning_vi);
         }
+        const formulaParts: string[] = [];
+        if (docxRes.ommlCount > 0) formulaParts.push(`khôi phục ${docxRes.ommlCount} công thức Word OMML`);
+        if (docxRes.oleDecodedCount > 0) {
+          formulaParts.push(`giải mã ${docxRes.oleDecodedCount}/${docxRes.oleObjectCount} công thức MathType`);
+        }
+        if (docxRes.embeddedImages.length > 0) {
+          formulaParts.push(`tách được ${docxRes.embeddedImages.length} hình vẽ minh họa`);
+        }
         setStatusMsg(
-          docxRes.ommlCount > 0
-            ? `Đã đọc tệp Word (${fileName}, ${docxRes.text.length} ký tự) và khôi phục ${docxRes.ommlCount} công thức Toán sang LaTeX. Bấm "Trích xuất & phân dạng bằng AI" bên dưới.`
-            : `Đã tách văn bản từ Word (${fileName}, ${docxRes.text.length} ký tự). ${
-                docxRes.hasMissingMathTypeEquations
-                  ? 'Tệp có công thức MathType nhúng — khuyến nghị lưu sang PDF rồi tải lên để AI đọc trực tiếp từ ảnh.'
-                  : 'Bấm "Trích xuất & phân dạng bằng AI" để tách & phân dạng.'
-              }`,
+          `Đã đọc tệp Word (${fileName}, ${docxRes.text.length} ký tự)` +
+            (formulaParts.length > 0 ? ` — ${formulaParts.join(', ')}. ` : '. ') +
+            'Bấm "Trích xuất & phân dạng bằng AI" bên dưới (hình vẽ sẽ tự động gắn vào từng câu hỏi).',
         );
       } else {
         const text = new TextDecoder('utf-8').decode(buf);
@@ -1015,11 +1255,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     );
   };
 
-  // Admin opt-in: crop figure_bbox from cached page image (<= 150 KB private)
-  const handleAdminUseCroppedFigure = async (item: QuestionItem) => {
-    if (!isAdmin || !item.figure_bbox) return;
-    const pageNum = item.figure_bbox.page || item.page_pdf;
-    if (!pageNum) return;
+  // Crop figure_bbox from cached PDF page image (works for BOTH Admin & Teacher, <= 150 KB)
+  const handleUseCroppedFigure = async (
+    item: QuestionItem,
+    customBox?: {page: number; x: number; y: number; w: number; h: number},
+  ) => {
+    const targetBox = customBox ?? item.figure_bbox;
+    if (!targetBox) return;
+    const pageNum = targetBox.page || item.page_pdf || 1;
     const pageImg =
       pagePreviewCache[pageNum] ??
       (sourceSha256 ? (await getCachedPageImage(sourceSha256, pageNum))?.dataUrl : undefined);
@@ -1027,17 +1270,67 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       setErrorMsg(`Chưa có ảnh trang ${pageNum} trong bộ nhớ tạm. Hãy đọc lại trang PDF để cắt hình.`);
       return;
     }
-    const cropped = await cropFigureFromPageDataUrl(pageImg, item.figure_bbox, 150 * 1024);
+    const cropped = await cropFigureFromPageDataUrl(pageImg, targetBox, 150 * 1024);
     if (!cropped) return;
     updateDraft(item.id, (prev) => ({
       ...prev,
+      needs_figure: true,
+      figure_bbox: targetBox,
       figure_crop: cropped.dataUrl,
       figure_crop_private: true,
-      flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing'),
+      flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
     }));
+    setManualCropDraftId(null);
     setStatusMsg(
-      `Đã gắn ảnh cắt nội bộ lớp (${Math.round(cropped.approxBytes / 1024)} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}. Lưu ý chỉ dùng trong phạm vi lớp học.`,
+      `Đã gắn hình minh họa (${Math.round(cropped.approxBytes / 1024)} KB ≤ 150 KB) cho câu ${item.question_number ?? item.id}.`,
     );
+  };
+
+  const handleUploadFigureForDraft = async (itemId: string, file: File) => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const comp = await compressImageBytesToDataUrl(bytes, file.type || 'image/png', 140 * 1024);
+      updateDraft(itemId, (prev) => ({
+        ...prev,
+        needs_figure: true,
+        figure_crop: comp.dataUrl,
+        figure_crop_private: true,
+        flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+      }));
+      setStatusMsg(`Đã tải & gắn hình minh họa (${Math.round(comp.approxBytes / 1024)} KB).`);
+    } catch {
+      setErrorMsg('Không thể đọc tệp ảnh vừa chọn. Hãy thử ảnh định dạng PNG hoặc JPG.');
+    }
+  };
+
+  const handlePasteFigureForDraft = async (itemId: string) => {
+    try {
+      if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read();
+        for (const ci of items) {
+          const imgType = ci.types.find((t) => t.startsWith('image/'));
+          if (imgType) {
+            const blob = await ci.getType(imgType);
+            const bytes = new Uint8Array(await blob.arrayBuffer());
+            const comp = await compressImageBytesToDataUrl(bytes, imgType, 140 * 1024);
+            updateDraft(itemId, (prev) => ({
+              ...prev,
+              needs_figure: true,
+              figure_crop: comp.dataUrl,
+              figure_crop_private: true,
+              flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+            }));
+            setStatusMsg(`Đã dán hình minh họa từ Clipboard (${Math.round(comp.approxBytes / 1024)} KB).`);
+            return;
+          }
+        }
+      }
+      setErrorMsg(
+        'Chưa thấy ảnh trong Clipboard. Hãy chụp vùng hình vẽ (Win+Shift+S) rồi bấm lại "Dán ảnh" hoặc dùng nút "Tải ảnh".',
+      );
+    } catch {
+      setErrorMsg('Trình duyệt chưa cấp quyền đọc Clipboard. Bạn hãy dùng nút "Tải ảnh" để chọn tệp hình vẽ.');
+    }
   };
 
   // Commit selected/single drafts into question bank (idempotent upsert + batch-approval guardrails)
@@ -1188,18 +1481,6 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     new Set(draftItems.map((d) => d.source_pattern_label).filter((s): s is string => Boolean(s))),
   );
 
-  if (!isAdmin) {
-    return (
-      <div className="notebook-card p-6 text-sm text-[#14284A] space-y-2">
-        <h2 className="font-display text-lg font-extrabold">Chức năng dành riêng cho Quản trị viên (Admin)</h2>
-        <p className="text-xs text-[#5B6B82]">
-          Tính năng nhập học liệu hàng loạt bằng AI được giới hạn cho Quản trị viên nhằm đảm bảo chất lượng đề và tối ưu hạn mức AI.
-          Giáo viên vẫn có thể xem ngân hàng và gửi đề xuất chỉnh sửa/thêm câu hỏi thủ công ở tab <strong>4. Ngân hàng</strong>.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {/* 7-STEP PIPELINE STEPPER */}
@@ -1236,12 +1517,20 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1.5 flex-1 min-w-[260px]">
             <h2 className="font-display text-xl font-extrabold text-[#14284A]">
-              Nhập học liệu 1 chạm: PDF → AI tách câu &amp; phân dạng → Kiểm chứng code → Ngân hàng
+              Nhập học liệu 1 chạm: PDF/Word → AI tách câu, công thức &amp; hình vẽ → Phân bổ Trạm
             </h2>
             <p className="text-xs text-[#5B6B82]">
-              <strong>Dành riêng cho Quản trị viên (Admin)</strong> nhằm kiểm soát chất lượng đề và tối ưu hạn mức AI. Hỗ trợ{' '}
-              <strong>.pdf</strong> (đọc từng trang + gửi ảnh khi lớp chữ lỗi công thức/có hình),{' '}
-              <strong>.docx</strong>, <strong>.json</strong>, <strong>.txt</strong>. Không lưu tệp PDF gốc vào CSDL.
+              {isAdmin ? (
+                <>
+                  Hỗ trợ <strong>.pdf</strong> (tự động cắt hình vẽ bài thực tế), <strong>.docx</strong> (tự giải mã Word OMML + MathType &amp; tách hình vẽ nhúng),{' '}
+                  <strong>.json</strong>, <strong>.txt</strong>. Admin dùng khóa hệ thống Vercel hoặc khóa cá nhân. Không lưu tệp PDF gốc vào CSDL.
+                </>
+              ) : (
+                <>
+                  Giáo viên nhập <strong>Khóa Gemini API cá nhân</strong> bên dưới (miễn phí tại Google AI Studio — dùng hạn mức của chính thầy/cô) để tách câu hỏi &amp; hình vẽ từ{' '}
+                  <strong>.pdf</strong>, <strong>.docx</strong>, chọn <strong>Trạm/Mốc</strong> rồi gửi Admin duyệt và gán vào <strong>7. Set nhiệm vụ</strong>.
+                </>
+              )}
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-1 text-xs">
               <label className="inline-flex items-center gap-1.5 font-bold text-[#14284A] cursor-pointer">
@@ -1263,31 +1552,45 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   Lô nhập đã lưu ({savedBatches.length})
                 </button>
               )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdminByokBox((v) => !v)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  {personalApiKey ? 'Đang dùng Khóa cá nhân' : 'Dùng Khóa Gemini cá nhân (tùy chọn)'}
+                </button>
+              )}
             </div>
           </div>
 
           <div className="min-w-[270px] p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] space-y-1.5">
             <div className="flex items-center justify-between gap-3 text-xs font-bold text-[#14284A]">
-              <span>Hạn mức AI hôm nay</span>
-              <span className={quotaExhausted ? 'text-[#B5650D]' : 'text-[#1F7A6B]'}>
-                {quotaUsed}/{quotaLimit} lượt
+              <span>{aiStatus?.usingPersonalKey ? 'Tài nguyên AI cá nhân' : 'Hạn mức AI hôm nay'}</span>
+              <span className={aiStatus?.usingPersonalKey ? 'text-[#1F7A6B]' : quotaExhausted ? 'text-[#B5650D]' : 'text-[#1F7A6B]'}>
+                {aiStatus?.usingPersonalKey ? 'Khóa cá nhân ✓' : `${quotaUsed}/${quotaLimit} lượt`}
               </span>
             </div>
-            <div className="w-full h-2 rounded-full bg-[#EFE0BC] overflow-hidden">
-              <div
-                className={`h-full transition-all ${quotaExhausted ? 'bg-[#D98A1F]' : 'bg-[#2E9C8A]'}`}
-                style={{width: `${quotaPct}%`}}
-              />
-            </div>
+            {!aiStatus?.usingPersonalKey && (
+              <div className="w-full h-2 rounded-full bg-[#EFE0BC] overflow-hidden">
+                <div
+                  className={`h-full transition-all ${quotaExhausted ? 'bg-[#D98A1F]' : 'bg-[#2E9C8A]'}`}
+                  style={{width: `${quotaPct}%`}}
+                />
+              </div>
+            )}
             <div className="flex items-center justify-between gap-3 text-[11px] text-[#5B6B82]">
               <span className="truncate">
                 {aiStatus?.configured
                   ? `Model: ${activeModel} (${PROMPT_VERSION})`
-                  : 'Chưa cấu hình GEMINI_API_KEY'}
+                  : !isAdmin
+                    ? 'Chưa nhập Khóa Gemini cá nhân'
+                    : 'Chưa cấu hình GEMINI_API_KEY'}
               </span>
               <button
                 type="button"
-                onClick={fetchAiStatus}
+                onClick={() => void fetchAiStatus()}
                 className="inline-flex items-center gap-1 font-bold text-[#14284A] hover:underline shrink-0 !min-h-[24px]"
               >
                 <RefreshCw className="w-3 h-3" /> Cập nhật
@@ -1312,6 +1615,134 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
             )}
           </div>
         </div>
+
+        {/* TEACHER BYOK GEMINI API KEY + 5-STEP GUIDE PANEL */}
+        {(!isAdmin || showAdminByokBox || Boolean(personalApiKey)) && (
+          <div
+            className={`p-4 rounded-2xl border-2 space-y-3 text-xs ${
+              personalApiKey && aiStatus?.configured
+                ? 'bg-[#F0FAF7] border-[#2E9C8A]'
+                : 'bg-[#FFF9EB] border-[#E0A93B]'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-[#1F7A6B]" />
+                <span className="font-extrabold text-[#14284A] text-sm">
+                  {isAdmin
+                    ? 'Khóa Gemini API cá nhân (tùy chọn thay cho khóa hệ thống)'
+                    : 'Khóa Gemini API cá nhân của Giáo viên (dùng tài nguyên riêng của thầy/cô)'}
+                </span>
+                {personalApiKey && aiStatus?.configured ? (
+                  <span className="px-2 py-0.5 rounded-full bg-[#E6F6F3] border border-[#2E9C8A] text-[#145B4F] text-[11px] font-extrabold">
+                    ✓ Đã kết nối ({aiStatus.availableModels?.length ?? 1} model)
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full bg-[#FFF3DB] border border-[#D98A1F] text-[#8A5108] text-[11px] font-extrabold">
+                    {personalApiKey ? 'Cần kiểm tra lại khóa' : 'Chưa kết nối'}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowKeyGuide((v) => !v)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A] !min-h-[30px]"
+              >
+                <HelpCircle className="w-3.5 h-3.5 text-[#2E9C8A]" />
+                {showKeyGuide ? 'Ẩn hướng dẫn lấy API Key' : 'Hướng dẫn 5 bước lấy API Key miễn phí'}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[240px]">
+                <input
+                  type={showPersonalKey ? 'text' : 'password'}
+                  value={personalKeyInput}
+                  onChange={(e) => setPersonalKeyInput(e.target.value)}
+                  placeholder="Dán Khóa Gemini API của bạn tại đây (bắt đầu bằng AIza...)"
+                  autoComplete="off"
+                  className="w-full pl-3 pr-10 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-mono text-[#14284A]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPersonalKey((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#5B6B82] hover:text-[#14284A]"
+                  title={showPersonalKey ? 'Ẩn khóa' : 'Hiện khóa'}
+                >
+                  {showPersonalKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                type="button"
+                disabled={testingKey}
+                onClick={() => void handleSaveAndTestPersonalKey()}
+                className="btn-tactile btn-jade text-xs py-2 px-3.5"
+              >
+                {testingKey ? 'Đang kiểm tra...' : 'Lưu & Kiểm tra khóa'}
+              </button>
+              {personalApiKey && (
+                <button
+                  type="button"
+                  onClick={handleClearPersonalKey}
+                  className="px-3 py-2 rounded-xl bg-white border border-[#E5A09B] text-[#99261B] font-bold text-xs !min-h-[36px]"
+                >
+                  Xóa khóa
+                </button>
+              )}
+            </div>
+
+            <p className="text-[11px] text-[#5B6B82]">
+              🔒 Khóa API chỉ lưu cục bộ trên trình duyệt của chính thầy/cô (không lưu vào CSDL chung và không chia sẻ cho tài khoản khác). Toàn bộ lượt trích xuất AI sẽ dùng hạn mức miễn phí của tài khoản Google cá nhân của thầy/cô.
+            </p>
+
+            {keyBannerMsg && (
+              <div className="p-2.5 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-[#145B4F] font-bold text-xs">
+                ✓ {keyBannerMsg}
+              </div>
+            )}
+            {aiStatus?.keyError && (
+              <div className="p-2.5 rounded-xl bg-[#FCE8E6] border border-[#C8392B] text-[#99261B] font-bold text-xs">
+                ⚠ {aiStatus.keyError}
+              </div>
+            )}
+
+            {showKeyGuide && (
+              <div className="p-3.5 rounded-xl bg-white border border-[#D9C293] space-y-2 text-xs text-[#1B2A41]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-extrabold text-[#14284A]">
+                    Hướng dẫn 5 bước lấy Khóa Gemini API miễn phí (mất ~1 phút):
+                  </p>
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-[#14284A] text-[#FFFBF0] font-bold text-[11px] hover:opacity-90"
+                  >
+                    Mở Google AI Studio lấy API Key <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <ol className="list-decimal pl-5 space-y-1.5 leading-relaxed">
+                  <li>
+                    Bấm nút <strong>"Mở Google AI Studio lấy API Key"</strong> ở trên (hoặc vào địa chỉ{' '}
+                    <code className="px-1 py-0.5 rounded bg-[#FAF5E8]">https://aistudio.google.com/apikey</code>) rồi đăng nhập bằng tài khoản <strong>Gmail cá nhân</strong> của thầy/cô.
+                  </li>
+                  <li>
+                    Nếu lần đầu truy cập, tích đồng ý điều khoản của Google AI Studio và bấm <strong>Continue</strong>.
+                  </li>
+                  <li>
+                    Bấm nút xanh <strong>"Create API key"</strong> (Tạo khóa API) ở góc trên bên phải màn hình.
+                  </li>
+                  <li>
+                    Đặt tên tùy ý (ví dụ: <em>ToanDuKy</em>), chọn hoặc tạo dự án mới rồi bấm <strong>Create key</strong> → bấm nút <strong>Copy</strong> để sao chép chuỗi khóa (bắt đầu bằng <code className="px-1 py-0.5 rounded bg-[#FAF5E8]">AIza...</code>).
+                  </li>
+                  <li>
+                    Quay lại trang này, dán chuỗi khóa vào ô bên trên rồi bấm <strong>"Lưu &amp; Kiểm tra khóa"</strong>. Khi thấy dấu <strong>✓ Đã kết nối</strong> màu xanh, thầy/cô có thể tải PDF/Word lên trích xuất và gán câu hỏi vào từng trạm ở mục <strong>7. Set nhiệm vụ</strong>.
+                  </li>
+                </ol>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Saved Import Batches drawer (resume after F5 / offline) */}
         {showSavedBatches && savedBatches.length > 0 && (
@@ -1437,6 +1868,33 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                 onChange={handleLocalFileChange}
                 className="block w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:bg-[#14284A] file:text-[#FFFBF0] file:font-bold file:cursor-pointer"
               />
+
+              {/* Extracted DOCX embedded diagram thumbnails */}
+              {docxImages.length > 0 && (
+                <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A]/50 space-y-2 text-xs">
+                  <p className="font-extrabold text-[#14284A] inline-flex items-center gap-1.5">
+                    <ImageIcon className="w-4 h-4 text-[#2E9C8A]" />
+                    Đã tách tự động {docxImages.length} hình vẽ minh họa từ tệp Word (sẽ tự gắn vào từng câu khi AI trích xuất):
+                  </p>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {docxImages.map((img) => (
+                      <div
+                        key={img.id}
+                        className="shrink-0 w-28 p-1.5 rounded-xl border border-[#2E9C8A] bg-white space-y-1 text-center"
+                      >
+                        <img
+                          src={img.dataUrl}
+                          alt={`Hình ${img.index}`}
+                          className="w-full h-20 object-contain rounded bg-white"
+                        />
+                        <p className="text-[10px] font-extrabold text-[#145B4F]">
+                          Hình {img.index} ({Math.round(img.approxBytes / 1024)} KB)
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* PDF Range Controls & Consistent Status Line */}
               {pdfReadResult && (
@@ -2224,6 +2682,24 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         Tin cậy: {Math.round((item.confidence ?? 0.75) * 100)}%
                       </span>
 
+                      <select
+                        value={item.stationId}
+                        onChange={(e) =>
+                          updateDraft(item.id, (prev) => ({
+                            ...prev,
+                            stationId: e.target.value as StationId,
+                          }))
+                        }
+                        title="Chọn trạm đích cho câu hỏi này"
+                        className="px-2 py-0.5 rounded bg-white border border-[#2E9C8A] font-bold text-[#145B4F] !min-h-[26px]"
+                      >
+                        {STATION_LIST.map((stId) => (
+                          <option key={stId} value={stId}>
+                            Trạm {stId} · {STATIONS.find((s) => s.id === stId)?.shortName ?? stId}
+                          </option>
+                        ))}
+                      </select>
+
                       {item.suggested_stations && item.suggested_stations.length > 0 && (
                         <span className="px-2 py-0.5 rounded bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]">
                           Mốc gợi ý: {item.suggested_stations.map((m) => `Mốc ${m}`).join(', ')}
@@ -2291,7 +2767,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     <div className="lg:col-span-5 p-3 rounded-xl bg-white border border-[#E5D3A8] space-y-2 text-xs">
                       <div className="flex flex-wrap items-center justify-between gap-1.5">
                         <p className="font-extrabold uppercase text-[#5B6B82]">
-                          Trang gốc {item.page_pdf ? `(PDF tr.${item.page_pdf}${item.page_printed ? ` · In tr.${item.page_printed}` : ''})` : ''}
+                          Trang gốc &amp; Hình vẽ {item.page_pdf ? `(PDF tr.${item.page_pdf}${item.page_printed ? ` · In tr.${item.page_printed}` : ''})` : ''}
                         </p>
                         <div className="flex flex-wrap items-center gap-1">
                           {pageImgUrl && (
@@ -2306,16 +2782,75 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                               <ZoomIn className="w-3 h-3" /> {Math.round(previewZoom * 100)}%
                             </button>
                           )}
-                          {isAdmin && item.figure_bbox && !item.figure_crop && (
+                          {item.figure_bbox && pageImgUrl && (
                             <button
                               type="button"
-                              onClick={() => void handleAdminUseCroppedFigure(item)}
+                              onClick={() => void handleUseCroppedFigure(item)}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] font-bold text-[#8A5108]"
+                              title="Tự động cắt hình vẽ theo tọa độ AI phát hiện"
                             >
-                              <Crop className="w-3 h-3" /> Ảnh hình
+                              <Crop className="w-3 h-3" /> Cắt hình PDF
                             </button>
                           )}
-                          {isAdmin && pageImgUrl && !item.formula_image && (
+                          {pageImgUrl && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (manualCropDraftId === item.id) {
+                                  setManualCropDraftId(null);
+                                } else {
+                                  setManualCropDraftId(item.id);
+                                  setCropRect({
+                                    x: item.figure_bbox?.x ?? 0.15,
+                                    y: item.figure_bbox?.y ?? 0.18,
+                                    w: item.figure_bbox?.w ?? 0.7,
+                                    h: item.figure_bbox?.h ?? 0.3,
+                                  });
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]"
+                              title="Chọn khung cắt hình vẽ thủ công từ trang PDF gốc"
+                            >
+                              <Crop className="w-3 h-3" /> {manualCropDraftId === item.id ? 'Đóng cắt' : 'Cắt tùy chọn'}
+                            </button>
+                          )}
+                          <label className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#E6F6F3] border border-[#2E9C8A] font-bold text-[#145B4F] cursor-pointer">
+                            <Upload className="w-3 h-3" /> Tải ảnh
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp,image/gif"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                e.target.value = '';
+                                if (f) void handleUploadFigureForDraft(item.id, f);
+                              }}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => void handlePasteFigureForDraft(item.id)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] font-bold text-[#14284A]"
+                            title="Chụp ảnh hình vẽ (Win+Shift+S) rồi bấm Dán ảnh"
+                          >
+                            <Clipboard className="w-3 h-3" /> Dán ảnh
+                          </button>
+                          {item.figure_crop && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateDraft(item.id, (prev) => ({
+                                  ...prev,
+                                  figure_crop: undefined,
+                                  figure_crop_private: undefined,
+                                }))
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FCE8E6] border border-[#E5A09B] font-bold text-[#99261B]"
+                            >
+                              Xóa ảnh
+                            </button>
+                          )}
+                          {pageImgUrl && !item.formula_image && (
                             <button
                               type="button"
                               onClick={async () => {
@@ -2344,15 +2879,142 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         </div>
                       </div>
 
+                      {/* Quick picker for extracted DOCX images */}
+                      {docxImages.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-[#FAF5E8] border border-[#E5D3A8]">
+                          <span className="text-[10px] font-extrabold text-[#14284A]">Chọn hình từ tệp Word:</span>
+                          {docxImages.map((img) => {
+                            const activeImg = item.figure_crop === img.dataUrl;
+                            return (
+                              <button
+                                key={img.id}
+                                type="button"
+                                onClick={() =>
+                                  updateDraft(item.id, (prev) => ({
+                                    ...prev,
+                                    needs_figure: true,
+                                    figure_image_index: img.index,
+                                    figure_crop: img.dataUrl,
+                                    figure_crop_private: true,
+                                    flags: (prev.flags ?? []).filter((f) => f !== 'figure_missing' && f !== 'no_image'),
+                                  }))
+                                }
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-bold ${
+                                  activeImg
+                                    ? 'bg-[#2E9C8A] text-white border-[#1F7A6B]'
+                                    : 'bg-white text-[#14284A] border-[#CBB17D]'
+                                }`}
+                              >
+                                <ImageIcon className="w-3 h-3" /> Hình {img.index}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Interactive Manual Cropper for PDF pages */}
+                      {manualCropDraftId === item.id && pageImgUrl && (
+                        <div className="p-2.5 rounded-xl bg-[#FFFBF0] border-2 border-[#2E9C8A] space-y-2">
+                          <p className="text-[11px] font-extrabold text-[#14284A]">
+                            Chỉnh khung đỏ bao quanh hình vẽ trên trang PDF rồi bấm Áp dụng:
+                          </p>
+                          <div className="relative w-full overflow-hidden rounded border border-[#CBB17D] bg-white">
+                            <img src={pageImgUrl} alt="Chọn vùng cắt" className="w-full h-auto block" />
+                            <div
+                              className="absolute border-2 border-[#C8392B] bg-[#C8392B]/15 pointer-events-none"
+                              style={{
+                                left: `${cropRect.x * 100}%`,
+                                top: `${cropRect.y * 100}%`,
+                                width: `${cropRect.w * 100}%`,
+                                height: `${cropRect.h * 100}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-[#14284A]">
+                            <label>
+                              Trái ({Math.round(cropRect.x * 100)}%)
+                              <input
+                                type="range"
+                                min={0}
+                                max={85}
+                                value={Math.round(cropRect.x * 100)}
+                                onChange={(e) => {
+                                  const nx = Number(e.target.value) / 100;
+                                  setCropRect((r) => ({...r, x: nx, w: Math.min(r.w, 1 - nx)}));
+                                }}
+                                className="w-full accent-[#2E9C8A]"
+                              />
+                            </label>
+                            <label>
+                              Trên ({Math.round(cropRect.y * 100)}%)
+                              <input
+                                type="range"
+                                min={0}
+                                max={85}
+                                value={Math.round(cropRect.y * 100)}
+                                onChange={(e) => {
+                                  const ny = Number(e.target.value) / 100;
+                                  setCropRect((r) => ({...r, y: ny, h: Math.min(r.h, 1 - ny)}));
+                                }}
+                                className="w-full accent-[#2E9C8A]"
+                              />
+                            </label>
+                            <label>
+                              Rộng ({Math.round(cropRect.w * 100)}%)
+                              <input
+                                type="range"
+                                min={10}
+                                max={Math.round((1 - cropRect.x) * 100)}
+                                value={Math.round(cropRect.w * 100)}
+                                onChange={(e) => setCropRect((r) => ({...r, w: Number(e.target.value) / 100}))}
+                                className="w-full accent-[#2E9C8A]"
+                              />
+                            </label>
+                            <label>
+                              Cao ({Math.round(cropRect.h * 100)}%)
+                              <input
+                                type="range"
+                                min={8}
+                                max={Math.round((1 - cropRect.y) * 100)}
+                                value={Math.round(cropRect.h * 100)}
+                                onChange={(e) => setCropRect((r) => ({...r, h: Number(e.target.value) / 100}))}
+                                className="w-full accent-[#2E9C8A]"
+                              />
+                            </label>
+                          </div>
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setManualCropDraftId(null)}
+                              className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A]"
+                            >
+                              Hủy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleUseCroppedFigure(item, {
+                                  page: item.page_pdf ?? 1,
+                                  ...cropRect,
+                                })
+                              }
+                              className="px-3 py-1 rounded-lg bg-[#2E9C8A] text-white font-bold"
+                            >
+                              Áp dụng vùng cắt
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {item.figure_crop ? (
                         <div className="space-y-1">
                           <img
                             src={item.figure_crop}
-                            alt="Ảnh cắt hình vẽ nội bộ lớp"
+                            alt="Hình vẽ minh họa câu hỏi"
                             className="w-full max-h-48 object-contain rounded-lg border border-[#2E9C8A] bg-white"
                           />
                           <p className="text-[10px] text-[#1F7A6B] font-bold">
-                            Ảnh cắt riêng tư nội bộ lớp (≤ 150 KB). Không chia sẻ công khai ngoài lớp.
+                            ✓ Đã gắn hình minh họa (≤ 150 KB) — học sinh sẽ thấy đúng hình này khi làm bài.
                           </p>
                         </div>
                       ) : pageImgUrl ? (
@@ -2366,7 +3028,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         </div>
                       ) : (
                         <p className="italic text-[#5B6B82] p-2 rounded-lg bg-[#FAF5E8]">
-                          {item.source_excerpt || '(Trích xuất từ văn bản không kèm ảnh)'}
+                          {item.source_excerpt || '(Trích xuất từ văn bản — có thể bấm "Tải ảnh" hoặc "Dán ảnh" ở trên để gắn hình vẽ)'}
                         </p>
                       )}
 
@@ -2472,6 +3134,20 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                       <div className="text-sm font-semibold text-[#14284A] leading-relaxed">
                         <MathText text={item.stem_vi} formulaImage={item.formula_image} />
                       </div>
+
+                      {item.figure_crop ? (
+                        <div className="p-2 rounded-xl bg-[#FFFBF0] border border-[#D9C293] flex justify-center">
+                          <img
+                            src={item.figure_crop}
+                            alt="Hình minh họa học viên sẽ thấy"
+                            className="max-h-48 w-auto max-w-full object-contain rounded-lg bg-white"
+                          />
+                        </div>
+                      ) : item.needs_figure || (item.flags ?? []).includes('figure_missing') ? (
+                        <div className="p-2.5 rounded-xl border border-dashed border-[#D98A1F] bg-[#FFF9EB] text-[11px] font-semibold text-[#8A5108]">
+                          ⚠ Đề bài có nhắc đến hình vẽ nhưng chưa gắn ảnh. Hãy chọn hình từ tệp Word, bấm <strong>Cắt tùy chọn</strong> (PDF), hoặc bấm <strong>Tải ảnh / Dán ảnh</strong> ở khung bên trái.
+                        </div>
+                      ) : null}
 
                       {item.options && item.options.length > 0 && (
                         <ul className="space-y-1">

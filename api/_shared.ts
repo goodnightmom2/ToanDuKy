@@ -13,11 +13,22 @@ export const AI_STATIC_FALLBACK_CHAIN: string[] = [
   'gemini-4-hydrogen',
 ];
 export const DAILY_QUOTA_DEFAULT = 50;
-export const PROMPT_VERSION = 'v2.3';
+export const PROMPT_VERSION = 'v2.4';
 
-// In-memory cache of live generateContent models discovered from Google AI Studio for this API key
-let cachedDiscoveredModels: {fetchedAt: number; models: string[]} | null = null;
+// In-memory cache of live generateContent models discovered per API key fingerprint
+const cachedDiscoveredModelsByKey = new Map<string, {fetchedAt: number; models: string[]}>();
 const DISCOVER_TTL_MS = 15 * 60 * 1000;
+
+function keyFingerprint(apiKey: string): string {
+  const k = apiKey.trim();
+  if (k.length <= 10) return 'short';
+  let h = 2166136261;
+  for (let i = 0; i < k.length; i++) {
+    h ^= k.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `${(h >>> 0).toString(36)}_${k.slice(-4)}`;
+}
 
 // In-memory 3-minute cooldown for models currently returning 503 UNAVAILABLE / 429 high-demand
 const busyModelCooldownUntil = new Map<string, number>();
@@ -92,14 +103,20 @@ function scoreModelForTask(modelId: string, preferHard: boolean): number {
 
 /**
  * Dynamically queries Google AI Studio `/v1beta/models` (free, zero quota) to discover the
- * exact live `generateContent`-capable Gemini models available on the configured GEMINI_API_KEY.
+ * exact live `generateContent`-capable Gemini models available on the given API key.
  */
-export async function discoverLiveGeminiModels(): Promise<string[]> {
-  const key = (process.env.GEMINI_API_KEY ?? '').trim();
-  if (!key || key === 'MY_GEMINI_API_KEY') return [];
+export async function discoverLiveGeminiModelsDetailed(
+  apiKeyOverride?: string,
+): Promise<{models: string[]; keyError?: string}> {
+  const key = (apiKeyOverride ?? process.env.GEMINI_API_KEY ?? '').trim();
+  if (!key || key === 'MY_GEMINI_API_KEY') {
+    return {models: [], keyError: 'Chưa có khóa Gemini API.'};
+  }
 
-  if (cachedDiscoveredModels && Date.now() - cachedDiscoveredModels.fetchedAt < DISCOVER_TTL_MS) {
-    return cachedDiscoveredModels.models;
+  const fp = keyFingerprint(key);
+  const cached = cachedDiscoveredModelsByKey.get(fp);
+  if (cached && Date.now() - cached.fetchedAt < DISCOVER_TTL_MS) {
+    return {models: cached.models};
   }
 
   try {
@@ -111,8 +128,16 @@ export async function discoverLiveGeminiModels(): Promise<string[]> {
       },
     );
     if (!resp.ok) {
-      console.warn('[api/_shared] /v1beta/models returned HTTP', resp.status);
-      return [];
+      const errText = await resp.text().catch(() => '');
+      console.warn('[api/_shared] /v1beta/models returned HTTP', resp.status, errText.slice(0, 140));
+      if (resp.status === 400 || resp.status === 401 || resp.status === 403) {
+        return {
+          models: [],
+          keyError:
+            'Khóa Gemini API không hợp lệ hoặc đã bị thu hồi trên Google AI Studio. Hãy kiểm tra lại khóa bắt đầu bằng "AIza...".',
+        };
+      }
+      return {models: []};
     }
     const json = (await resp.json()) as {
       models?: Array<{
@@ -136,13 +161,19 @@ export async function discoverLiveGeminiModels(): Promise<string[]> {
       .map((m) => (m.name ?? '').replace(/^models\//, '').trim());
 
     if (usable.length > 0) {
-      cachedDiscoveredModels = {fetchedAt: Date.now(), models: usable};
+      if (cachedDiscoveredModelsByKey.size > 40) cachedDiscoveredModelsByKey.clear();
+      cachedDiscoveredModelsByKey.set(fp, {fetchedAt: Date.now(), models: usable});
     }
-    return usable;
+    return {models: usable};
   } catch (err) {
     console.warn('[api/_shared] discoverLiveGeminiModels error:', err);
-    return [];
+    return {models: []};
   }
+}
+
+export async function discoverLiveGeminiModels(apiKeyOverride?: string): Promise<string[]> {
+  const res = await discoverLiveGeminiModelsDetailed(apiKeyOverride);
+  return res.models;
 }
 
 /**
@@ -154,8 +185,9 @@ export async function discoverLiveGeminiModels(): Promise<string[]> {
 export async function resolveLiveModelChain(
   requestedModel?: string,
   preferHard = false,
+  apiKeyOverride?: string,
 ): Promise<string[]> {
-  const discovered = await discoverLiveGeminiModels();
+  const discovered = await discoverLiveGeminiModels(apiKeyOverride);
   const cleanReq = (requestedModel ?? '').trim().replace(/^models\//, '');
 
   if (discovered.length > 0) {
@@ -256,10 +288,57 @@ export function refundQuota(): {used: number; date: string} {
   return {used: dailyUsed, date: quotaDate};
 }
 
-export function getGenAIClient(): GoogleGenAI | null {
-  const key = process.env.GEMINI_API_KEY;
+export function getGenAIClient(apiKeyOverride?: string): GoogleGenAI | null {
+  const key = (apiKeyOverride ?? process.env.GEMINI_API_KEY ?? '').trim();
   if (!key || key === 'MY_GEMINI_API_KEY') return null;
   return new GoogleGenAI({apiKey: key});
+}
+
+/**
+ * Resolves the Gemini API key for an authenticated staff caller:
+ * - Teacher: MUST provide their own personal `x-gemini-api-key` header (BYOK); NEVER falls back to server key!
+ * - Admin: May provide a personal override key, or fall back to server `process.env.GEMINI_API_KEY`.
+ */
+export function resolveApiKeyForCaller(
+  request: Request,
+  caller: VerifiedCaller,
+):
+  | {ok: true; apiKey: string; usingPersonalKey: boolean}
+  | {ok: false; status: number; requiresPersonalKey: boolean; error: string} {
+  const personalKey = (request.headers.get('x-gemini-api-key') ?? '').trim();
+  if (personalKey) {
+    if (personalKey.length < 20 || /\s/.test(personalKey)) {
+      return {
+        ok: false,
+        status: 400,
+        requiresPersonalKey: caller.role === 'teacher',
+        error: 'Khóa Gemini API cá nhân không đúng định dạng (khóa hợp lệ thường bắt đầu bằng "AIza..." và không có khoảng trắng).',
+      };
+    }
+    return {ok: true, apiKey: personalKey, usingPersonalKey: true};
+  }
+
+  // Strict resource isolation: Teachers MUST use their own personal Gemini API key
+  if (caller.role === 'teacher') {
+    return {
+      ok: false,
+      status: 403,
+      requiresPersonalKey: true,
+      error:
+        'Giáo viên cần nhập Khóa Gemini API cá nhân ở mục "6. Nhập học liệu" để sử dụng tài nguyên AI riêng của mình (không dùng hạn mức của hệ thống).',
+    };
+  }
+
+  const serverKey = (process.env.GEMINI_API_KEY ?? '').trim();
+  if (!serverKey || serverKey === 'MY_GEMINI_API_KEY') {
+    return {
+      ok: false,
+      status: 503,
+      requiresPersonalKey: false,
+      error: 'Máy chủ chưa cấu hình GEMINI_API_KEY và chưa nhập khóa cá nhân.',
+    };
+  }
+  return {ok: true, apiKey: serverKey, usingPersonalKey: false};
 }
 
 export function fixLatexControlChars(val: unknown): string {

@@ -4,9 +4,11 @@ import {
   DAILY_QUOTA_DEFAULT,
   fixLatexControlChars,
   getGenAIClient,
+  getQuotaStatus,
   jsonResponse,
   markModelTemporarilyUnavailable,
   refundQuota,
+  resolveApiKeyForCaller,
   resolveLiveModelChain,
   verifyRequestAuth,
 } from '../_shared.ts';
@@ -27,9 +29,14 @@ interface AnswerKeyBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const auth = await verifyRequestAuth(request, {requireAdmin: true});
+  const auth = await verifyRequestAuth(request, {requireStaff: true});
   if (!auth.ok) {
     return jsonResponse({error: auth.error}, auth.status);
+  }
+
+  const keyRes = resolveApiKeyForCaller(request, auth.caller);
+  if (!keyRes.ok) {
+    return jsonResponse({error: keyRes.error, requiresPersonalKey: keyRes.requiresPersonalKey}, keyRes.status);
   }
 
   let body: AnswerKeyBody = {};
@@ -50,12 +57,15 @@ export async function POST(request: Request): Promise<Response> {
     return jsonResponse({error: 'Chưa có trang bảng đáp án / lời giải.'}, 400);
   }
 
-  const ai = getGenAIClient();
+  const ai = getGenAIClient(keyRes.apiKey);
   if (!ai) {
-    return jsonResponse({error: 'Máy chủ chưa cấu hình GEMINI_API_KEY.'}, 503);
+    return jsonResponse({error: 'Chưa có khóa GEMINI_API_KEY hợp lệ.'}, 503);
   }
 
-  const quota = checkAndConsumeQuota(maxDaily);
+  const quotaStatusBefore = getQuotaStatus(maxDaily);
+  const quota = keyRes.usingPersonalKey
+    ? {ok: true, used: 0, limit: quotaStatusBefore.dailyLimit, date: quotaStatusBefore.date}
+    : checkAndConsumeQuota(maxDaily);
   if (!quota.ok) {
     return jsonResponse(
       {
@@ -99,7 +109,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     let responseText = '';
     let lastErr = '';
-    const liveModels = await resolveLiveModelChain(AI_MODEL, false);
+    const liveModels = await resolveLiveModelChain(AI_MODEL, false, keyRes.apiKey);
     for (const modelName of liveModels) {
       try {
         const resp = await ai.models.generateContent({
@@ -156,7 +166,7 @@ export async function POST(request: Request): Promise<Response> {
       },
     });
   } catch (err) {
-    const refunded = refundQuota();
+    const refunded = keyRes.usingPersonalKey ? {used: 0, date: quota.date} : refundQuota();
     console.error('[api/ai/answer-key] Error:', err);
     return jsonResponse(
       {

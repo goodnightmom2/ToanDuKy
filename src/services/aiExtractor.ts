@@ -26,6 +26,7 @@ import {
   saveCachedExtractionResult,
 } from './importBatchService.ts';
 import {clusterToDefaultStation} from './materialImport.ts';
+import type {DocxEmbeddedImage} from './docxMathParser.ts';
 import type {PdfReadPageResult} from './pdfReader.ts';
 
 export interface RawAiExtractedQuestion {
@@ -43,6 +44,7 @@ export interface RawAiExtractedQuestion {
   unit?: string;
   solution_vi?: string;
   needs_figure?: boolean;
+  figure_image_index?: number;
   figure_spec?: FigureSpec;
   figure_bbox?: FigureBBox;
   givens?: StructuredGivens;
@@ -237,6 +239,7 @@ export function mapV2ExtractedToQuestionDrafts(
     batchId?: string;
     taxonomy?: TaxonomyPattern[];
     noImageMode?: boolean;
+    embeddedImages?: DocxEmbeddedImage[];
   },
 ): QuestionItem[] {
   const taxonomy = meta.taxonomy ?? DEFAULT_TAXONOMY_PATTERNS;
@@ -341,10 +344,15 @@ export function mapV2ExtractedToQuestionDrafts(
     if (!hasAnswer) flagsSet.add('missing_answer');
     if (it.proposed_pattern && !patternIdCandidate) flagsSet.add('proposed_new_pattern');
 
+    const embeddedMatch =
+      typeof it.figure_image_index === 'number' && meta.embeddedImages?.length
+        ? meta.embeddedImages.find((img) => img.index === it.figure_image_index)
+        : undefined;
+
     const mentionsFigure = Boolean(
-      it.needs_figure || /(?:như\s+hình|hình\s+dưới|hình\s+vẽ|hình\s+bên)/i.test(stem),
+      it.needs_figure || embeddedMatch || /(?:như\s+hình|hình\s+dưới|hình\s+vẽ|hình\s+bên)/i.test(stem),
     );
-    const hasFigureData = Boolean(it.figure_spec?.vertices?.length || it.figure_bbox);
+    const hasFigureData = Boolean(embeddedMatch || it.figure_spec?.vertices?.length || it.figure_bbox);
     if (mentionsFigure && !hasFigureData) {
       flagsSet.add('figure_missing');
     }
@@ -414,8 +422,11 @@ export function mapV2ExtractedToQuestionDrafts(
         part,
       },
       needs_figure: mentionsFigure,
+      figure_image_index: typeof it.figure_image_index === 'number' ? it.figure_image_index : undefined,
       figure_spec: it.figure_spec,
       figure_bbox: it.figure_bbox,
+      figure_crop: embeddedMatch?.dataUrl,
+      figure_crop_private: embeddedMatch ? true : undefined,
       givens: it.givens,
       import_batch_id: meta.batchId,
       suggested_stations: suggestedStations,
@@ -481,6 +492,9 @@ export function stitchAndDedupeExtractedDrafts(items: QuestionItem[]): QuestionI
         statements: combinedStatements,
         figure_spec: prev.figure_spec ?? item.figure_spec,
         figure_bbox: prev.figure_bbox ?? item.figure_bbox,
+        figure_crop: prev.figure_crop ?? item.figure_crop,
+        figure_crop_private: prev.figure_crop_private ?? item.figure_crop_private,
+        figure_image_index: prev.figure_image_index ?? item.figure_image_index,
         givens: prev.givens ?? item.givens,
         flags: nextFlags,
       };
@@ -668,6 +682,7 @@ export async function extractWindowViaAi(params: {
   driveFileId?: string;
   batchId?: string;
   accessToken: string | null;
+  personalApiKey?: string;
   maxDaily: number;
   aiEnabled: boolean;
   classificationMode: ClassificationMode;
@@ -676,6 +691,7 @@ export async function extractWindowViaAi(params: {
   model: string;
   useHardPageModel?: boolean;
   bypassCache?: boolean;
+  embeddedImages?: DocxEmbeddedImage[];
   signal?: AbortSignal;
 }): Promise<WindowExtractResult> {
   const pageNums = params.pages.map((p) => p.pagePdf);
@@ -717,6 +733,7 @@ export async function extractWindowViaAi(params: {
       headers: {
         'Content-Type': 'application/json',
         ...(params.accessToken ? {Authorization: `Bearer ${params.accessToken}`} : {}),
+        ...(params.personalApiKey?.trim() ? {'x-gemini-api-key': params.personalApiKey.trim()} : {}),
       },
       body: JSON.stringify({
         text: params.pastedText ?? '',
@@ -792,7 +809,10 @@ export async function extractWindowViaAi(params: {
       driveFileId: params.driveFileId,
       batchId: params.batchId,
       taxonomy: params.taxonomy,
-      noImageMode: payloadPages.length === 0 || payloadPages.every((p) => !p.imageBase64),
+      noImageMode:
+        (payloadPages.length === 0 || payloadPages.every((p) => !p.imageBase64)) &&
+        !(params.embeddedImages && params.embeddedImages.length > 0),
+      embeddedImages: params.embeddedImages,
     });
 
     const usedModel = data.model ?? params.model;
@@ -841,6 +861,7 @@ export async function extractAnswerKeysViaAi(params: {
   pages: PdfReadPageResult[];
   fileSha256: string;
   accessToken: string | null;
+  personalApiKey?: string;
   maxDaily: number;
   aiEnabled: boolean;
   model: string;
@@ -879,6 +900,7 @@ export async function extractAnswerKeysViaAi(params: {
       headers: {
         'Content-Type': 'application/json',
         ...(params.accessToken ? {Authorization: `Bearer ${params.accessToken}`} : {}),
+        ...(params.personalApiKey?.trim() ? {'x-gemini-api-key': params.personalApiKey.trim()} : {}),
       },
       body: JSON.stringify({
         pages: params.pages.map((p) => ({

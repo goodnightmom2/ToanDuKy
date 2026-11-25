@@ -47,6 +47,7 @@ import {
   dataService,
   generateId,
 } from '../services/dataService.ts';
+import {compressImageBytesToDataUrl} from '../services/docxMathParser.ts';
 import {
   DEFAULT_BULK_STUDENT_PASSWORD,
   downloadStudentTemplateXlsx,
@@ -107,7 +108,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const sanitizeTabForRole = React.useCallback(
     (candidate?: AdminTab): AdminTab => {
       const next = candidate ?? 'overview';
-      if (!isAdmin && (next === 'import' || next === 'settings' || next === 'selftest')) {
+      if (!isAdmin && (next === 'settings' || next === 'selftest')) {
         return 'overview';
       }
       return next;
@@ -211,6 +212,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editQSolution, setEditQSolution] = React.useState('');
   const [editQHint, setEditQHint] = React.useState('');
   const [editQNote, setEditQNote] = React.useState('');
+  const [editQFigureCrop, setEditQFigureCrop] = React.useState('');
   const [bankActionMsg, setBankActionMsg] = React.useState('');
 
   // Reports tab states
@@ -341,10 +343,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     {id: 'classes', label: isAdmin ? '3. Lớp & mã' : `3. Lớp của tôi (${classes.length})`, icon: BookMarked},
     {id: 'bank', label: `4. Ngân hàng (${questions.length})`, icon: Sparkles},
     {id: 'distribution', label: '5. Phân bố ngân hàng', icon: LayoutGrid},
-    ...(isAdmin ? [{id: 'import' as const, label: '6. Nhập học liệu', icon: FileUp}] : []),
-    {id: 'missions', label: isAdmin ? '7. Set nhiệm vụ' : '6. Set nhiệm vụ', icon: Target},
-    {id: 'reports', label: isAdmin ? '8. Báo cáo & Lỗi sai' : '7. Báo cáo & Lỗi sai', icon: BarChart3},
-    {id: 'rebuttals', label: `${isAdmin ? '9' : '8'}. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
+    {id: 'import', label: '6. Nhập học liệu', icon: FileUp},
+    {id: 'missions', label: '7. Set nhiệm vụ', icon: Target},
+    {id: 'reports', label: '8. Báo cáo & Lỗi sai', icon: BarChart3},
+    {id: 'rebuttals', label: `9. Phản biện (${pendingRebuttalsCount})`, icon: MessageSquareWarning},
     ...(isAdmin
       ? [
           {id: 'settings' as const, label: '10. Cài đặt', icon: Settings},
@@ -455,7 +457,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   • Ở tab <strong>2. Học sinh của tôi</strong>, bấm nút <strong>Tiến độ &amp; Lỗi sai</strong> bên cạnh từng học sinh để xem chi tiết mốc đang học, trạng thái 6 cụm kỹ năng, các câu làm sai và mã lỗi cụ thể (E01–E12).
                 </p>
                 <p>
-                  • Mọi đề xuất thêm mới, chỉnh sửa hoặc thay thế câu hỏi ở tab <strong>4. Ngân hàng</strong> sẽ được chuyển tới <strong>Admin duyệt</strong> trước khi áp dụng cho học sinh. Chức năng nhập học liệu hàng loạt bằng AI chỉ dành riêng cho Quản trị viên (Admin).
+                  • Ở tab <strong>6. Nhập học liệu</strong>, bạn có thể nhập <strong>Khóa Gemini API cá nhân</strong> (dùng hạn mức miễn phí Google AI Studio của riêng mình) để tách câu hỏi &amp; hình vẽ từ tệp PDF/Word, sau đó phân bổ câu hỏi vào từng trạm/mốc ở tab <strong>7. Set nhiệm vụ</strong>. Mọi đề xuất thêm/sửa câu hỏi trong Ngân hàng chung đều được chuyển tới <strong>Admin duyệt</strong> trước khi hiển thị cho học sinh.
                 </p>
               </>
             )}
@@ -2372,6 +2374,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             setEditQSolution(q.solution_vi);
                             setEditQHint(q.hints_vi[0] ?? '');
                             setEditQNote(q.proposedNote ?? '');
+                            setEditQFigureCrop(q.figure_crop ?? '');
                           }}
                           className="px-2.5 py-1 rounded-lg bg-[#FFF4D6] border border-[#E0A93B] text-xs font-bold !min-h-[34px]"
                         >
@@ -2471,6 +2474,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   compact
                   showTemplates={false}
                 />
+                <div className="space-y-1.5 p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="font-bold text-[#14284A]">Hình minh họa đề bài (tùy chọn — cho câu thực tế/hình vẽ)</label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <label className="px-2.5 py-1 rounded-lg bg-white border border-[#CBB17D] font-bold text-[#14284A] cursor-pointer">
+                        Tải ảnh hình vẽ
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/gif"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!f) return;
+                            const bytes = new Uint8Array(await f.arrayBuffer());
+                            const comp = await compressImageBytesToDataUrl(bytes, f.type || 'image/png', 140 * 1024);
+                            setEditQFigureCrop(comp.dataUrl);
+                          }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            if (navigator.clipboard?.read) {
+                              const items = await navigator.clipboard.read();
+                              for (const ci of items) {
+                                const imgType = ci.types.find((t) => t.startsWith('image/'));
+                                if (imgType) {
+                                  const blob = await ci.getType(imgType);
+                                  const bytes = new Uint8Array(await blob.arrayBuffer());
+                                  const comp = await compressImageBytesToDataUrl(bytes, imgType, 140 * 1024);
+                                  setEditQFigureCrop(comp.dataUrl);
+                                  return;
+                                }
+                              }
+                            }
+                            setBankActionMsg('Chưa thấy ảnh trong bộ nhớ tạm (Clipboard). Hãy chụp ảnh hình vẽ (Win+Shift+S) rồi bấm lại hoặc dùng nút "Tải ảnh hình vẽ".');
+                          } catch {
+                            setBankActionMsg('Trình duyệt chưa cấp quyền đọc Clipboard. Bạn hãy dùng nút "Tải ảnh hình vẽ".');
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-[#EEF6FF] border border-[#9EC5FE] font-bold text-[#14437A]"
+                      >
+                        Dán ảnh (Clipboard)
+                      </button>
+                      {editQFigureCrop && (
+                        <button
+                          type="button"
+                          onClick={() => setEditQFigureCrop('')}
+                          className="px-2 py-1 rounded-lg bg-[#FCE8E6] border border-[#E5A09B] font-bold text-[#99261B]"
+                        >
+                          Xóa ảnh
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {editQFigureCrop ? (
+                    <div className="p-2 rounded-lg bg-white border border-[#E5D3A8] flex justify-center">
+                      <img
+                        src={editQFigureCrop}
+                        alt="Hình minh họa câu hỏi"
+                        className="max-h-44 w-auto object-contain rounded"
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-[#5B6B82]">
+                      Chưa gắn hình minh họa. Với bài toán thực tế có hình vẽ (cây, tháp, đồi, sông...), bạn có thể tải ảnh hoặc chụp màn hình rồi bấm Dán ảnh.
+                    </p>
+                  )}
+                </div>
                 <div className="space-y-1">
                   <label className="font-bold text-[#14284A]">Ghi chú lý do sửa / thay thế</label>
                   <input
@@ -2500,6 +2574,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           stem_vi: editQStem.trim(),
                           solution_vi: editQSolution.trim() || editingQuestion.solution_vi,
                           hints_vi: [editQHint.trim() || editingQuestion.hints_vi[0] || '', ...editingQuestion.hints_vi.slice(1)],
+                          figure_crop: editQFigureCrop || undefined,
+                          figure_crop_private: editQFigureCrop ? true : undefined,
+                          flags: editQFigureCrop
+                            ? (editingQuestion.flags ?? []).filter((f) => f !== 'figure_missing')
+                            : editingQuestion.flags,
                         },
                         editQNote.trim() ||
                           (isAdmin ? 'Admin chỉnh sửa nội dung' : 'Giáo viên đề xuất chỉnh sửa / thay thế'),
@@ -2532,8 +2611,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <X className="w-5 h-5" />
                   </button>
                 </div>
-                <div className="p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] text-sm">
+                <div className="p-3 rounded-xl bg-[#FFFBF0] border border-[#D9C293] text-sm space-y-2">
                   <MathText text={previewQuestion.stem_vi} />
+                  {previewQuestion.figure_crop && (
+                    <div className="p-2 rounded-lg bg-white border border-[#E5D3A8] flex justify-center">
+                      <img
+                        src={previewQuestion.figure_crop}
+                        alt="Hình minh họa đề bài"
+                        className="max-h-52 w-auto object-contain rounded"
+                      />
+                    </div>
+                  )}
                 </div>
                 {previewQuestion.options && previewQuestion.options.length > 0 && (
                   <div className="space-y-1 text-xs">
@@ -2597,8 +2685,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         />
       )}
 
-      {/* TAB 6: IMPORT MATERIALS (ADMIN ONLY) */}
-      {tab === 'import' && isAdmin && (
+      {/* TAB 6: IMPORT MATERIALS (ADMIN + TEACHER WITH PERSONAL GEMINI API KEY) */}
+      {tab === 'import' && (
         <MaterialImporter
           user={user}
           settings={settings}

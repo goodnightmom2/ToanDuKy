@@ -404,9 +404,10 @@ export interface QuestionItem {
   part?: 'I' | 'II' | 'III' | null;
   question_number?: string;
   needs_figure?: boolean;
+  figure_image_index?: number;
   figure_spec?: FigureSpec;
   figure_bbox?: FigureBBox;
-  figure_crop?: string; // Private compressed JPEG dataURL <= 150 KB, saved only when Admin opts in
+  figure_crop?: string; // Compressed JPEG/PNG dataURL <= 150 KB for real-world/applied diagram questions
   figure_crop_private?: boolean;
   givens?: StructuredGivens;
   verified_by_code?: VerifiedByCodeStatus;
