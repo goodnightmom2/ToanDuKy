@@ -10,6 +10,7 @@ import {
   FastForward,
   FileSearch,
   FileUp,
+  FlaskConical,
   Image as ImageIcon,
   LayoutGrid,
   Lock,
@@ -33,6 +34,8 @@ import {MaterialImporter} from '../components/MaterialImporter.tsx';
 import {MathLatexEditor} from '../components/MathLatexEditor.tsx';
 import {MathText} from '../components/MathText.tsx';
 import {MissionSetTab} from '../components/MissionSetTab.tsx';
+import {ParametricLab} from '../components/ParametricLab.tsx';
+import {StudentAiRemediationAdvisor} from '../components/StudentAiRemediationAdvisor.tsx';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
 import {
   ALL_MOC_IDS,
@@ -187,6 +190,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [bankSearch, setBankSearch] = React.useState('');
   const [showTaxonomyPanel, setShowTaxonomyPanel] = React.useState(false);
   const [showMathAuditPanel, setShowMathAuditPanel] = React.useState(false);
+  const [showParametricStudio, setShowParametricStudio] = React.useState(false);
   const [newTaxTopic, setNewTaxTopic] = React.useState<TaxonomyPattern['topic']>('COS');
   const [newTaxName, setNewTaxName] = React.useState('');
   const [mergeSourceId, setMergeSourceId] = React.useState('');
@@ -1654,6 +1658,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </button>
                       <button
                         type="button"
+                        onClick={() => setShowParametricStudio((v) => !v)}
+                        className={`btn-tactile text-xs py-1.5 px-3 ${showParametricStudio ? 'btn-jade' : 'btn-paper'}`}
+                      >
+                        <FlaskConical className={`w-3.5 h-3.5 ${showParametricStudio ? 'text-white' : 'text-[#18685B]'}`} />
+                        {showParametricStudio ? 'Ẩn Xưởng sinh đề tham số' : 'Xưởng sinh đề tham số (6 bước)'}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setTab('missions')}
                         className="btn-tactile btn-paper text-xs py-1.5 px-3"
                       >
@@ -1715,6 +1727,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     )}
                   </div>
                 </div>
+
+                {/* Collapsible 6-Step Parametric Variant Studio + Interactive Lab (Section 4.3c / Table 8 / Figure 7) */}
+                {showParametricStudio && (
+                  <ParametricLab
+                    mode="teacher"
+                    user={user}
+                    classes={classes}
+                    onSavedToBank={refresh}
+                  />
+                )}
 
                 {/* Collapsible Dry-Run Math Audit & Safe --fix Panel (Section 5.2) */}
                 {showMathAuditPanel && (() => {
@@ -3480,6 +3502,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* 3.5 AI Personalization & Human-in-the-Loop Remediation Worksheet (Section 4.5 / Table 11) */}
+              <StudentAiRemediationAdvisor
+                actor={user}
+                student={inspectedStudent}
+                studentAttempts={stuAttempts}
+                questions={questions}
+                onAssigned={refresh}
+              />
 
               {/* 4. Detailed Wrong Attempts */}
               {wrongAttempts.length > 0 && (

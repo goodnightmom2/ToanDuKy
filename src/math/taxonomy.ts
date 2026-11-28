@@ -1,7 +1,7 @@
 import {JOURNEY_MILESTONES} from '../journey.ts';
 import type {MocId, QuestionItem, SkillCluster, TaxonomyPattern, TaxonomyTopic} from '../types.ts';
 
-export const PROMPT_VERSION = 'v2.7';
+export const PROMPT_VERSION = 'v2.8';
 
 /**
  * 26 default Chapter III taxonomy patterns from Appendix A.

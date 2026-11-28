@@ -850,3 +850,319 @@ export function generateVariantForBossHit(cluster: SkillCluster, level: 1 | 2 | 
   const q = generateQuestion(genId, seed);
   return {...q, level, stage: 'boss'};
 }
+
+// =============================================================================
+// Interactive Parametric Models & Exact Radical Simplification (Section 4.3c)
+// =============================================================================
+
+export interface ExactSqrtFormat {
+  radicand: number;
+  outer: number;
+  inner: number;
+  latex: string;
+  text: string;
+  value: number;
+}
+
+/**
+ * Simplifies sqrt(n) for positive integer n into exact radical form:
+ * e.g., 49 -> "7", 75 -> "5\\sqrt{3}", 67 -> "\\sqrt{67}", 96 -> "4\\sqrt{6}".
+ */
+export function formatExactSqrt(n: number): ExactSqrtFormat {
+  const roundedInt = Math.round(n);
+  if (!Number.isFinite(n) || roundedInt <= 0) {
+    return {radicand: 0, outer: 0, inner: 0, latex: '0', text: '0', value: 0};
+  }
+  let outer = 1;
+  let inner = roundedInt;
+  for (let d = 2; d * d <= inner; d++) {
+    while (inner % (d * d) === 0) {
+      outer *= d;
+      inner /= d * d;
+    }
+  }
+  const value = Math.sqrt(roundedInt);
+  if (inner === 1) {
+    return {radicand: roundedInt, outer, inner: 1, latex: String(outer), text: String(outer), value};
+  }
+  if (outer === 1) {
+    return {
+      radicand: roundedInt,
+      outer: 1,
+      inner,
+      latex: `\\sqrt{${inner}}`,
+      text: `√${inner}`,
+      value,
+    };
+  }
+  return {
+    radicand: roundedInt,
+    outer,
+    inner,
+    latex: `${outer}\\sqrt{${inner}}`,
+    text: `${outer}√${inner}`,
+    value,
+  };
+}
+
+/**
+ * Four canonical reference variants from Table 8 of the project proposal (Section 4.3c).
+ */
+export const TABLE8_COSINE_VARIANTS: ReadonlyArray<{
+  variant: number;
+  b: number;
+  c: number;
+  angleA: number;
+  expectedLatex: string;
+  expectedText: string;
+}> = [
+  {variant: 1, b: 5, c: 8, angleA: 60, expectedLatex: '7', expectedText: '7'},
+  {variant: 2, b: 6, c: 8, angleA: 90, expectedLatex: '10', expectedText: '10'},
+  {variant: 3, b: 5, c: 5, angleA: 120, expectedLatex: '5\\sqrt{3}', expectedText: '5√3'},
+  {variant: 4, b: 7, c: 9, angleA: 60, expectedLatex: '\\sqrt{67}', expectedText: '√67'},
+];
+
+export interface CosineParametricEval {
+  valid: boolean;
+  reason_vi: string;
+  b: number;
+  c: number;
+  angleA: number;
+  aSquared?: number;
+  aExact?: number;
+  aRounded?: number;
+  exactLatex?: string;
+  exactText?: string;
+  formulaLatex: string;
+  coords?: {A: [number, number]; B: [number, number]; C: [number, number]};
+}
+
+/**
+ * Evaluates Cosine Law parametric model:
+ * Domain D = {(b, c, A) | b > 0, c > 0, 0° < A < 180°}, f(b, c, A) = sqrt(b^2 + c^2 - 2bc cos A).
+ */
+export function evaluateCosineLawParametric(b: number, c: number, angleA: number): CosineParametricEval {
+  const formulaLatex = `a = \\sqrt{${b}^2 + ${c}^2 - 2\\cdot ${b}\\cdot ${c}\\cos ${angleA}^\\circ}`;
+  if (!Number.isFinite(b) || !Number.isFinite(c) || !Number.isFinite(angleA)) {
+    return {valid: false, reason_vi: 'Tham số không hợp lệ.', b, c, angleA, formulaLatex};
+  }
+  if (b <= 0 || c <= 0) {
+    return {
+      valid: false,
+      reason_vi: 'Vi phạm miền D: hai cạnh b, c phải dương (b > 0, c > 0).',
+      b,
+      c,
+      angleA,
+      formulaLatex,
+    };
+  }
+  if (angleA <= 0 || angleA >= 180) {
+    return {
+      valid: false,
+      reason_vi: 'Vi phạm miền D: góc xen giữa A phải thỏa mãn 0° < A < 180° (tránh tam giác suy biến).',
+      b,
+      c,
+      angleA,
+      formulaLatex,
+    };
+  }
+
+  const rad = degToRad(angleA);
+  const aSquared = b * b + c * c - 2 * b * c * Math.cos(rad);
+  if (aSquared <= 1e-12) {
+    return {valid: false, reason_vi: 'Tam giác suy biến (a ≤ 0).', b, c, angleA, formulaLatex};
+  }
+  const aExact = Math.sqrt(aSquared);
+  const aRounded = roundToPlaces(aExact, 4);
+
+  // Produce simplified exact radical when b, c are integers and cos(A) is rational (60°, 90°, 120°)
+  let exactLatex: string | undefined;
+  let exactText: string | undefined;
+  if (Number.isInteger(b) && Number.isInteger(c)) {
+    if (angleA === 60) {
+      const sq = b * b + c * c - b * c;
+      const fmt = formatExactSqrt(sq);
+      exactLatex = fmt.latex;
+      exactText = fmt.text;
+    } else if (angleA === 90) {
+      const sq = b * b + c * c;
+      const fmt = formatExactSqrt(sq);
+      exactLatex = fmt.latex;
+      exactText = fmt.text;
+    } else if (angleA === 120) {
+      const sq = b * b + c * c + b * c;
+      const fmt = formatExactSqrt(sq);
+      exactLatex = fmt.latex;
+      exactText = fmt.text;
+    }
+  }
+
+  return {
+    valid: true,
+    reason_vi: 'Dữ kiện hợp lệ (thuộc miền xác định D)',
+    b,
+    c,
+    angleA,
+    aSquared,
+    aExact,
+    aRounded,
+    exactLatex,
+    exactText,
+    formulaLatex,
+    coords: {
+      A: [0, 0],
+      B: [c, 0],
+      C: [b * Math.cos(rad), b * Math.sin(rad)],
+    },
+  };
+}
+
+export interface HeronParametricEval {
+  valid: boolean;
+  reason_vi: string;
+  a: number;
+  b: number;
+  c: number;
+  p?: number;
+  area?: number;
+  inradius?: number;
+  circumradius?: number;
+  formulaLatex: string;
+  coords?: {A: [number, number]; B: [number, number]; C: [number, number]};
+}
+
+/**
+ * Evaluates Heron parametric model:
+ * Domain D = {(a, b, c) | a, b, c > 0 and |b - c| < a < b + c}.
+ */
+export function evaluateHeronParametric(a: number, b: number, c: number): HeronParametricEval {
+  const formulaLatex = `S = \\sqrt{p(p-a)(p-b)(p-c)}`;
+  if (a <= 0 || b <= 0 || c <= 0) {
+    return {valid: false, reason_vi: 'Vi phạm miền D: ba cạnh a, b, c phải dương.', a, b, c, formulaLatex};
+  }
+  if (!(a + b > c && a + c > b && b + c > a)) {
+    return {
+      valid: false,
+      reason_vi: `Tam giác suy biến: không thỏa mãn bất đẳng thức tam giác |b − c| < a < b + c (${a}, ${b}, ${c}).`,
+      a,
+      b,
+      c,
+      formulaLatex,
+    };
+  }
+  const p = (a + b + c) / 2;
+  const under = p * (p - a) * (p - b) * (p - c);
+  if (under <= 1e-12) {
+    return {valid: false, reason_vi: 'Tam giác suy biến (diện tích = 0).', a, b, c, formulaLatex};
+  }
+  const area = Math.sqrt(under);
+  const inradius = area / p;
+  const circumradius = (a * b * c) / (4 * area);
+  const cosA = Math.max(-1, Math.min(1, (b * b + c * c - a * a) / (2 * b * c)));
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+
+  return {
+    valid: true,
+    reason_vi: 'Dữ kiện hợp lệ (thỏa mãn bất đẳng thức tam giác)',
+    a,
+    b,
+    c,
+    p,
+    area,
+    inradius,
+    circumradius,
+    formulaLatex: `p = ${formatViNumber(roundToPlaces(p, 2), 2)},\\; S = \\sqrt{${formatViNumber(roundToPlaces(p, 2), 2)}(${formatViNumber(roundToPlaces(p - a, 2), 2)})(${formatViNumber(roundToPlaces(p - b, 2), 2)})(${formatViNumber(roundToPlaces(p - c, 2), 2)})}`,
+    coords: {
+      A: [0, 0],
+      B: [c, 0],
+      C: [b * cosA, b * sinA],
+    },
+  };
+}
+
+export interface Bs01ParametricEval {
+  valid: boolean;
+  reason_vi: string;
+  ab: number;
+  alpha: number;
+  beta: number;
+  gamma?: number;
+  ac?: number;
+  bc?: number;
+  ch?: number;
+  formulaLatex: string;
+  coords?: {A: [number, number]; B: [number, number]; C: [number, number]; H: [number, number]};
+}
+
+/**
+ * Evaluates indirect river measurement BS01 parametric model:
+ * Domain D = {(c, alpha, beta) | c > 0, alpha > 0, beta > 0, alpha + beta < 180°}.
+ */
+export function evaluateBs01Parametric(ab: number, alpha: number, beta: number): Bs01ParametricEval {
+  const formulaLatex = `CH = \\dfrac{AB\\sin\\alpha\\sin\\beta}{\\sin(\\alpha+\\beta)}`;
+  if (ab <= 0 || alpha <= 0 || beta <= 0 || alpha + beta >= 180) {
+    return {
+      valid: false,
+      reason_vi: 'Vi phạm miền D: cần AB > 0, α > 0°, β > 0° và α + β < 180°.',
+      ab,
+      alpha,
+      beta,
+      formulaLatex,
+    };
+  }
+  const gamma = 180 - alpha - beta;
+  const sinA = Math.sin(degToRad(alpha));
+  const sinB = Math.sin(degToRad(beta));
+  const sinG = Math.sin(degToRad(gamma));
+  const ac = (ab * sinB) / sinG;
+  const bc = (ab * sinA) / sinG;
+  const ch = ac * sinA;
+  const xC = ac * Math.cos(degToRad(alpha));
+
+  return {
+    valid: true,
+    reason_vi: `Dữ kiện hợp lệ (γ = 180° − ${alpha}° − ${beta}° = ${gamma}° > 0°)`,
+    ab,
+    alpha,
+    beta,
+    gamma,
+    ac,
+    bc,
+    ch,
+    formulaLatex: `CH = \\dfrac{${ab}\\cdot\\sin ${alpha}^\\circ\\cdot\\sin ${beta}^\\circ}{\\sin ${alpha + beta}^\\circ}`,
+    coords: {
+      A: [0, 0],
+      B: [ab, 0],
+      C: [xC, ch],
+      H: [xC, 0],
+    },
+  };
+}
+
+/**
+ * Executes the 6-step parametric generation pipeline (Section 4.3c) to produce `count` distinct
+ * verified variants from any of the 13 built-in generators using deterministic seeds.
+ */
+export function generateParametricVariants(
+  genId: GeneratorId,
+  count = 4,
+  baseSeed?: number,
+): QuestionItem[] {
+  const clamped = Math.max(1, Math.min(10, Math.round(count)));
+  const startSeed = baseSeed ?? createAttemptSeed();
+  const seenStems = new Set<string>();
+  const out: QuestionItem[] = [];
+  let cursor = startSeed;
+  let attempts = 0;
+
+  while (out.length < clamped && attempts < clamped * 12) {
+    attempts += 1;
+    cursor = (cursor + 7919 * attempts) >>> 0;
+    const candidate = generateQuestion(genId, cursor);
+    if (!seenStems.has(candidate.stem_vi)) {
+      seenStems.add(candidate.stem_vi);
+      out.push(candidate);
+    }
+  }
+  return out;
+}

@@ -13,7 +13,7 @@ export const AI_STATIC_FALLBACK_CHAIN: string[] = [
   'gemini-4-hydrogen',
 ];
 export const DAILY_QUOTA_DEFAULT = 50;
-export const PROMPT_VERSION = 'v2.7';
+export const PROMPT_VERSION = 'v2.8';
 
 // In-memory cache of live generateContent models discovered per API key fingerprint
 const cachedDiscoveredModelsByKey = new Map<string, {fetchedAt: number; models: string[]}>();

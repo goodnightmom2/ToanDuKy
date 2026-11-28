@@ -36,10 +36,10 @@ export const SelfTestScreen: React.FC<SelfTestScreenProps> = ({onBack, embedded 
             Bộ tự kiểm tra tự động (#/selftest)
           </p>
           <h1 className="font-display text-2xl font-extrabold text-[#14284A]">
-            {results.length || 33} bài kiểm thử bắt buộc của Toán Du Ký
+            {results.length || 36} bài kiểm thử bắt buộc của Toán Du Ký
           </h1>
           <p className="text-xs text-[#4B5B73] mt-0.5">
-            Bao gồm 2.600 câu máy sinh, 48 câu chuyển thể, BS01, RBAC, 5.000 lượt BOSS, 9 kiểm thử pipeline PDF → Set nhiệm vụ, và 7 kiểm thử chuẩn hóa/hiển thị/bảo mật công thức Toán (22 Golden Tests).
+            Bao gồm 2.600 câu máy sinh, 48 câu chuyển thể, BS01, RBAC, 5.000 lượt BOSS, Bảng 8 &amp; Bảng 15 Đề cương, bất biến tỷ lệ f(kb,kc,A)=k·f(b,c,A), chấm biểu thức căn thức và 22 Golden Tests LaTeX.
           </p>
         </div>
 

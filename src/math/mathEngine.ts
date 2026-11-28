@@ -1254,7 +1254,14 @@ export function evaluateSafeDegreeExpression(rawInput: string): SafeExpressionEv
 
   // Extract optional trailing measurement unit ONLY when separated cleanly (e.g. "55,3 m", "60*sin(60)/sin(70) m")
   let unit: string | undefined;
-  let exprBody = trimmed;
+  let exprBody = trimmed
+    // Allow students to enter LaTeX or shorthand radical/fraction notation safely (zero eval)
+    .replace(/\\dfrac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, '(($1)/($2))')
+    .replace(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, '(($1)/($2))')
+    .replace(/\\sqrt\s*\{([^{}]+)\}/g, 'sqrt($1)')
+    .replace(/\\cdot/g, '*')
+    .replace(/\\times/g, '*')
+    .replace(/\\pi\b/g, 'pi');
   const trailingUnitMatch = exprBody.match(/\s+(km|cm|dm|mm|m²|m\^2|m|độ|do|deg|°)$/i);
   if (trailingUnitMatch) {
     unit = trailingUnitMatch[1];

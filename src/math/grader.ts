@@ -73,6 +73,7 @@ export interface NumericGradeOptions {
   expectedExact?: number;
   expectedRounded: number;
   decimalPlaces?: number;
+  toleranceOverride?: number; // Explicit epsilon for |x - y| <= epsilon verification (e.g. 0.01)
   expectedUnit?: string;
   hasFixedUnitLabel?: boolean;
 }
@@ -80,16 +81,17 @@ export interface NumericGradeOptions {
 /**
  * Deterministic numeric grader:
  * - Normalizes comma and dot decimals.
+ * - Supports safe radical/fraction/trig expressions (e.g., "5√3", "sqrt(67)", "4√6", "5\sqrt{3}") without eval.
  * - Checks unit separately (required if expectedUnit is present and input does not have a fixed unit label).
- * - Enforces rounding accuracy based on decimalPlaces (e.g., 55 vs 55.3 triggers E07).
+ * - Enforces |x - y| <= epsilon accuracy based on toleranceOverride or decimalPlaces.
  */
 export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
   let parsed = parseVietnameseNumber(opts.rawInput);
   let exprReadNote = '';
 
-  // Section 8: If student typed a math expression (e.g. "60*sin(60)/sin(70)", "10√13", "sqrt(3)/2"),
+  // Section 8: If student typed a math expression (e.g. "60*sin(60)/sin(70)", "5√3", "sqrt(67)", "5\sqrt{3}"),
   // evaluate safely in DEGREE mode (zero eval) and still grade against the exact strict tolerance!
-  if (!parsed.valid && /[+\-*/^()√]|sin|cos|tan|cot|sqrt|pi/i.test(opts.rawInput)) {
+  if (!parsed.valid && /[+\-*/^()√\\]|sin|cos|tan|cot|sqrt|pi/i.test(opts.rawInput)) {
     const exprRes = evaluateSafeDegreeExpression(opts.rawInput);
     if (exprRes.valid && exprRes.value !== undefined) {
       parsed = {
@@ -138,8 +140,16 @@ export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
   }
 
   const places = opts.decimalPlaces ?? 0;
-  const expected = roundToPlaces(opts.expectedRounded, places);
-  const tolerance = places > 0 ? Math.pow(10, -(places + 2)) : 1e-4;
+  const expected =
+    opts.toleranceOverride !== undefined
+      ? opts.expectedRounded
+      : roundToPlaces(opts.expectedRounded, places);
+  const tolerance =
+    opts.toleranceOverride !== undefined && opts.toleranceOverride >= 0
+      ? opts.toleranceOverride + 1e-12
+      : places > 0
+        ? Math.pow(10, -(places + 2))
+        : 1e-4;
   const diff = Math.abs(parsed.value - expected);
   // Also accept exact expression matching expectedExact within tight tolerance (1e-3)
   const exactMatch =
@@ -150,7 +160,7 @@ export function gradeNumericAnswer(opts: NumericGradeOptions): GradeResult {
   if (diff <= tolerance || exactMatch) {
     return {
       isCorrect: true,
-      feedback_vi: `Chính xác! Em đã tính và làm tròn đúng kết quả ${formatViNumber(expected, places)}${targetUnit ? ' ' + displayUnit(targetUnit) : ''}.`,
+      feedback_vi: `Chính xác! Em đã tính đúng kết quả ${formatViNumber(expected, places)}${targetUnit ? ' ' + displayUnit(targetUnit) : ''}${exprReadNote}.`,
     };
   }
 

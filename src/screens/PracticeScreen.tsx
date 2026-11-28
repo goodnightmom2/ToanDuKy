@@ -1,5 +1,6 @@
 import React from 'react';
-import {CheckCircle2, ClipboardCheck, Dumbbell, Lock, RefreshCw} from 'lucide-react';
+import {CheckCircle2, ClipboardCheck, Dumbbell, FlaskConical, Lock, RefreshCw} from 'lucide-react';
+import {ParametricLab} from '../components/ParametricLab.tsx';
 import {QuestionCard, type QuestionSubmissionPayload} from '../components/QuestionCard.tsx';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
 import {JOURNEY_MILESTONES, normalizeJourneyProgress} from '../journey.ts';
@@ -34,6 +35,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
     Array<{id: string; cluster: SkillCluster; isCorrect: boolean; mode: QuestionMode}>
   >([]);
   const [tick, setTick] = React.useState(0);
+  const [showParametricLab, setShowParametricLab] = React.useState(false);
 
   React.useEffect(() => {
     return dataService.subscribe(() => setTick((t) => t + 1));
@@ -370,6 +372,21 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
             <Dumbbell className="w-5 h-5" />
             Bắt đầu bộ {count} câu mới
           </button>
+        </div>
+
+        {/* Optional Interactive Parametric Math Lab (Section 4.3c — Hình 7) */}
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setShowParametricLab((v) => !v)}
+            className="btn-tactile btn-paper w-full text-xs py-2.5 px-4 flex items-center justify-center gap-2"
+          >
+            <FlaskConical className="w-4 h-4 text-[#2E9C8A]" />
+            {showParametricLab
+              ? 'Ẩn Phòng thí nghiệm tham số tương tác'
+              : 'Mở Phòng thí nghiệm tham số tương tác (Côsin · Heron · Bến sông BS01)'}
+          </button>
+          {showParametricLab && <ParametricLab mode="student" />}
         </div>
       </div>
     );

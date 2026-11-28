@@ -14,7 +14,15 @@ import {
   validateTrianglePoints,
 } from './geometry.ts';
 import {gradeNumericAnswer, gradeQuestion, shouldOfferHelp} from './grader.ts';
-import {ALL_GENERATOR_IDS, generateQuestion} from './generators.ts';
+import {
+  ALL_GENERATOR_IDS,
+  evaluateBs01Parametric,
+  evaluateCosineLawParametric,
+  evaluateHeronParametric,
+  formatExactSqrt,
+  generateQuestion,
+  TABLE8_COSINE_VARIANTS,
+} from './generators.ts';
 import {ALL_INITIAL_QUESTIONS, BS01_SEED_ITEMS} from './seedBank.ts';
 import {verifyQuestionByCode} from './verifier.ts';
 import {solveByPatternAndGivens, verifyQuestionWithSolvers} from './solvers.ts';
@@ -1327,6 +1335,101 @@ export async function runAllSelfTestsWithReport(): Promise<SelfTestBundle> {
       name: 'Rà soát công thức ngân hàng gốc (audit:math — 0 dấu $ lẻ, 0 lỗi KaTeX, 0 lệnh nguy hiểm)',
       passed: syntaxBroken === 0,
       detail: `Quét ${audit.totalQuestions} câu: lỗi nghiêm trọng=${syntaxBroken}, cần chuẩn hóa nhẹ=${audit.withIssuesCount} (${JSON.stringify(audit.byCode)}).`,
+    });
+  }
+
+  // 34. Kiểm chứng Bảng 8 (4 biến thể Côsin + căn thức rút gọn) & Tính bất biến tỷ lệ f(kb, kc, A) = k·f(b, c, A)
+  {
+    const t8Checks = TABLE8_COSINE_VARIANTS.map((v) => {
+      const ev = evaluateCosineLawParametric(v.b, v.c, v.angleA);
+      return ev.valid && ev.exactLatex === v.expectedLatex && ev.exactText === v.expectedText;
+    });
+    let scalePassed = 0;
+    const scaleTotal = 50;
+    for (let i = 1; i <= scaleTotal; i++) {
+      const b = 3 + (i % 9);
+      const c = 4 + ((i * 3) % 11);
+      const ang = 25 + ((i * 7) % 130);
+      const k = 1 + (i % 5) * 0.5;
+      const base = evaluateCosineLawParametric(b, c, ang);
+      const scaled = evaluateCosineLawParametric(k * b, k * c, ang);
+      if (
+        base.valid &&
+        scaled.valid &&
+        base.aExact !== undefined &&
+        scaled.aExact !== undefined &&
+        Math.abs(scaled.aExact - k * base.aExact) < 1e-9
+      ) {
+        scalePassed += 1;
+      }
+    }
+    const ok = t8Checks.every(Boolean) && scalePassed === scaleTotal;
+    results.push({
+      id: 34,
+      name: 'Bảng 8 bộ sinh đề Côsin (7, 10, 5√3, √67) & Tính bất biến tỷ lệ f(kb,kc,A)=k·f(b,c,A)',
+      passed: ok,
+      detail: `Bảng 8 khớp=${t8Checks.filter(Boolean).length}/4; Bất biến tỷ lệ đạt=${scalePassed}/${scaleTotal}.`,
+    });
+  }
+
+  // 35. Kiểm chứng toàn bộ 8 trường hợp Bảng 15 của Đề cương (miền D, suy biến, Côsin, Sin, Heron, r, R, BS01, sai số 0,01)
+  {
+    const degenerateBlocked = !evaluateHeronParametric(2, 3, 5).valid;
+    const cosCase = evaluateCosineLawParametric(5, 8, 60);
+    const cosOk = cosCase.valid && Math.abs((cosCase.aExact ?? 0) - 7) < 1e-9;
+    const sinB = (8 * Math.sin((60 * Math.PI) / 180)) / Math.sin((45 * Math.PI) / 180);
+    const sinOk = Math.abs(sinB - 4 * Math.sqrt(6)) < 1e-9 && formatExactSqrt(96).latex === '4\\sqrt{6}';
+    const heronCase = evaluateHeronParametric(5, 12, 13);
+    const heronOk =
+      heronCase.valid &&
+      Math.abs((heronCase.area ?? 0) - 30) < 1e-9 &&
+      Math.abs((heronCase.inradius ?? 0) - 2) < 1e-9 &&
+      Math.abs((heronCase.circumradius ?? 0) - 6.5) < 1e-9;
+    const bs01Case = evaluateBs01Parametric(60, 45, 60);
+    const bs01Ok = bs01Case.valid && Math.abs((bs01Case.ch ?? 0) - 38.04) < 0.01;
+    const epsPass = gradeNumericAnswer({rawInput: '10,01', expectedRounded: 10, toleranceOverride: 0.01}).isCorrect;
+    const epsFail = !gradeNumericAnswer({rawInput: '10,02', expectedRounded: 10, toleranceOverride: 0.01}).isCorrect;
+    const ok = degenerateBlocked && cosOk && sinOk && heronOk && bs01Ok && epsPass && epsFail;
+    results.push({
+      id: 35,
+      name: 'Bảng 15 kiểm thử Toán học (suy biến 2-3-5, Côsin, Sin 4√6, Heron 30, r=2, R=6,5, BS01, ε=0,01)',
+      passed: ok,
+      detail: `Suy biến=${degenerateBlocked}, Côsin=${cosOk}, Sin=${sinOk}, Heron/r/R=${heronOk}, BS01=${bs01Ok}, |x-10|≤0.01=${epsPass && epsFail}.`,
+    });
+  }
+
+  // 36. Chấm đáp án đa biểu diễn (căn thức 5√3, sqrt(67), 5\sqrt{3}, 4√6 & thập phân có sai số ε)
+  {
+    const g1 = gradeNumericAnswer({
+      rawInput: '5√3',
+      expectedExact: 5 * Math.sqrt(3),
+      expectedRounded: 8.7,
+      decimalPlaces: 1,
+    });
+    const g2 = gradeNumericAnswer({
+      rawInput: '5\\sqrt{3}',
+      expectedExact: 5 * Math.sqrt(3),
+      expectedRounded: 8.7,
+      decimalPlaces: 1,
+    });
+    const g3 = gradeNumericAnswer({
+      rawInput: 'sqrt(67)',
+      expectedExact: Math.sqrt(67),
+      expectedRounded: 8.2,
+      decimalPlaces: 1,
+    });
+    const g4 = gradeNumericAnswer({
+      rawInput: '4*sqrt(6)',
+      expectedExact: 4 * Math.sqrt(6),
+      expectedRounded: 9.8,
+      decimalPlaces: 1,
+    });
+    const ok = g1.isCorrect && g2.isCorrect && g3.isCorrect && g4.isCorrect;
+    results.push({
+      id: 36,
+      name: 'Chấm đáp án đa biểu diễn (5√3, 5\\sqrt{3}, sqrt(67), 4*sqrt(6)) không dùng eval',
+      passed: ok,
+      detail: `5√3=${g1.isCorrect}, 5\\sqrt{3}=${g2.isCorrect}, sqrt(67)=${g3.isCorrect}, 4*sqrt(6)=${g4.isCorrect}.`,
     });
   }
 
