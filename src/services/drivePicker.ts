@@ -135,7 +135,7 @@ export async function requestDriveAccessToken(clientId: string): Promise<string>
 }
 
 /**
- * Opens Google Picker allowing selection of either a supported file (.json, .docx, .pdf, .txt)
+ * Opens Google Picker allowing selection of either a supported file (.docx, .json, .txt)
  * OR a Google Drive folder.
  */
 export async function openGoogleDrivePicker(params: {
@@ -173,9 +173,8 @@ export async function openGoogleDrivePicker(params: {
     docsView.setSelectFolderEnabled(true);
     docsView.setMimeTypes(
       [
-        'application/pdf',
-        'application/json',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/json',
         'text/plain',
         'application/vnd.google-apps.folder',
       ].join(','),
@@ -188,7 +187,7 @@ export async function openGoogleDrivePicker(params: {
       builder.setDeveloperKey(params.apiKey.trim());
     }
     builder.setOrigin(pickerOrigin);
-    builder.setTitle('Chọn tệp học liệu (.json, .docx, .pdf) hoặc thư mục trên Google Drive');
+    builder.setTitle('Chọn tệp học liệu (.docx, .json, .txt — tối đa 5 câu/tệp) hoặc thư mục trên Google Drive');
     builder.setCallback((data) => {
       if (data.action === pickerApi.Action.PICKED) {
         const docs = (data.docs ?? []).map((d) => ({
@@ -214,7 +213,7 @@ export async function openGoogleDrivePicker(params: {
 }
 
 /**
- * Lists supported material files (.json, .docx, .pdf, .txt) inside a selected Google Drive folder.
+ * Lists supported material files (.docx, .json, .txt) inside a selected Google Drive folder.
  */
 export async function listSupportedFilesInFolder(
   folderId: string,
@@ -232,7 +231,7 @@ export async function listSupportedFilesInFolder(
   const data = (await resp.json()) as {
     files?: Array<{id: string; name: string; mimeType: string; size?: string}>;
   };
-  const supportedExts = ['.json', '.docx', '.pdf', '.txt'];
+  const supportedExts = ['.docx', '.json', '.txt'];
   return (data.files ?? [])
     .filter((f) => {
       const lower = f.name.toLowerCase();

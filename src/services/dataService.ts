@@ -23,6 +23,7 @@ import {
   questionContainsMath,
   verifyQuestionMathLayers,
 } from '../math/mathEngine.ts';
+import {autoSuggestMissionSet} from '../math/missionSetEngine.ts';
 import {ALL_INITIAL_QUESTIONS} from '../math/seedBank.ts';
 import {
   computeQuestionFingerprint,
@@ -3209,6 +3210,77 @@ export class DataService {
     return [...this.db.questions];
   }
 
+  /**
+   * Returns questions eligible for a specific class:
+   * - Shared questions (`!targetClassIds || targetClassIds.length === 0`) are available to ALL classes (100% backward compatible).
+   * - Class-targeted questions (`targetClassIds.length > 0`) are only included for matching classes.
+   */
+  getQuestionsForClass(classId?: string): QuestionItem[] {
+    if (!classId || classId === 'ALL') {
+      return [...this.db.questions];
+    }
+    return this.db.questions.filter(
+      (q) => !q.targetClassIds || q.targetClassIds.length === 0 || q.targetClassIds.includes(classId),
+    );
+  }
+
+  canManageClassScope(actor: UserAccount | null, classId: string): boolean {
+    if (!actor || !canAccessAdmin(actor)) return false;
+    if (canEditSettingsOrUsers(actor)) return true;
+    if (!classId || classId === 'ALL') return false;
+    if ((actor.assignedClassIds ?? []).includes(classId)) return true;
+    return this.db.classes.some(
+      (c) =>
+        c.id === classId &&
+        (c.teacherUid === actor.uid || (actor.assignedClassIds ?? []).includes(c.id)),
+    );
+  }
+
+  async syncQuestionsToSupabase(
+    questionIds: string[],
+  ): Promise<{ok: boolean; synced: number; skippedOffline?: boolean; error?: string}> {
+    if (questionIds.length === 0) return {ok: true, synced: 0};
+    if (!this.supabase || !this.isOnline) {
+      return {ok: true, synced: 0, skippedOffline: true};
+    }
+    const idSet = new Set(questionIds);
+    const rows = this.db.questions.filter((q) => idSet.has(q.id)).map(questionToRow);
+    if (rows.length === 0) return {ok: true, synced: 0};
+
+    try {
+      let tok = await this.getAccessToken();
+      if (!tok) tok = await this.getAccessToken(true);
+      if (!tok) {
+        return {
+          ok: false,
+          synced: 0,
+          error: 'Phiên đăng nhập Supabase đã hết hạn. Vui lòng đăng xuất rồi đăng nhập lại để đồng bộ lên máy chủ.',
+        };
+      }
+      const {error} = await this.supabase.from('questions').upsert(rows, {onConflict: 'id'});
+      if (!error) {
+        return {ok: true, synced: rows.length};
+      }
+      // Retry once after refreshing session token
+      await this.getAccessToken(true);
+      const retry = await this.supabase.from('questions').upsert(rows, {onConflict: 'id'});
+      if (!retry.error) {
+        return {ok: true, synced: rows.length};
+      }
+      return {
+        ok: false,
+        synced: 0,
+        error: retry.error.message || error.message || 'Không thể đồng bộ câu hỏi lên máy chủ Supabase.',
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        synced: 0,
+        error: err instanceof Error ? err.message : 'Lỗi kết nối khi đồng bộ câu hỏi lên máy chủ.',
+      };
+    }
+  }
+
   getPlayableQuestionsForStation(stationId: StationId): QuestionItem[] {
     const allowPending = this.db.settings.allowPendingInTestMode;
     return this.db.questions.filter(
@@ -3241,51 +3313,71 @@ export class DataService {
     };
 
     if (!isAdminActor) {
-      // Teacher path: every addition, edit, or replacement MUST wait for Admin approval.
-      // Live approved/existing questions are NEVER overwritten directly by a teacher.
-      const sanitizedBase: QuestionItem = {
-        ...stampedInput,
-        review_status: 'pending_teacher_review',
-        reviewedBy: undefined,
-        reviewedAt: undefined,
-      };
+      // Teacher path: teachers can directly add & approve their own questions (no Admin approval gate!)
+      // and update/assign classes on questions they created, while other teachers'/Admin's questions stay protected.
+      const requestedStatus: ReviewStatus =
+        stampedInput.review_status === 'pending_teacher_review' ? 'pending_teacher_review' : 'approved';
+      const approvedMeta =
+        requestedStatus === 'approved'
+          ? {
+              reviewedBy: stampedInput.reviewedBy ?? actor.displayName,
+              reviewedAt: stampedInput.reviewedAt ?? now,
+              approved_by: stampedInput.approved_by ?? actor.displayName,
+              approved_at: stampedInput.approved_at ?? now,
+            }
+          : {reviewedBy: undefined, reviewedAt: undefined};
+
       if (existingIdx >= 0) {
         const prev = nextList[existingIdx];
-        const formulaChanged = isMathContentEdited(prev, sanitizedBase);
-        const isOwnPendingDraft =
-          prev.review_status === 'pending_teacher_review' &&
-          prev.proposedByUid === actor.uid;
-        if (isOwnPendingDraft) {
+        const formulaChanged = isMathContentEdited(prev, stampedInput);
+        const ownerUid = prev.createdByUid ?? prev.proposedByUid ?? '';
+        const isOwnQuestion = ownerUid === actor.uid;
+        if (isOwnQuestion) {
+          const nextVersion = (prev.version ?? 1) + 1;
           savedQuestion = {
-            ...sanitizedBase,
+            ...stampedInput,
+            ...approvedMeta,
             id: prev.id,
-            math_verified: formulaChanged ? false : (sanitizedBase.math_verified ?? prev.math_verified ?? false),
-            math_verified_by: formulaChanged ? undefined : prev.math_verified_by,
-            math_verified_at: formulaChanged ? undefined : prev.math_verified_at,
-            version: prev.version ?? 1,
-            versionHistory: prev.versionHistory ?? [],
+            review_status: requestedStatus,
+            math_verified: formulaChanged
+              ? Boolean(stampedInput.math_verified)
+              : (stampedInput.math_verified ?? prev.math_verified ?? true),
+            math_verified_by: stampedInput.math_verified_by ?? prev.math_verified_by ?? actor.displayName,
+            math_verified_at: stampedInput.math_verified_at ?? prev.math_verified_at ?? now,
+            version: nextVersion,
+            versionHistory: [
+              ...(prev.versionHistory ?? []),
+              {
+                version: prev.version ?? 1,
+                editedAt: now,
+                editedBy: actor.displayName,
+                note: editNote,
+                stem_vi: prev.stem_vi,
+              },
+            ],
             createdBy: prev.createdBy ?? actor.displayName,
-            replacesQuestionId: prev.replacesQuestionId,
-            proposedAction: prev.proposedAction ?? 'create',
-            proposedBy: actor.displayName,
+            createdByUid: actor.uid,
+            proposedBy: prev.proposedBy ?? actor.displayName,
             proposedByUid: actor.uid,
             proposedAt: now,
             proposedNote: editNote,
           };
           nextList[existingIdx] = savedQuestion;
         } else {
-          // Editing/replacing an existing bank question → create a separate pending proposal
+          // Editing another teacher's / Admin's bank question → save as teacher's own adapted copy for their classes
           savedQuestion = {
-            ...sanitizedBase,
-            id: generateId('prop'),
-            math_verified: formulaChanged ? false : Boolean(sanitizedBase.math_verified),
-            math_verified_by: formulaChanged ? undefined : sanitizedBase.math_verified_by,
-            math_verified_at: formulaChanged ? undefined : sanitizedBase.math_verified_at,
-            version: (prev.version ?? 1) + 1,
-            versionHistory: prev.versionHistory ?? [],
-            createdBy: prev.createdBy,
-            replacesQuestionId: prev.id,
-            proposedAction: prev.stem_vi.trim() !== sanitizedBase.stem_vi.trim() ? 'replace' : 'edit',
+            ...stampedInput,
+            ...approvedMeta,
+            id: generateId('gv'),
+            review_status: requestedStatus,
+            math_verified: stampedInput.math_verified ?? true,
+            math_verified_by: stampedInput.math_verified_by ?? actor.displayName,
+            math_verified_at: stampedInput.math_verified_at ?? now,
+            version: 1,
+            versionHistory: [],
+            createdBy: actor.displayName,
+            createdByUid: actor.uid,
+            proposedAction: 'create',
             proposedBy: actor.displayName,
             proposedByUid: actor.uid,
             proposedAt: now,
@@ -3295,11 +3387,18 @@ export class DataService {
         }
       } else {
         savedQuestion = {
-          ...sanitizedBase,
-          math_verified: sanitizedBase.math_verified ?? false,
+          ...stampedInput,
+          ...approvedMeta,
+          review_status: requestedStatus,
+          math_verified: stampedInput.math_verified ?? (requestedStatus === 'approved'),
+          math_verified_by:
+            requestedStatus === 'approved' ? (stampedInput.math_verified_by ?? actor.displayName) : stampedInput.math_verified_by,
+          math_verified_at:
+            requestedStatus === 'approved' ? (stampedInput.math_verified_at ?? now) : stampedInput.math_verified_at,
           version: 1,
           versionHistory: [],
           createdBy: actor.displayName,
+          createdByUid: actor.uid,
           proposedAction: 'create',
           proposedBy: actor.displayName,
           proposedByUid: actor.uid,
@@ -3337,10 +3436,11 @@ export class DataService {
     } else {
       savedQuestion = {
         ...stampedInput,
-        math_verified: stampedInput.math_verified ?? false,
+        math_verified: stampedInput.math_verified ?? (stampedInput.review_status === 'approved'),
         version: 1,
         versionHistory: [],
         createdBy: actor.displayName,
+        createdByUid: actor.uid,
       };
       nextList.unshift(savedQuestion);
     }
@@ -4978,7 +5078,8 @@ export class DataService {
 
   /**
    * Idempotent batch question upsert by `fingerprint` + `(file_sha256, question_number, part)`.
-   * Enforces role permissions: Teachers can ONLY commit `pending_teacher_review`; ONLY Admin can commit `approved`.
+   * Both Admin and Teachers can now commit directly as `approved` (no Admin approval bottleneck),
+   * optionally scoped to specific `targetClassIds` for per-class remediation/distribution.
    */
   upsertImportedQuestions(
     actor: UserAccount,
@@ -4987,6 +5088,7 @@ export class DataService {
       targetStatus?: ReviewStatus;
       duplicateAction?: 'skip' | 'replace' | 'keep_both';
       note?: string;
+      targetClassIds?: string[];
     },
   ): {
     added: number;
@@ -4999,11 +5101,18 @@ export class DataService {
       return {added: 0, updated: 0, skippedDuplicates: 0, needsReview: 0, savedIds: []};
     }
     const isAdminActor = canEditSettingsOrUsers(actor);
+    const requestedStatus = options?.targetStatus ?? 'approved';
     const effectiveStatus: ReviewStatus = isAdminActor
-      ? (options?.targetStatus ?? 'pending_teacher_review')
-      : 'pending_teacher_review';
+      ? requestedStatus
+      : requestedStatus === 'rejected'
+        ? 'pending_teacher_review'
+        : requestedStatus;
     const dupAction = options?.duplicateAction ?? 'skip';
     const now = new Date().toISOString();
+    const scopedClassIds =
+      options?.targetClassIds && options.targetClassIds.length > 0
+        ? Array.from(new Set(options.targetClassIds.filter((cid) => cid && cid !== 'ALL')))
+        : undefined;
 
     let added = 0;
     let updated = 0;
@@ -5013,12 +5122,26 @@ export class DataService {
 
     for (const rawItem of drafts) {
       const fp = rawItem.fingerprint || computeQuestionFingerprint(rawItem);
+      const effectiveTargetClassIds =
+        scopedClassIds ??
+        (rawItem.targetClassIds && rawItem.targetClassIds.length > 0 ? rawItem.targetClassIds : undefined);
       const item: QuestionItem = {
         ...rawItem,
         fingerprint: fp,
+        targetClassIds: effectiveTargetClassIds,
+        createdBy: rawItem.createdBy ?? actor.displayName,
+        createdByUid: rawItem.createdByUid ?? actor.uid,
         review_status: effectiveStatus,
         ...(effectiveStatus === 'approved'
-          ? {reviewedBy: actor.displayName, reviewedAt: now, approved_by: actor.displayName, approved_at: now}
+          ? {
+              reviewedBy: actor.displayName,
+              reviewedAt: now,
+              approved_by: actor.displayName,
+              approved_at: now,
+              math_verified: rawItem.math_verified ?? true,
+              math_verified_by: rawItem.math_verified_by ?? actor.displayName,
+              math_verified_at: rawItem.math_verified_at ?? now,
+            }
           : {reviewedBy: undefined, reviewedAt: undefined}),
       };
       if ((item.flags ?? []).some((f) => ['answer_mismatch', 'figure_missing', 'formula_uncertain', 'missing_answer', 'unverifiable_by_code'].includes(f))) {
@@ -5029,17 +5152,19 @@ export class DataService {
       if (dup) {
         if (dup.kind === 'exact' && dup.existingQuestion.stem_vi.trim() === item.stem_vi.trim() && dupAction === 'skip') {
           skippedDuplicates += 1;
+          savedIds.push(dup.existingQuestion.id);
           continue;
         }
         if (dupAction === 'skip') {
           skippedDuplicates += 1;
+          savedIds.push(dup.existingQuestion.id);
           continue;
         }
         if (dupAction === 'replace') {
           const ok = this.upsertQuestion(
             actor,
             {...item, id: dup.existingQuestion.id},
-            options?.note ?? 'Cập nhật phiên bản mới từ lô nhập PDF',
+            options?.note ?? 'Cập nhật phiên bản mới từ lô nhập học liệu',
           );
           if (ok) {
             updated += 1;
@@ -5048,7 +5173,7 @@ export class DataService {
           continue;
         }
         // dupAction === 'keep_both': assign fresh ID so both coexist
-        const freshId = generateId('pdf');
+        const freshId = generateId('imp');
         const ok = this.upsertQuestion(
           actor,
           {...item, id: freshId},
@@ -5061,7 +5186,7 @@ export class DataService {
         continue;
       }
 
-      const ok = this.upsertQuestion(actor, item, options?.note ?? 'Nhập từ lô PDF');
+      const ok = this.upsertQuestion(actor, item, options?.note ?? 'Nhập từ lô học liệu');
       if (ok) {
         added += 1;
         savedIds.push(item.id);
@@ -5074,6 +5199,7 @@ export class DataService {
         updated,
         skippedDuplicates,
         effectiveStatus,
+        targetClassIds: scopedClassIds ?? [],
       });
     }
 
@@ -5248,13 +5374,15 @@ export class DataService {
       return {ok: false, error: 'Không có quyền lưu bộ nhiệm vụ.'};
     }
     const isAdminActor = canEditSettingsOrUsers(actor);
+    const classScope = ms.classId || 'ALL';
+    const canPublishThisClass = isAdminActor || this.canManageClassScope(actor, classScope);
     const now = new Date().toISOString();
     const existing = (this.db.missionSets ?? []).find((x) => x.id === ms.id);
 
-    // Teachers cannot directly overwrite a published set — force draft/pending copy
+    // Teachers can directly edit & save for their own classes; only global 'ALL' remains Admin-protected
     let targetId = ms.id;
     let nextStatus: MissionSetRecord['status'] = ms.status ?? 'draft';
-    if (!isAdminActor) {
+    if (!canPublishThisClass) {
       if (nextStatus === 'published') nextStatus = 'pending_admin_review';
       if (existing && existing.status === 'published') {
         targetId = `${ms.id}_draft`;
@@ -5265,7 +5393,7 @@ export class DataService {
       id: targetId,
       mocId: ms.mocId,
       stationId: ms.stationId,
-      classId: ms.classId || 'ALL',
+      classId: classScope,
       status: nextStatus,
       version: existing?.version ?? ms.version ?? 1,
       slots: ms.slots,
@@ -5295,19 +5423,59 @@ export class DataService {
     return {ok: true, record};
   }
 
+  async syncMissionSetToSupabase(
+    missionSetId: string,
+    versionSnapshot?: MissionSetVersionRecord,
+    deleteDraftId?: string,
+  ): Promise<{ok: boolean; error?: string}> {
+    if (!this.supabase || !this.isOnline) return {ok: true};
+    const record = (this.db.missionSets ?? []).find((m) => m.id === missionSetId);
+    if (!record) return {ok: false, error: 'Không tìm thấy bộ nhiệm vụ để đồng bộ.'};
+    try {
+      let tok = await this.getAccessToken();
+      if (!tok) tok = await this.getAccessToken(true);
+      if (!tok) return {ok: false, error: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'};
+
+      const {error} = await this.supabase.from('mission_sets').upsert(missionSetToRow(record), {onConflict: 'id'});
+      if (error) {
+        await this.getAccessToken(true);
+        const retry = await this.supabase.from('mission_sets').upsert(missionSetToRow(record), {onConflict: 'id'});
+        if (retry.error) {
+          return {ok: false, error: retry.error.message || error.message};
+        }
+      }
+      if (versionSnapshot) {
+        await this.supabase.from('mission_set_versions').insert(missionSetVersionToRow(versionSnapshot));
+      }
+      if (deleteDraftId && deleteDraftId !== missionSetId) {
+        await this.supabase.from('mission_sets').delete().eq('id', deleteDraftId);
+      }
+      return {ok: true};
+    } catch (err) {
+      return {ok: false, error: err instanceof Error ? err.message : 'Lỗi đồng bộ bộ nhiệm vụ.'};
+    }
+  }
+
   adminPublishMissionSet(
     actor: UserAccount,
     missionSetId: string,
-  ): {ok: boolean; record?: MissionSetRecord; error?: string} {
-    if (!canEditSettingsOrUsers(actor)) {
-      return {ok: false, error: 'Chỉ Quản trị viên (Admin) mới có quyền xuất bản bộ nhiệm vụ.'};
-    }
+  ): {ok: boolean; record?: MissionSetRecord; versionSnapshot?: MissionSetVersionRecord; deletedDraftId?: string; error?: string} {
     const prev = this.db.missionSets ?? [];
     const target = prev.find((m) => m.id === missionSetId);
     if (!target) return {ok: false, error: 'Không tìm thấy bộ nhiệm vụ cần xuất bản.'};
 
+    if (!this.canManageClassScope(actor, target.classId || 'ALL')) {
+      return {
+        ok: false,
+        error:
+          target.classId === 'ALL'
+            ? 'Chỉ Quản trị viên (Admin) mới có quyền xuất bản bộ nhiệm vụ chung cho Tất cả lớp. Giáo viên hãy chọn lớp cụ thể của mình.'
+            : 'Bạn chỉ có quyền xuất bản bộ nhiệm vụ cho các lớp mình phụ trách.',
+      };
+    }
+
     const now = new Date().toISOString();
-    // If publishing a teacher `_draft` copy, promote onto canonical `ms_moc_${mocId}_${classId}` ID
+    // If publishing a `_draft` copy, promote onto canonical `ms_moc_${mocId}_${classId}` ID
     const canonicalId = `ms_moc_${target.mocId}_${target.classId || 'ALL'}`;
     const existingCanonical = prev.find((m) => m.id === canonicalId);
     const nextVersion = (existingCanonical?.version ?? (target.status === 'published' ? target.version : 0)) + 1;
@@ -5339,21 +5507,100 @@ export class DataService {
     const filtered = prev.filter((m) => m.id !== canonicalId && m.id !== missionSetId);
     const nextSets = [...filtered, publishedRecord];
     const nextVersions = [versionSnapshot, ...(this.db.missionSetVersions ?? [])].slice(0, 80);
+    const deletedDraftId = missionSetId !== canonicalId ? missionSetId : undefined;
 
     this.save({...this.db, missionSets: nextSets, missionSetVersions: nextVersions});
     if (this.supabase && this.isSupabaseAuthenticated() && this.isOnline) {
-      void this.supabase.from('mission_sets').upsert(missionSetToRow(publishedRecord), {onConflict: 'id'});
-      void this.supabase.from('mission_set_versions').insert(missionSetVersionToRow(versionSnapshot));
-      if (missionSetId !== canonicalId) {
-        void this.supabase.from('mission_sets').delete().eq('id', missionSetId);
-      }
+      void this.syncMissionSetToSupabase(canonicalId, versionSnapshot, deletedDraftId);
     }
     this.recordAuditLog(actor, 'mission_set_publish', 'mission_set', canonicalId, {
       mocId: publishedRecord.mocId,
       classId: publishedRecord.classId,
       version: nextVersion,
     });
-    return {ok: true, record: publishedRecord};
+    return {ok: true, record: publishedRecord, versionSnapshot, deletedDraftId};
+  }
+
+  /**
+   * 1-click helper for Teachers & Admin: attaches newly imported/selected question IDs directly
+   * into a specific class's Mission Set for a chosen Mốc/Trạm and publishes immediately.
+   */
+  async assignQuestionsToClassMoc(
+    actor: UserAccount,
+    params: {classId: string; mocId: MocId; questionIds: string[]; note?: string},
+  ): Promise<{ok: boolean; record?: MissionSetRecord; error?: string}> {
+    if (!this.canManageClassScope(actor, params.classId)) {
+      return {ok: false, error: 'Bạn chỉ có thể phân bổ câu hỏi cho lớp mình phụ trách.'};
+    }
+    const cleanIds = Array.from(new Set(params.questionIds.filter(Boolean)));
+    if (cleanIds.length === 0) {
+      return {ok: false, error: 'Chưa có câu hỏi nào để gán vào lớp.'};
+    }
+    const canonicalId = `ms_moc_${params.mocId}_${params.classId}`;
+    const existing = (this.db.missionSets ?? []).find((m) => m.id === canonicalId);
+    const baseSet: MissionSetRecord = existing
+      ? {...existing, slots: existing.slots.map((s) => ({...s, fixedQuestionIds: [...s.fixedQuestionIds]}))}
+      : autoSuggestMissionSet({
+          mocId: params.mocId,
+          classId: params.classId,
+          bank: this.getQuestionsForClass(params.classId),
+          taxonomy: this.getTaxonomy(false),
+          actorName: actor.displayName,
+          actorUid: actor.uid,
+        });
+
+    const customSlotId = `slot_m${params.mocId}_class_focus`;
+    const existingCustomIdx = baseSet.slots.findIndex((s) => s.id === customSlotId);
+    if (existingCustomIdx >= 0) {
+      const prevSlot = baseSet.slots[existingCustomIdx];
+      const mergedIds = Array.from(new Set([...prevSlot.fixedQuestionIds, ...cleanIds]));
+      baseSet.slots[existingCustomIdx] = {
+        ...prevSlot,
+        mode: 'fixed',
+        fixedQuestionIds: mergedIds,
+        count: mergedIds.length,
+      };
+    } else {
+      const assignedQuestions = this.db.questions.filter((q) => cleanIds.includes(q.id));
+      const minLv = (Math.min(...assignedQuestions.map((q) => q.level), 4) || 2) as 1 | 2 | 3 | 4;
+      const maxLv = (Math.max(...assignedQuestions.map((q) => q.level), 1) || 3) as 1 | 2 | 3 | 4;
+      baseSet.slots.push({
+        id: customSlotId,
+        role: 'practice',
+        label: 'Câu hỏi giáo viên phân bổ riêng cho lớp',
+        mode: 'fixed',
+        count: cleanIds.length,
+        levelMin: minLv,
+        levelMax: maxLv,
+        requiredToPass: true,
+        verifyMode: false,
+        fixedQuestionIds: cleanIds,
+      });
+    }
+
+    const saved = this.saveMissionSetDraft(actor, {
+      ...baseSet,
+      id: canonicalId,
+      classId: params.classId,
+      notes: params.note ?? `Phân bổ ${cleanIds.length} câu cho lớp`,
+      status: 'draft',
+    });
+    if (!saved.ok || !saved.record) {
+      return {ok: false, error: saved.error ?? 'Không thể lưu bộ nhiệm vụ cho lớp.'};
+    }
+    const pub = this.adminPublishMissionSet(actor, saved.record.id);
+    if (!pub.ok || !pub.record) {
+      return {ok: false, error: pub.error ?? 'Không thể xuất bản bộ nhiệm vụ cho lớp.'};
+    }
+    const synced = await this.syncMissionSetToSupabase(pub.record.id, pub.versionSnapshot, pub.deletedDraftId);
+    if (!synced.ok) {
+      return {
+        ok: false,
+        record: pub.record,
+        error: `Đã lưu cục bộ nhưng chưa đồng bộ được lên Supabase: ${synced.error}`,
+      };
+    }
+    return {ok: true, record: pub.record};
   }
 
   adminRollbackMissionSet(
@@ -5361,13 +5608,13 @@ export class DataService {
     missionSetId: string,
     targetVersion: number,
   ): {ok: boolean; record?: MissionSetRecord; error?: string} {
-    if (!canEditSettingsOrUsers(actor)) {
-      return {ok: false, error: 'Chỉ Quản trị viên (Admin) mới có quyền khôi phục phiên bản.'};
-    }
     const snap = (this.db.missionSetVersions ?? []).find(
       (v) => v.missionSetId === missionSetId && v.version === targetVersion,
     );
     if (!snap) return {ok: false, error: `Không tìm thấy phiên bản v${targetVersion}.`};
+    if (!this.canManageClassScope(actor, snap.classId || 'ALL')) {
+      return {ok: false, error: 'Bạn chỉ có quyền khôi phục phiên bản cho các lớp mình phụ trách.'};
+    }
 
     const prev = this.db.missionSets ?? [];
     const current = prev.find((m) => m.id === missionSetId);

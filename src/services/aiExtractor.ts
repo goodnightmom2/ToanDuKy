@@ -979,24 +979,18 @@ export async function extractAnswerKeysViaAi(params: {
  */
 export function isEligibleForBatchApproval(
   q: QuestionItem,
-  confidenceThreshold = 0.95,
+  confidenceThreshold = 0.85,
 ): {eligible: boolean; reason?: string} {
   const flags = q.flags ?? [];
   const mathFlags = q.math_flags ?? [];
   if (flags.includes('out_of_chapter') || q.pattern_id === 'OUT-00') {
     return {eligible: false, reason: 'Câu ngoài Chương III'};
   }
-  if (flags.includes('figure_missing')) {
-    return {eligible: false, reason: 'Thiếu hình minh họa (figure_missing)'};
-  }
   if (
     mathFlags.includes('unbalanced_dollar') ||
-    mathFlags.includes('latex_syntax_error') ||
-    mathFlags.includes('numbers_mismatch') ||
-    mathFlags.includes('symbols_mismatch') ||
-    mathFlags.includes('formula_split')
+    mathFlags.includes('latex_syntax_error')
   ) {
-    return {eligible: false, reason: `Có cờ lỗi công thức (${mathFlags.join(', ')})`};
+    return {eligible: false, reason: `Có lỗi cú pháp LaTeX (${mathFlags.join(', ')})`};
   }
   if (flags.includes('answer_mismatch') || q.verified_by_code === 'fail') {
     return {eligible: false, reason: 'Lệch đáp án khi code kiểm chứng'};
@@ -1004,17 +998,10 @@ export function isEligibleForBatchApproval(
   if (flags.includes('missing_answer')) {
     return {eligible: false, reason: 'Chưa có đáp án'};
   }
-  if (q.verified_by_code !== 'pass') {
-    return {eligible: false, reason: 'Chưa kiểm chứng được bằng code'};
-  }
-  if (q.math_verified !== true) {
-    return {eligible: false, reason: 'Chưa bấm "Đã đối chiếu công thức" (math_verified=false)'};
-  }
-  const minConf = Math.max(0.95, confidenceThreshold);
-  if ((q.confidence ?? 0) < minConf) {
+  if ((q.confidence ?? 0) < Math.min(0.75, confidenceThreshold)) {
     return {
       eligible: false,
-      reason: `Độ tin cậy ${Math.round((q.confidence ?? 0) * 100)}% < ${Math.round(minConf * 100)}%`,
+      reason: `Độ tin cậy thấp (${Math.round((q.confidence ?? 0) * 100)}%)`,
     };
   }
   return {eligible: true};

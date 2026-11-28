@@ -1466,10 +1466,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {tab === 'bank' && (
         <div className="space-y-4">
           {!isAdmin && (
-            <div className="p-3.5 rounded-2xl bg-[#FFF5E2] border-2 border-[#D98A1F] text-xs font-semibold text-[#8A5108] flex items-start gap-2">
-              <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-[#B9831E]" />
+            <div className="p-3.5 rounded-2xl bg-[#E6F6F3] border-2 border-[#2E9C8A] text-xs font-semibold text-[#145B4F] flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-[#1F7A6B]" />
               <span>
-                <strong>Quy trình kiểm duyệt học liệu:</strong> Mọi câu hỏi mới, chỉnh sửa hoặc thay thế do Giáo viên gửi lên đều được chuyển vào hàng chờ <strong>Admin chấp nhận</strong>. Câu hỏi đang hoạt động sẽ không bị thay đổi cho tới khi Admin duyệt.
+                <strong>Quyền chủ động của Giáo viên:</strong> Thầy/cô có thể <strong>thêm trực tiếp câu hỏi vào Ngân hàng mà không cần chờ Admin duyệt</strong>, tự chỉnh sửa câu hỏi của mình và <strong>phân bổ bộ câu hỏi riêng cho từng lớp</strong> tại tab <strong>7. Set nhiệm vụ</strong> dựa theo lỗi sai của học sinh từng lớp.
               </span>
             </div>
           )}
@@ -2103,10 +2103,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               />
             </div>
             {(() => {
-              const submitManualQuestion = (directApprove: boolean) => {
+              const submitManualQuestion = async (directApprove: boolean) => {
                 if (!manualStem.trim()) return;
                 const nowIso = new Date().toISOString();
-                const effectiveApproved = isAdmin && directApprove;
+                const effectiveApproved = directApprove;
                 const baseItem: QuestionItem = {
                   id: generateId(isAdmin ? 'adm' : 'gv'),
                   cluster: manualCluster,
@@ -2126,6 +2126,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   reviewedAt: effectiveApproved ? nowIso : undefined,
                   approved_by: effectiveApproved ? user.displayName : undefined,
                   approved_at: effectiveApproved ? nowIso : undefined,
+                  createdBy: user.displayName,
+                  createdByUid: user.uid,
                   math_format: 'latex-1',
                   math_verified: effectiveApproved ? true : false,
                   math_verified_by: effectiveApproved ? user.displayName : undefined,
@@ -2168,17 +2170,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   user,
                   baseItem,
                   effectiveApproved
-                    ? 'Admin thêm trực tiếp vào ngân hàng (đã duyệt)'
-                    : isAdmin
-                      ? 'Admin tạo thủ công (chờ duyệt)'
-                      : 'Giáo viên đề xuất thêm câu hỏi mới',
+                    ? `${isAdmin ? 'Admin' : 'Giáo viên'} thêm trực tiếp vào ngân hàng (đã duyệt)`
+                    : 'Lưu câu hỏi nháp',
                 );
+                const syncRes = await dataService.syncQuestionsToSupabase([baseItem.id]);
                 setBankActionMsg(
-                  effectiveApproved
-                    ? 'Admin đã thêm trực tiếp câu hỏi mới vào Ngân hàng (trạng thái Đã duyệt — sẵn sàng dùng trong Set nhiệm vụ & game).'
-                    : isAdmin
-                      ? 'Đã thêm câu hỏi mới vào ngân hàng (trạng thái Chờ duyệt).'
-                      : 'Đã gửi câu hỏi mới vào hàng chờ Admin xét duyệt. Câu hỏi sẽ tự động hiện lên với học sinh sau khi Admin chấp nhận.',
+                  !syncRes.ok
+                    ? `Đã lưu cục bộ nhưng chưa đồng bộ lên máy chủ: ${syncRes.error}`
+                    : effectiveApproved
+                      ? '✓ Đã thêm trực tiếp câu hỏi mới vào Ngân hàng và đồng bộ lên máy chủ (sẵn sàng dùng ngay trong Set nhiệm vụ theo lớp & game).'
+                      : 'Đã lưu câu hỏi nháp vào ngân hàng.',
                 );
                 setManualStem('');
                 setManualNumericAns('');
@@ -2193,32 +2194,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               return (
                 <div className="flex flex-wrap gap-2">
-                  {isAdmin ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => submitManualQuestion(true)}
-                        className="btn-tactile btn-jade text-xs py-2 px-4"
-                      >
-                        <Plus className="w-4 h-4" /> Thêm &amp; Duyệt ngay vào Ngân hàng
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => submitManualQuestion(false)}
-                        className="btn-tactile btn-paper text-xs py-2 px-4"
-                      >
-                        Lưu chờ duyệt
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => submitManualQuestion(false)}
-                      className="btn-tactile btn-jade text-xs py-2 px-4"
-                    >
-                      <Plus className="w-4 h-4" /> Gửi Admin xét duyệt
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => void submitManualQuestion(true)}
+                    className="btn-tactile btn-jade text-xs py-2 px-4"
+                  >
+                    <Plus className="w-4 h-4" /> Thêm &amp; Duyệt ngay vào Ngân hàng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitManualQuestion(false)}
+                    className="btn-tactile btn-paper text-xs py-2 px-4"
+                  >
+                    Lưu nháp
+                  </button>
                 </div>
               );
             })()}
@@ -2314,6 +2303,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 ? 'Từ chối'
                                 : 'Chờ Admin duyệt'}
                           </span>
+                          {q.targetClassIds && q.targetClassIds.length > 0 && (
+                            <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#E6F6F3] border border-[#2E9C8A] text-[#145B4F] text-xs font-bold">
+                              Riêng lớp:{' '}
+                              {q.targetClassIds
+                                .map((cid) => classes.find((c) => c.id === cid)?.name ?? cid)
+                                .join(', ')}
+                            </span>
+                          )}
                           {isReplaceProposal && (
                             <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#FFF0D1] border border-[#D98A1F] text-[#8A5108] text-xs font-extrabold">
                               Đề xuất sửa/thay thế câu [{q.replacesQuestionId}]
@@ -2565,35 +2562,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       if (!editQStem.trim()) return;
+                      const updatedItem: QuestionItem = {
+                        ...editingQuestion,
+                        stem_vi: editQStem.trim(),
+                        solution_vi: editQSolution.trim() || editingQuestion.solution_vi,
+                        hints_vi: [editQHint.trim() || editingQuestion.hints_vi[0] || '', ...editingQuestion.hints_vi.slice(1)],
+                        figure_crop: editQFigureCrop || undefined,
+                        figure_crop_private: editQFigureCrop ? true : undefined,
+                        flags: editQFigureCrop
+                          ? (editingQuestion.flags ?? []).filter((f) => f !== 'figure_missing')
+                          : editingQuestion.flags,
+                      };
                       dataService.upsertQuestion(
                         user,
-                        {
-                          ...editingQuestion,
-                          stem_vi: editQStem.trim(),
-                          solution_vi: editQSolution.trim() || editingQuestion.solution_vi,
-                          hints_vi: [editQHint.trim() || editingQuestion.hints_vi[0] || '', ...editingQuestion.hints_vi.slice(1)],
-                          figure_crop: editQFigureCrop || undefined,
-                          figure_crop_private: editQFigureCrop ? true : undefined,
-                          flags: editQFigureCrop
-                            ? (editingQuestion.flags ?? []).filter((f) => f !== 'figure_missing')
-                            : editingQuestion.flags,
-                        },
+                        updatedItem,
                         editQNote.trim() ||
-                          (isAdmin ? 'Admin chỉnh sửa nội dung' : 'Giáo viên đề xuất chỉnh sửa / thay thế'),
+                          (isAdmin ? 'Admin chỉnh sửa nội dung' : 'Giáo viên cập nhật câu hỏi'),
                       );
-                      setBankActionMsg(
-                        isAdmin
-                          ? `Đã lưu phiên bản mới cho câu [${editingQuestion.id}].`
-                          : `Đã gửi đề xuất sửa/thay thế câu [${editingQuestion.replacesQuestionId ?? editingQuestion.id}] chờ Admin chấp nhận. Bản gốc vẫn giữ nguyên cho đến khi được duyệt.`,
-                      );
+                      const isOwn =
+                        isAdmin ||
+                        (editingQuestion.createdByUid ?? editingQuestion.proposedByUid ?? '') === user.uid;
+                      if (isOwn) {
+                        const syncRes = await dataService.syncQuestionsToSupabase([editingQuestion.id]);
+                        setBankActionMsg(
+                          syncRes.ok
+                            ? `✓ Đã lưu & đồng bộ phiên bản mới cho câu [${editingQuestion.id}].`
+                            : `Đã lưu cục bộ nhưng chưa đồng bộ được lên Supabase: ${syncRes.error}`,
+                        );
+                      } else {
+                        setBankActionMsg(
+                          `✓ Đã tạo bản sao riêng đã duyệt từ câu [${editingQuestion.id}] để sử dụng cho lớp của bạn (bản gốc vẫn giữ nguyên).`,
+                        );
+                      }
                       setEditingQuestion(null);
                       refresh();
                     }}
                     className="btn-tactile btn-jade text-xs py-2 px-4"
                   >
-                    {isAdmin ? 'Lưu phiên bản mới' : 'Gửi Admin chấp nhận'}
+                    {isAdmin || (editingQuestion.createdByUid ?? editingQuestion.proposedByUid ?? '') === user.uid
+                      ? 'Lưu phiên bản mới'
+                      : 'Tạo bản riêng cho lớp'}
                   </button>
                 </div>
               </div>
@@ -2690,6 +2700,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         <MaterialImporter
           user={user}
           settings={settings}
+          classes={classes}
           existingQuestions={questions}
           onQuestionsChanged={refresh}
           onOpenSettingsTab={() => setTab('settings')}
@@ -2703,6 +2714,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           user={user}
           classes={classes}
           questions={questions}
+          attempts={attempts}
           onRefresh={refresh}
           onPreviewMocAsStudent={onPreviewMocAsStudent}
         />

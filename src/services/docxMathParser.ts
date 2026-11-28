@@ -618,7 +618,7 @@ export async function parseDocxWithMath(arrayBuffer: ArrayBuffer): Promise<DocxM
           const undecodedCount = Math.max(0, oleObjectCount - oleDecodedCount);
           const hasMissingMathTypeEquations = undecodedCount > 0 && text.includes('[CÔNG_THỨC_MATHTYPE]');
           const warning_vi = hasMissingMathTypeEquations
-            ? `Đã giải mã được ${oleDecodedCount}/${oleObjectCount} công thức MathType, còn ${undecodedCount} công thức chưa đọc rõ ([CÔNG_THỨC_MATHTYPE]). Để đạt độ chính xác 100%, thầy/cô có thể lưu tệp Word thành PDF (File → Save As → PDF) rồi tải PDF lên mục 1.`
+            ? `Đã giải mã được ${oleDecodedCount}/${oleObjectCount} công thức MathType, còn ${undecodedCount} công thức chưa đọc rõ ([CÔNG_THỨC_MATHTYPE]). Thầy/cô có thể sửa trực tiếp công thức ở khung soạn thảo bên dưới hoặc chia nhỏ tệp tối đa 5 câu rồi tải lại.`
             : undefined;
 
           if (text.length > 0) {

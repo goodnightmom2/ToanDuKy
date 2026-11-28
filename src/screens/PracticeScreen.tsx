@@ -64,7 +64,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({user, onUserUpdat
     JOURNEY_MILESTONES.find((m) => m.clusters.includes(cluster))?.id ?? 1;
 
   const startSession = () => {
-    const bank = dataService.getQuestions();
+    const bank = dataService.getQuestionsForClass(user.classId);
     const targetClusters: SkillCluster[] =
       selectedCluster === 'ALL'
         ? Array.from(unlockedClusterSet)

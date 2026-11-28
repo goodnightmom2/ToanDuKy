@@ -102,7 +102,10 @@ export const StationMission: React.FC<StationMissionProps> = ({
   const mocBoss = mocDef.bossId ? BOSSES[mocDef.bossId] : null;
   const skipWarmup = shouldSkipFoundationWarmup(activeMocId, user);
   const settings = dataService.getSettings();
-  const allBank = React.useMemo(() => dataService.getQuestions(), []);
+  const allBank = React.useMemo(
+    () => dataService.getQuestionsForClass(user.classId),
+    [user.classId],
+  );
 
   // Personalized milestone mission deck — prefers published/preview MissionSet, falls back to built-in journey deck
   const resolvedGenericDeck = React.useMemo(() => {

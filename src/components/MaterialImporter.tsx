@@ -33,6 +33,7 @@ import {
   ZoomIn,
 } from 'lucide-react';
 import {ERROR_CATALOG, SKILL_CLUSTER_LIST, STATIONS} from '../config.ts';
+import {JOURNEY_MILESTONES} from '../journey.ts';
 import {questionContainsMath, verifyQuestionMathLayers} from '../math/mathEngine.ts';
 import {verifyQuestionWithSolvers} from '../math/solvers.ts';
 import {
@@ -88,7 +89,9 @@ import type {
   AnswerKeyEntry,
   AppSettings,
   ClassificationMode,
+  ClassRoom,
   ImportBatchRecord,
+  MocId,
   QuestionItem,
   QuestionType,
   ReviewStatus,
@@ -115,6 +118,7 @@ interface AiStatusInfo {
 interface MaterialImporterProps {
   user: UserAccount;
   settings: AppSettings;
+  classes: ClassRoom[];
   existingQuestions: QuestionItem[];
   onQuestionsChanged: () => void;
   onOpenSettingsTab: () => void;
@@ -123,12 +127,12 @@ interface MaterialImporterProps {
 
 const STEPPER_ITEMS = [
   {id: 1, label: '1. Tải tệp'},
-  {id: 2, label: '2. Đọc trang'},
+  {id: 2, label: '2. Đọc nội dung'},
   {id: 3, label: '3. AI trích xuất'},
   {id: 4, label: '4. Phân dạng'},
-  {id: 5, label: '5. Duyệt'},
+  {id: 5, label: '5. Kiểm tra'},
   {id: 6, label: '6. Lưu ngân hàng'},
-  {id: 7, label: '7. Gán trạm'},
+  {id: 7, label: '7. Phân bổ lớp'},
 ];
 
 const QUESTION_TYPES: Array<{value: QuestionType; label: string}> = [
@@ -146,6 +150,7 @@ const ERROR_CODES = Object.keys(ERROR_CATALOG);
 export const MaterialImporter: React.FC<MaterialImporterProps> = ({
   user,
   settings,
+  classes,
   existingQuestions,
   onQuestionsChanged,
   onOpenSettingsTab,
@@ -249,6 +254,17 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     skippedDuplicates: number;
     needsReview: number;
   } | null>(null);
+  const [targetClassIds, setTargetClassIds] = React.useState<string[]>([]);
+  const [lastSavedQuestionIds, setLastSavedQuestionIds] = React.useState<string[]>([]);
+  const [quickAssignClassId, setQuickAssignClassId] = React.useState<string>(() => classes[0]?.id ?? '');
+  const [quickAssignMocId, setQuickAssignMocId] = React.useState<MocId>(1);
+  const [quickAssignBusy, setQuickAssignBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!quickAssignClassId && classes.length > 0) {
+      setQuickAssignClassId(classes[0].id);
+    }
+  }, [classes, quickAssignClassId]);
 
   // Inline manual fallback form
   const [manualStem, setManualStem] = React.useState('');
@@ -1056,11 +1072,15 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
       setStepperStep(5);
       if (lastErr) {
         setErrorMsg(`Một phần văn bản gặp lỗi khi trích xuất: ${lastErr}`);
+      } else if (withDocxFigures.items.length > 5) {
+        setErrorMsg(
+          `Lưu ý: Tệp vừa tải có ${withDocxFigures.items.length} câu hỏi (vượt khuyến nghị tối đa 5 câu/tệp). Để đảm bảo công thức LaTeX và hình vẽ chính xác nhất, những lần sau thầy/cô nên chia tệp tối đa 5 câu đổ lại.`,
+        );
       }
       setStatusMsg(
         `Đã trích xuất ${withDocxFigures.items.length} câu từ văn bản (${chunks.length} đoạn)` +
           `${withDocxFigures.attachedCount > 0 ? ` · Tự động gắn ${withDocxFigures.attachedCount} hình vẽ minh họa từ tệp Word` : ''}. ` +
-          `Hãy kiểm tra công thức & hình vẽ rồi bấm "Đã đối chiếu công thức" trước khi lưu ngân hàng.`,
+          `Thầy/cô hãy kiểm tra nhanh công thức & hình vẽ, chọn lớp áp dụng (nếu muốn) rồi bấm "Lưu & Duyệt ngay vào Ngân hàng".`,
       );
     } finally {
       setBusy(false);
@@ -1084,16 +1104,18 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     const lower = fileName.toLowerCase();
 
     if (lower.endsWith('.pdf')) {
-      // Keep original File (or fresh Uint8Array) for safe re-reads across any page range
-      setPdfSourceFile(fileOrBytes);
-      setPdfStartPage(1);
-      setPdfEndPage(12);
-      await runPdfRead(fileOrBytes, fileName, {
-        startPage: 1,
-        endPage: 12,
-        driveId: pickedDriveId,
-        promptAutoExtract: true,
-      });
+      setPdfSourceFile(null);
+      setErrorMsg(
+        'Hệ thống hiện chỉ hỗ trợ tải lên 3 định dạng: .docx (Word), .json và .txt (mỗi tệp tối đa 5 câu hỏi đổ lại). Vui lòng tải tệp Word (.docx) hoặc dán nội dung đề ở mục 2.',
+      );
+      return;
+    }
+
+    if (!lower.endsWith('.docx') && !lower.endsWith('.json') && !lower.endsWith('.txt')) {
+      setPdfSourceFile(null);
+      setErrorMsg(
+        `Định dạng tệp "${fileName}" chưa được hỗ trợ. Vui lòng chọn tệp .docx, .json hoặc .txt (tối đa 5 câu/tệp).`,
+      );
       return;
     }
 
@@ -1119,7 +1141,12 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         setDraftItems(enriched);
         setSelectedIds(enriched.map((x) => x.id));
         setStepperStep(5);
-        setStatusMsg(`Đã đọc ${enriched.length} câu từ JSON (${fileName}). Tất cả ở trạng thái Chờ Admin duyệt.`);
+        if (enriched.length > 5) {
+          setErrorMsg(
+            `Lưu ý: Tệp JSON có ${enriched.length} câu (khuyến nghị tối đa 5 câu/tệp để dễ rà soát và phân bổ cho từng lớp).`,
+          );
+        }
+        setStatusMsg(`Đã đọc ${enriched.length} câu từ JSON (${fileName}). Kiểm tra nhanh rồi bấm "Lưu & Duyệt ngay vào Ngân hàng".`);
       } else if (lower.endsWith('.docx')) {
         setBusy(true);
         const docxRes = await parseDocxDetailed(buf);
@@ -1333,12 +1360,14 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     }
   };
 
-  // Commit selected/single drafts into question bank (idempotent upsert + batch-approval guardrails)
-  const commitDrafts = (targetIds: string[], requestedStatus: ReviewStatus, batchApproveGuard = false) => {
+  // Commit selected/single drafts into question bank (direct approve for BOTH Admin & Teacher + awaited Supabase sync!)
+  const commitDrafts = async (targetIds: string[], requestedStatus: ReviewStatus, batchApproveGuard = false) => {
     const rawTargets = draftItems.filter((d) => targetIds.includes(d.id));
     if (rawTargets.length === 0) return;
 
-    const effectiveStatus: ReviewStatus = isAdmin ? requestedStatus : 'pending_teacher_review';
+    clearMessages();
+    const effectiveStatus: ReviewStatus =
+      requestedStatus === 'rejected' && !isAdmin ? 'pending_teacher_review' : requestedStatus;
     let skippedByGuard = 0;
 
     const eligibleTargets =
@@ -1352,50 +1381,118 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
     if (eligibleTargets.length === 0) {
       setErrorMsg(
-        `Không có câu nào đủ điều kiện duyệt hàng loạt (${skippedByGuard} câu bị chặn do chưa kiểm chứng code / thiếu hình / lệch đáp án / độ tin cậy < ${Math.round(confidenceThreshold * 100)}%). Hãy duyệt từng câu sau khi kiểm tra.`,
+        `Không có câu nào đủ điều kiện lưu nhanh (${skippedByGuard} câu có cờ lỗi cú pháp LaTeX / thiếu đáp án / ngoài Chương III). Hãy mở "Sửa" trên từng câu để hoàn chỉnh rồi lưu.`,
       );
       return;
     }
+
+    setBusy(true);
+    setBusyMessage('Đang lưu câu hỏi vào ngân hàng & đồng bộ lên máy chủ...');
 
     let added = 0;
     let updated = 0;
     let skippedDuplicates = 0;
     let needsReview = 0;
     const committedIds = new Set<string>();
+    const allSavedBankIds: string[] = [];
+    const scopedClassIds = targetClassIds.length > 0 ? [...targetClassIds] : undefined;
 
-    for (const item of eligibleTargets) {
-      const dupAction = duplicateDecisions[item.id] ?? 'skip';
-      const res = dataService.upsertImportedQuestions(user, [item], {
-        targetStatus: effectiveStatus,
-        duplicateAction: dupAction,
-        note:
-          effectiveStatus === 'approved'
-            ? `Admin duyệt từ lô PDF (${sourceName})`
-            : `Gửi Admin duyệt từ lô PDF (${sourceName})`,
+    try {
+      for (const item of eligibleTargets) {
+        const dupAction = duplicateDecisions[item.id] ?? 'skip';
+        const res = dataService.upsertImportedQuestions(user, [item], {
+          targetStatus: effectiveStatus,
+          duplicateAction: dupAction,
+          targetClassIds: scopedClassIds,
+          note:
+            effectiveStatus === 'approved'
+              ? `${isAdmin ? 'Admin' : 'Giáo viên'} lưu trực tiếp từ tệp (${sourceName})`
+              : `Lưu bản nháp từ tệp (${sourceName})`,
+        });
+        added += res.added;
+        updated += res.updated;
+        skippedDuplicates += res.skippedDuplicates;
+        needsReview += res.needsReview;
+        allSavedBankIds.push(...res.savedIds);
+        committedIds.add(item.id);
+      }
+
+      // Explicitly await Supabase cloud persistence so save errors are NEVER silently swallowed!
+      const uniqueSavedIds = Array.from(new Set(allSavedBankIds));
+      const syncRes =
+        added > 0 || updated > 0
+          ? await dataService.syncQuestionsToSupabase(uniqueSavedIds)
+          : {ok: true, synced: 0};
+
+      setLastUpsertSummary({added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard});
+      if (effectiveStatus === 'approved' && uniqueSavedIds.length > 0) {
+        setLastSavedQuestionIds(uniqueSavedIds);
+        const firstSuggestedMoc = eligibleTargets.find((q) => (q.suggested_stations?.length ?? 0) > 0)
+          ?.suggested_stations?.[0];
+        if (firstSuggestedMoc) setQuickAssignMocId(firstSuggestedMoc);
+        if (scopedClassIds && scopedClassIds.length === 1) {
+          setQuickAssignClassId(scopedClassIds[0]);
+        }
+      }
+      setDraftItems((prev) => prev.filter((d) => !committedIds.has(d.id)));
+      setSelectedIds((prev) => prev.filter((id) => !committedIds.has(id)));
+      setStepperStep(6);
+      persistBatchSnapshot({
+        status: draftItems.length - committedIds.size === 0 ? 'completed' : 'reviewing',
+        extractedItems: draftItems.filter((d) => !committedIds.has(d.id)),
+        summary: {added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard},
       });
-      added += res.added;
-      updated += res.updated;
-      skippedDuplicates += res.skippedDuplicates;
-      needsReview += res.needsReview;
-      committedIds.add(item.id);
+      onQuestionsChanged();
+
+      const classLabelText =
+        scopedClassIds && scopedClassIds.length > 0
+          ? ` · Phạm vi: ${scopedClassIds
+              .map((cid) => classes.find((c) => c.id === cid)?.name ?? cid)
+              .join(', ')}`
+          : ' · Phạm vi: Dùng chung tất cả lớp';
+
+      if (!syncRes.ok) {
+        setErrorMsg(
+          `Đã lưu cục bộ (${added} câu mới, ${updated} cập nhật) nhưng đồng bộ lên Supabase gặp lỗi: ${syncRes.error}. Vui lòng tải lại trang hoặc đăng nhập lại rồi thử đồng bộ.`,
+        );
+      }
+      setStatusMsg(
+        `${effectiveStatus === 'approved' ? 'Đã lưu & duyệt trực tiếp vào Ngân hàng' : 'Đã lưu ở trạng thái bản nháp'}: ` +
+          `Thêm ${added} câu mới · cập nhật ${updated} câu · bỏ qua ${skippedDuplicates} câu trùng` +
+          `${syncRes.ok && syncRes.synced > 0 ? ` · ✓ Đã đồng bộ ${syncRes.synced} câu lên máy chủ` : ''}` +
+          `${classLabelText}` +
+          `${skippedByGuard > 0 ? ` · giữ lại ${skippedByGuard} câu cần kiểm tra` : ''}.`,
+      );
+    } finally {
+      setBusy(false);
+      setBusyMessage('');
     }
+  };
 
-    setLastUpsertSummary({added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard});
-    setDraftItems((prev) => prev.filter((d) => !committedIds.has(d.id)));
-    setSelectedIds((prev) => prev.filter((id) => !committedIds.has(id)));
-    setStepperStep(6);
-    persistBatchSnapshot({
-      status: draftItems.length - committedIds.size === 0 ? 'completed' : 'reviewing',
-      extractedItems: draftItems.filter((d) => !committedIds.has(d.id)),
-      summary: {added, updated, skippedDuplicates, needsReview: needsReview + skippedByGuard},
-    });
-    onQuestionsChanged();
-
-    setStatusMsg(
-      `${effectiveStatus === 'approved' ? 'Admin đã duyệt & lưu vào Ngân hàng' : 'Đã gửi vào hàng chờ Admin duyệt'}: ` +
-        `Đã thêm ${added} câu mới · cập nhật ${updated} câu · bỏ qua ${skippedDuplicates} câu trùng` +
-        `${skippedByGuard > 0 ? ` · giữ lại ${skippedByGuard} câu cần xem lại` : ''}.`,
-    );
+  const handleQuickAssignSavedToClass = async () => {
+    if (!quickAssignClassId || lastSavedQuestionIds.length === 0) return;
+    setQuickAssignBusy(true);
+    setErrorMsg('');
+    try {
+      const targetClass = classes.find((c) => c.id === quickAssignClassId);
+      const res = await dataService.assignQuestionsToClassMoc(user, {
+        classId: quickAssignClassId,
+        mocId: quickAssignMocId,
+        questionIds: lastSavedQuestionIds,
+        note: `Phân bổ ${lastSavedQuestionIds.length} câu từ ${sourceName} cho lớp ${targetClass?.name ?? quickAssignClassId}`,
+      });
+      if (!res.ok) {
+        setErrorMsg(res.error ?? 'Không thể phân bổ câu hỏi cho lớp này.');
+        return;
+      }
+      setStepperStep(7);
+      onQuestionsChanged();
+      setStatusMsg(
+        `✓ Đã phân bổ & xuất bản ngay ${lastSavedQuestionIds.length} câu vào Mốc ${quickAssignMocId} riêng cho lớp ${targetClass?.name ?? quickAssignClassId} (phiên bản v${res.record?.version ?? 1}). Học sinh lớp này sẽ thấy ngay ở lượt làm bài mới!`,
+      );
+    } finally {
+      setQuickAssignBusy(false);
+    }
   };
 
   // Manual fallback form submit
@@ -1449,7 +1546,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
     setManualHint2('');
     setManualSolution('');
     setStepperStep(5);
-    setStatusMsg('Đã thêm 1 câu nhập tay vào danh sách đối chiếu (Chờ Admin duyệt).');
+    setStatusMsg('Đã thêm 1 câu nhập tay vào danh sách đối chiếu. Bấm "Lưu & Duyệt ngay vào Ngân hàng" để đưa vào ngân hàng ngay.');
   };
 
   const quotaUsed = aiStatus?.dailyUsed ?? 0;
@@ -1517,18 +1614,19 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1.5 flex-1 min-w-[260px]">
             <h2 className="font-display text-xl font-extrabold text-[#14284A]">
-              Nhập học liệu 1 chạm: PDF/Word → AI tách câu, công thức &amp; hình vẽ → Phân bổ Trạm
+              Nhập học liệu 1 chạm: Word (.docx) / .json / .txt → AI tách câu &amp; hình vẽ → Phân bổ theo Lớp
             </h2>
             <p className="text-xs text-[#5B6B82]">
               {isAdmin ? (
                 <>
-                  Hỗ trợ <strong>.pdf</strong> (tự động cắt hình vẽ bài thực tế), <strong>.docx</strong> (tự giải mã Word OMML + MathType &amp; tách hình vẽ nhúng),{' '}
-                  <strong>.json</strong>, <strong>.txt</strong>. Admin dùng khóa hệ thống Vercel hoặc khóa cá nhân. Không lưu tệp PDF gốc vào CSDL.
+                  Hỗ trợ <strong>.docx</strong> (tự giải mã Word OMML + MathType &amp; tách hình vẽ nhúng),{' '}
+                  <strong>.json</strong>, <strong>.txt</strong> (<strong>tối đa 5 câu/tệp</strong>). Admin dùng khóa hệ thống Vercel hoặc khóa cá nhân.
                 </>
               ) : (
                 <>
-                  Giáo viên nhập <strong>Khóa Gemini API cá nhân</strong> bên dưới (miễn phí tại Google AI Studio — dùng hạn mức của chính thầy/cô) để tách câu hỏi &amp; hình vẽ từ{' '}
-                  <strong>.pdf</strong>, <strong>.docx</strong>, chọn <strong>Trạm/Mốc</strong> rồi gửi Admin duyệt và gán vào <strong>7. Set nhiệm vụ</strong>.
+                  Giáo viên nhập <strong>Khóa Gemini API cá nhân</strong> bên dưới (miễn phí tại Google AI Studio — dùng hạn mức của chính thầy/cô) để tải lên{' '}
+                  <strong>.docx</strong>, <strong>.json</strong>, <strong>.txt</strong> (<strong>tối đa 5 câu/tệp</strong>),{' '}
+                  <strong>lưu trực tiếp vào Ngân hàng không cần Admin duyệt</strong> và tự phân bổ riêng cho từng lớp của mình.
                 </>
               )}
             </p>
@@ -1736,7 +1834,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     Đặt tên tùy ý (ví dụ: <em>ToanDuKy</em>), chọn hoặc tạo dự án mới rồi bấm <strong>Create key</strong> → bấm nút <strong>Copy</strong> để sao chép chuỗi khóa (bắt đầu bằng <code className="px-1 py-0.5 rounded bg-[#FAF5E8]">AIza...</code>).
                   </li>
                   <li>
-                    Quay lại trang này, dán chuỗi khóa vào ô bên trên rồi bấm <strong>"Lưu &amp; Kiểm tra khóa"</strong>. Khi thấy dấu <strong>✓ Đã kết nối</strong> màu xanh, thầy/cô có thể tải PDF/Word lên trích xuất và gán câu hỏi vào từng trạm ở mục <strong>7. Set nhiệm vụ</strong>.
+                    Quay lại trang này, dán chuỗi khóa vào ô bên trên rồi bấm <strong>"Lưu &amp; Kiểm tra khóa"</strong>. Khi thấy dấu <strong>✓ Đã kết nối</strong> màu xanh, thầy/cô có thể tải tệp Word (.docx), .json hoặc .txt (tối đa 5 câu/tệp), lưu trực tiếp vào ngân hàng và phân bổ riêng cho từng lớp của mình ở mục <strong>7. Set nhiệm vụ</strong>.
                   </li>
                 </ol>
               </div>
@@ -1854,7 +1952,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   className="text-xs font-extrabold text-[#14284A] inline-flex items-center gap-1.5"
                 >
                   <HardDriveUpload className="w-4 h-4 text-[#2E9C8A]" />
-                  1. Tải tệp từ máy (.pdf, .docx, .json, .txt)
+                  1. Tải tệp từ máy (.docx, .json, .txt)
                 </label>
                 <span className="text-[11px] text-[#5B6B82]">
                   Nguồn: <strong>{sourceName}</strong>
@@ -1864,10 +1962,18 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               <input
                 id="local-material-upload"
                 type="file"
-                accept=".pdf,.docx,.json,.txt"
+                accept=".docx,.json,.txt"
                 onChange={handleLocalFileChange}
                 className="block w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:bg-[#14284A] file:text-[#FFFBF0] file:font-bold file:cursor-pointer"
               />
+
+              <div className="p-2.5 rounded-xl bg-[#FFF4D6] border border-[#E0A93B] text-[11px] font-semibold text-[#6E4004] flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-[#C27803] shrink-0 mt-0.5" />
+                <div>
+                  <strong>Lưu ý cho Giáo viên:</strong> Chỉ nhận 3 định dạng <strong>.docx (Word)</strong>,{' '}
+                  <strong>.json</strong>, <strong>.txt</strong>. <strong>Mỗi lần tải tệp chỉ nên nhập tối đa 5 câu hỏi đổ lại</strong> để AI tách đề, giải mã công thức MathType/LaTeX và gắn hình vẽ minh họa chính xác nhất (nếu đề dài hơn, hãy tách thành từng tệp 3–5 câu).
+                </div>
+              </div>
 
               {/* Extracted DOCX embedded diagram thumbnails */}
               {docxImages.length > 0 && (
@@ -2027,7 +2133,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                   className="text-xs font-extrabold text-[#14284A] inline-flex items-center gap-1.5"
                 >
                   <FileText className="w-4 h-4 text-[#2E9C8A]" />
-                  2. Dán văn bản đề bài (dự phòng thủ công khi không dùng PDF)
+                  2. Nội dung đề bài (xem trước công thức LaTeX hoặc dán trực tiếp tối đa 5 câu)
                 </label>
                 <input
                   type="text"
@@ -2081,7 +2187,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     ? busyMessage || 'Đang xử lý...'
                     : quotaExhausted
                       ? 'Đã hết lượt AI hôm nay'
-                      : 'Trích xuất & phân dạng bằng AI (Chờ duyệt)'}
+                      : 'Trích xuất & phân dạng bằng AI'}
                 </button>
                 {busy && (
                   <button
@@ -2125,7 +2231,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
             {driveConfigured ? (
               <div className="space-y-2.5">
                 <p className="text-[#5B6B82]">
-                  Chọn tệp PDF/Word/JSON hoặc cả thư mục từ Google Drive (chỉ quyền đọc, token chỉ lưu trong RAM).
+                  Chọn tệp Word (.docx), .json, .txt (tối đa 5 câu/tệp) hoặc thư mục từ Google Drive (chỉ quyền đọc, token chỉ lưu trong RAM).
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -2174,7 +2280,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
             ) : (
               <div className="space-y-2">
                 <p className="text-[#5B6B82]">
-                  Chưa thiết lập khóa Google Drive Picker. Bạn vẫn có thể tải PDF trực tiếp từ máy tính ở mục 1.
+                  Chưa thiết lập khóa Google Drive Picker. Thầy/cô có thể tải trực tiếp tệp <strong>.docx, .json, .txt</strong> từ máy tính ở mục 1 (tối đa 5 câu/tệp).
                 </p>
                 {isAdmin ? (
                   <button
@@ -2229,21 +2335,62 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           </div>
         )}
 
-        {/* FEEDBACK BANNERS */}
+        {/* FEEDBACK BANNERS + QUICK PER-CLASS ASSIGNMENT AFTER SAVE */}
         {statusMsg && (
-          <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B] flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{statusMsg}</span>
+          <div className="p-3 rounded-xl bg-[#E6F6F3] border border-[#2E9C8A] text-xs font-bold text-[#1F7A6B] space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{statusMsg}</span>
+              </div>
+              {lastUpsertSummary && onOpenMissionSetsTab && (
+                <button
+                  type="button"
+                  onClick={onOpenMissionSetsTab}
+                  className="px-3 py-1.5 rounded-lg bg-[#14284A] text-[#FFFBF0] font-extrabold inline-flex items-center gap-1"
+                >
+                  Mở 7. Set nhiệm vụ theo lớp <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
-            {lastUpsertSummary && onOpenMissionSetsTab && (
-              <button
-                type="button"
-                onClick={onOpenMissionSetsTab}
-                className="px-3 py-1.5 rounded-lg bg-[#14284A] text-[#FFFBF0] font-extrabold inline-flex items-center gap-1"
-              >
-                Sang tab Set nhiệm vụ <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+
+            {lastSavedQuestionIds.length > 0 && classes.length > 0 && (
+              <div className="p-3 rounded-xl bg-white border border-[#2E9C8A]/60 text-[#14284A] flex flex-wrap items-center gap-2">
+                <span className="font-extrabold">
+                  Phân bổ nhanh {lastSavedQuestionIds.length} câu vừa lưu vào lớp:
+                </span>
+                <select
+                  value={quickAssignClassId}
+                  onChange={(e) => setQuickAssignClassId(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                >
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Lớp {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={quickAssignMocId}
+                  onChange={(e) => setQuickAssignMocId(Number(e.target.value) as MocId)}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#FFFBF0] border border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
+                >
+                  {JOURNEY_MILESTONES.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      Mốc {m.id}: {m.city} ({m.clusters.join(', ')})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={quickAssignBusy || !quickAssignClassId}
+                  onClick={() => void handleQuickAssignSavedToClass()}
+                  className="btn-tactile btn-jade text-xs py-1.5 px-3"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  {quickAssignBusy ? 'Đang gán...' : 'Gán & Xuất bản ngay cho lớp này'}
+                </button>
+              </div>
             )}
           </div>
         )}
@@ -2439,7 +2586,7 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5D3A8] pb-3">
             <div>
               <h3 className="font-display text-lg font-extrabold text-[#14284A]">
-                Màn duyệt đối chiếu Ảnh trang PDF ↔ Câu hỏi đã tách ({draftItems.length} câu)
+                Kiểm tra công thức, hình vẽ &amp; chọn lớp áp dụng ({draftItems.length} câu)
               </h3>
               <div className="flex flex-wrap gap-2 mt-1.5 text-xs">
                 <button
@@ -2501,11 +2648,22 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
 
               <button
                 type="button"
-                disabled={selectedIds.length === 0}
-                onClick={() => commitDrafts(selectedIds, 'pending_teacher_review', false)}
-                className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
+                disabled={busy || selectedIds.length === 0}
+                onClick={() => void commitDrafts(selectedIds, 'approved', false)}
+                className="btn-tactile btn-jade text-xs py-1.5 px-3.5"
+                title="Lưu trực tiếp vào Ngân hàng ở trạng thái Đã duyệt (học sinh sử dụng được ngay, không cần chờ Admin duyệt)"
               >
-                {isAdmin ? `Lưu chờ duyệt (${selectedIds.length})` : `Gửi Admin duyệt (${selectedIds.length})`}
+                <Check className="w-4 h-4" />
+                {busy ? 'Đang lưu...' : `Lưu & Duyệt ngay vào Ngân hàng (${selectedIds.length})`}
+              </button>
+
+              <button
+                type="button"
+                disabled={busy || selectedIds.length === 0}
+                onClick={() => void commitDrafts(selectedIds, 'pending_teacher_review', false)}
+                className="btn-tactile btn-paper text-xs py-1.5 px-3"
+              >
+                Lưu nháp ({selectedIds.length})
               </button>
 
               {isAdmin && (
@@ -2514,25 +2672,15 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                     type="button"
                     onClick={() => setShowGalleryVerify((v) => !v)}
                     className="btn-tactile btn-gold text-xs py-1.5 px-3"
-                    title="Mở chế độ thư viện đối chiếu 6 câu/màn hình (ảnh gốc | bản render)"
+                    title="Mở chế độ thư viện đối chiếu 6 câu/màn hình"
                   >
                     <LayoutGrid className="w-4 h-4" />
                     {showGalleryVerify ? 'Đóng thư viện 6 câu' : 'Thư viện đối chiếu 6 câu'}
                   </button>
                   <button
                     type="button"
-                    disabled={selectedIds.length === 0}
-                    onClick={() => commitDrafts(selectedIds, 'approved', true)}
-                    className="btn-tactile btn-jade text-xs py-1.5 px-3"
-                    title="Chỉ duyệt hàng loạt câu đã bấm Đối chiếu công thức (math_verified=true), kiểm chứng code khớp, không cờ lỗi và độ tin cậy ≥ 95%"
-                  >
-                    <Check className="w-4 h-4" />
-                    Duyệt hàng loạt an toàn ({selectedIds.length})
-                  </button>
-                  <button
-                    type="button"
-                    disabled={selectedIds.length === 0}
-                    onClick={() => commitDrafts(selectedIds, 'rejected', false)}
+                    disabled={busy || selectedIds.length === 0}
+                    onClick={() => void commitDrafts(selectedIds, 'rejected', false)}
                     className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold"
                   >
                     Từ chối ({selectedIds.length})
@@ -2541,6 +2689,59 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
               )}
             </div>
           </div>
+
+          {/* PER-CLASS TARGET SCOPE SELECTOR FOR THIS IMPORT BATCH */}
+          {classes.length > 0 && (
+            <div className="p-3 rounded-xl bg-[#F0FAF7] border border-[#2E9C8A]/50 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-extrabold text-[#14284A]">
+                  Phạm vi phân bổ lớp học cho các câu sắp lưu:
+                </span>
+                <span className="text-[11px] font-semibold text-[#145B4F]">
+                  {targetClassIds.length === 0
+                    ? 'Đang chọn: Dùng chung (tất cả lớp đều dùng được)'
+                    : `Đang chọn riêng cho ${targetClassIds.length} lớp`}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setTargetClassIds([])}
+                  className={`px-2.5 py-1 rounded-lg font-bold border transition ${
+                    targetClassIds.length === 0
+                      ? 'bg-[#14284A] text-white border-[#14284A]'
+                      : 'bg-white text-[#14284A] border-[#CBB17D]'
+                  }`}
+                >
+                  Dùng chung mọi lớp
+                </button>
+                {classes.map((c) => {
+                  const active = targetClassIds.includes(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() =>
+                        setTargetClassIds((prev) =>
+                          prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id],
+                        )
+                      }
+                      className={`px-2.5 py-1 rounded-lg font-bold border transition ${
+                        active
+                          ? 'bg-[#2E9C8A] text-white border-[#1F7A6B]'
+                          : 'bg-white text-[#14284A] border-[#CBB17D]'
+                      }`}
+                    >
+                      {active ? '✓ ' : ''}Lớp {c.name} ({c.code})
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-[#5B6B82]">
+                Mẹo: Chọn riêng lớp (ví dụ lớp hay sai lỗi E03 hoặc E05) để các câu này chỉ phục vụ học sinh lớp đó; hoặc để &ldquo;Dùng chung&rdquo; rồi gán từng lớp trong tab <strong>7. Set nhiệm vụ</strong>.
+              </p>
+            </div>
+          )}
 
           {/* 6-Card Gallery Batch Eye-Check Mode (Section 6.4) */}
           {showGalleryVerify && (() => {
@@ -3393,33 +3594,34 @@ export const MaterialImporter: React.FC<MaterialImporterProps> = ({
                         <>
                           <button
                             type="button"
-                            onClick={() => commitDrafts([item.id], 'pending_teacher_review', false)}
-                            className={`btn-tactile text-xs py-1.5 px-3 ${isAdmin ? 'btn-paper' : 'btn-jade'}`}
+                            disabled={busy}
+                            onClick={() => void commitDrafts([item.id], 'approved', false)}
+                            className="btn-tactile btn-jade text-xs py-1.5 px-3"
                           >
-                            {isAdmin ? 'Lưu chờ duyệt' : 'Gửi Admin duyệt'}
+                            <Check className="w-3.5 h-3.5" /> Lưu &amp; Duyệt ngay vào Ngân hàng
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void commitDrafts([item.id], 'pending_teacher_review', false)}
+                            className="btn-tactile btn-paper text-xs py-1.5 px-3"
+                          >
+                            Lưu nháp
                           </button>
                           {isAdmin && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => commitDrafts([item.id], 'approved', false)}
-                                className="btn-tactile btn-jade text-xs py-1.5 px-3"
-                              >
-                                <Check className="w-3.5 h-3.5" /> Duyệt &amp; lưu Ngân hàng
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => commitDrafts([item.id], 'rejected', false)}
-                                className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1"
-                              >
-                                <XCircle className="w-3.5 h-3.5" /> Từ chối
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void commitDrafts([item.id], 'rejected', false)}
+                              className="px-3 py-1.5 rounded-xl bg-[#FFF5E2] border border-[#D98A1F] text-[#8A5108] text-xs font-bold inline-flex items-center gap-1"
+                            >
+                              <XCircle className="w-3.5 h-3.5" /> Từ chối
+                            </button>
                           )}
-                          {!batchCheck.eligible && isAdmin && (
+                          {!batchCheck.eligible && (
                             <span className="text-[11px] font-semibold text-[#8A5108]">
                               <ShieldCheck className="w-3.5 h-3.5 inline mr-0.5" />
-                              Chặn duyệt nhanh: {batchCheck.reason}
+                              Lưu ý kiểm tra: {batchCheck.reason}
                             </span>
                           )}
                         </>

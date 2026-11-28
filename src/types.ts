@@ -377,6 +377,8 @@ export interface QuestionItem {
   version?: number;
   versionHistory?: QuestionVersion[];
   createdBy?: string;
+  createdByUid?: string;
+  targetClassIds?: string[]; // Empty/undefined = shared across all classes; non-empty = targeted to specific classIds
   reviewedBy?: string;
   reviewedAt?: string;
   // Teacher change-proposal metadata (requires Admin acceptance before applying to live bank)

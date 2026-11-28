@@ -50,7 +50,7 @@ export const BossBattle: React.FC<BossBattleProps> = ({
   const bossHp = computeBossRemainingHp(boss.hitLevels, completedHits);
   const [deck, setDeck] = React.useState<QuestionItem[]>(() => {
     const prevIds = (user.recentQuestionSessions ?? []).slice(-1).flat();
-    const bank = dataService.getQuestions();
+    const bank = dataService.getQuestionsForClass(user.classId);
     const allowPending = dataService.shouldAllowPendingForUser(user);
     const built = buildBossBattleDeck({
       bossId: boss.id,

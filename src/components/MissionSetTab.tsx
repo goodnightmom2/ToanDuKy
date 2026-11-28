@@ -13,7 +13,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import {SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
+import {ERROR_CATALOG, SKILL_CLUSTER_LIST, SKILL_CLUSTERS} from '../config.ts';
 import {JOURNEY_MILESTONES, JOURNEY_MILESTONES_BY_ID} from '../journey.ts';
 import {
   autoSuggestMissionSet,
@@ -23,6 +23,7 @@ import {
 import {inferPatternIdForQuestion} from '../math/taxonomy.ts';
 import {canEditSettingsOrUsers, dataService, generateId} from '../services/dataService.ts';
 import type {
+  AttemptRecord,
   ClassRoom,
   MissionSetRecord,
   MissionSlot,
@@ -38,6 +39,7 @@ interface MissionSetTabProps {
   user: UserAccount;
   classes: ClassRoom[];
   questions: QuestionItem[];
+  attempts?: AttemptRecord[];
   onRefresh: () => void;
   onPreviewMocAsStudent?: (mocId: MocId, draftOverride?: MissionSetRecord) => void;
 }
@@ -54,6 +56,7 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
   user,
   classes,
   questions,
+  attempts = [],
   onRefresh,
   onPreviewMocAsStudent,
 }) => {
@@ -62,17 +65,49 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
   const allMissionSets = React.useMemo(() => dataService.getMissionSets(user), [user, questions.length]);
 
   const [selectedMocId, setSelectedMocId] = React.useState<MocId>(1);
-  const [selectedClassId, setSelectedClassId] = React.useState<string>('ALL');
+  const [selectedClassId, setSelectedClassId] = React.useState<string>(() =>
+    isAdmin ? 'ALL' : (classes[0]?.id ?? 'ALL'),
+  );
   const [activeSlotId, setActiveSlotId] = React.useState<string | null>(null);
   const [statusMsg, setStatusMsg] = React.useState('');
   const [errorMsg, setErrorMsg] = React.useState('');
+  const [publishing, setPublishing] = React.useState(false);
 
   // Right-column Bank Filters
   const [bankSearch, setBankSearch] = React.useState('');
   const [bankCluster, setBankCluster] = React.useState<SkillCluster | 'ALL'>('ALL');
   const [bankPattern, setBankPattern] = React.useState<string>('ALL');
   const [bankLevel, setBankLevel] = React.useState<number | 'ALL'>('ALL');
+  const [bankErrorCode, setBankErrorCode] = React.useState<string>('ALL');
   const [draggedQuestionId, setDraggedQuestionId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!isAdmin && selectedClassId === 'ALL' && classes.length > 0) {
+      setSelectedClassId(classes[0].id);
+    }
+  }, [isAdmin, classes, selectedClassId]);
+
+  const canPublishSelectedClass = dataService.canManageClassScope(user, selectedClassId);
+  const selectedClassObj = classes.find((c) => c.id === selectedClassId);
+
+  // Per-class error diagnostics so teachers can target each class's exact weak error codes!
+  const classErrorSummary = React.useMemo(() => {
+    if (!selectedClassId || selectedClassId === 'ALL') return [];
+    const wrong = attempts.filter((a) => a.classId === selectedClassId && !a.isCorrect && a.errorCode);
+    const counts = new Map<string, number>();
+    for (const a of wrong) {
+      const code = a.errorCode!;
+      counts.set(code, (counts.get(code) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([code, count]) => ({
+        code,
+        count,
+        label: ERROR_CATALOG[code as keyof typeof ERROR_CATALOG]?.shortName ?? code,
+      }));
+  }, [attempts, selectedClassId]);
 
   const canonicalId = `ms_moc_${selectedMocId}_${selectedClassId}`;
   const existingRecord = React.useMemo(() => {
@@ -128,14 +163,24 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
 
   const approvedBank = React.useMemo(
     () =>
-      questions.filter(
-        (q) =>
-          q.review_status === 'approved' &&
-          q.standalone !== false &&
-          q.pattern_id !== 'OUT-00' &&
-          !(q.flags ?? []).includes('out_of_chapter'),
-      ),
-    [questions],
+      questions
+        .filter(
+          (q) =>
+            q.review_status === 'approved' &&
+            q.standalone !== false &&
+            q.pattern_id !== 'OUT-00' &&
+            !(q.flags ?? []).includes('out_of_chapter') &&
+            (selectedClassId === 'ALL' ||
+              !q.targetClassIds ||
+              q.targetClassIds.length === 0 ||
+              q.targetClassIds.includes(selectedClassId)),
+        )
+        .sort((a, b) => {
+          const aTargeted = selectedClassId !== 'ALL' && Boolean(a.targetClassIds?.includes(selectedClassId)) ? 1 : 0;
+          const bTargeted = selectedClassId !== 'ALL' && Boolean(b.targetClassIds?.includes(selectedClassId)) ? 1 : 0;
+          return bTargeted - aTargeted;
+        }),
+    [questions, selectedClassId],
   );
 
   const filteredBank = React.useMemo(() => {
@@ -144,12 +189,15 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
       if (bankCluster !== 'ALL' && q.cluster !== bankCluster) return false;
       if (bankPattern !== 'ALL' && inferPatternIdForQuestion(q) !== bankPattern) return false;
       if (bankLevel !== 'ALL' && q.level !== bankLevel) return false;
+      if (bankErrorCode !== 'ALL' && !(q.anticipated_error_ids ?? []).includes(bankErrorCode)) {
+        return false;
+      }
       if (term && !q.stem_vi.toLowerCase().includes(term) && !q.id.toLowerCase().includes(term)) {
         return false;
       }
       return true;
     });
-  }, [approvedBank, bankCluster, bankPattern, bankLevel, bankSearch]);
+  }, [approvedBank, bankCluster, bankPattern, bankLevel, bankErrorCode, bankSearch]);
 
   const updateSlot = (slotId: string, updater: (s: MissionSlot) => MissionSlot) => {
     setDraft((prev) => ({
@@ -212,33 +260,57 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
     );
   };
 
-  const handlePublish = () => {
+  const handlePublish = async () => {
     setStatusMsg('');
     setErrorMsg('');
     if (!validation.valid) {
       setErrorMsg(`Chưa thể xuất bản vì còn ${validation.errors.length} lỗi kiểm tra hợp lệ bên dưới.`);
       return;
     }
-    const saved = dataService.saveMissionSetDraft(user, {
-      ...draft,
-      id: canonicalId,
-      classId: selectedClassId,
-      status: 'draft',
-    });
-    if (!saved.ok || !saved.record) {
-      setErrorMsg(saved.error ?? 'Lỗi lưu bản trước khi xuất bản.');
+    if (!canPublishSelectedClass) {
+      setErrorMsg(
+        'Giáo viên vui lòng chọn một lớp cụ thể mình phụ trách ở góc trên bên phải để xuất bản bộ nhiệm vụ riêng cho lớp đó.',
+      );
       return;
     }
-    const pub = dataService.adminPublishMissionSet(user, saved.record.id);
-    if (!pub.ok || !pub.record) {
-      setErrorMsg(pub.error ?? 'Không thể xuất bản bộ nhiệm vụ.');
-      return;
+    setPublishing(true);
+    try {
+      const saved = dataService.saveMissionSetDraft(user, {
+        ...draft,
+        id: canonicalId,
+        classId: selectedClassId,
+        status: 'draft',
+      });
+      if (!saved.ok || !saved.record) {
+        setErrorMsg(saved.error ?? 'Lỗi lưu bản trước khi xuất bản.');
+        return;
+      }
+      const pub = dataService.adminPublishMissionSet(user, saved.record.id);
+      if (!pub.ok || !pub.record) {
+        setErrorMsg(pub.error ?? 'Không thể xuất bản bộ nhiệm vụ.');
+        return;
+      }
+      const synced = await dataService.syncMissionSetToSupabase(
+        pub.record.id,
+        pub.versionSnapshot,
+        pub.deletedDraftId,
+      );
+      setDraft(pub.record);
+      onRefresh();
+      const scopeLabel =
+        selectedClassId === 'ALL'
+          ? 'Tất cả lớp (mặc định)'
+          : `riêng lớp ${selectedClassObj?.name ?? selectedClassId}`;
+      if (!synced.ok) {
+        setErrorMsg(`Đã lưu cục bộ nhưng chưa đồng bộ được lên Supabase: ${synced.error}`);
+        return;
+      }
+      setStatusMsg(
+        `✓ Đã xuất bản & đồng bộ bộ nhiệm vụ Mốc ${selectedMocId} cho ${scopeLabel} (phiên bản v${pub.record.version}). Học sinh lớp này bắt đầu lượt mới sẽ nhận ngay bộ câu hỏi vừa phân bổ!`,
+      );
+    } finally {
+      setPublishing(false);
     }
-    setDraft(pub.record);
-    onRefresh();
-    setStatusMsg(
-      `Admin đã xuất bản bộ nhiệm vụ Mốc ${selectedMocId} (phiên bản v${pub.record.version}). Học viên bắt đầu lượt mới sẽ dùng bộ câu này ngay; học viên đang làm dở giữ nguyên lượt cũ.`,
-    );
   };
 
   const mocDef = JOURNEY_MILESTONES_BY_ID[selectedMocId];
@@ -464,46 +536,101 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
   return (
     <div className="space-y-4">
       {/* Top Bar: Class Scope + Actions */}
-      <div className="notebook-card p-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="font-display text-xl font-extrabold text-[#14284A]">
-            Set nhiệm vụ theo Trạm / Mốc (Gán câu hỏi &amp; Xuất bản có phiên bản)
-          </h2>
-          <p className="text-xs text-[#5B6B82]">
-            Chọn mốc bên trái → chỉnh các ô câu hỏi ở giữa → kéo-thả hoặc bấm &ldquo;+ Thêm&rdquo; từ Ngân hàng bên phải.
-            Mốc chưa xuất bản sẽ tự dùng bộ bốc mặc định của game.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={selectedClassId}
-            onChange={(e) => setSelectedClassId(e.target.value)}
-            className="px-3 py-2 rounded-xl bg-white border-2 border-[#CBB17D] text-xs font-extrabold text-[#14284A]"
-          >
-            <option value="ALL">Phạm vi: Tất cả lớp (mặc định)</option>
-            {classes.map((c) => (
-              <option key={c.id} value={c.id}>
-                Riêng lớp {c.name} ({c.code})
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={handleAutoSuggest}
-            className="btn-tactile btn-gold text-xs py-2 px-3"
-          >
-            <Sparkles className="w-4 h-4" /> Tự động đề xuất
-          </button>
-          {onPreviewMocAsStudent && (
+      <div className="notebook-card p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-xl font-extrabold text-[#14284A]">
+              Phân bổ &amp; Set nhiệm vụ riêng theo từng Lớp / Mốc
+            </h2>
+            <p className="text-xs text-[#5B6B82]">
+              Chọn <strong>Lớp học</strong> → xem lỗi sai nổi bật của lớp đó → chọn Mốc bên trái → kéo-thả hoặc bấm &ldquo;+ Thêm&rdquo; câu hỏi khắc phục lỗi sai từ Ngân hàng bên phải → <strong>Xuất bản ngay cho lớp</strong>.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={selectedClassId}
+              onChange={(e) => {
+                setSelectedClassId(e.target.value);
+                setBankErrorCode('ALL');
+              }}
+              className="px-3 py-2 rounded-xl bg-white border-2 border-[#2E9C8A] text-xs font-extrabold text-[#14284A]"
+            >
+              {isAdmin && <option value="ALL">Phạm vi: Tất cả lớp (mặc định)</option>}
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Riêng lớp {c.name} ({c.code})
+                </option>
+              ))}
+              {!isAdmin && classes.length === 0 && (
+                <option value="ALL">Chưa có lớp phụ trách (hãy tạo lớp ở mục 3)</option>
+              )}
+            </select>
             <button
               type="button"
-              onClick={() => onPreviewMocAsStudent(selectedMocId, draft)}
-              className="btn-tactile btn-paper text-xs py-2 px-3"
+              onClick={handleAutoSuggest}
+              className="btn-tactile btn-gold text-xs py-2 px-3"
             >
-              <Eye className="w-4 h-4" /> Xem trước như học viên (TEST)
+              <Sparkles className="w-4 h-4" /> Tự động đề xuất
             </button>
-          )}
+            {onPreviewMocAsStudent && (
+              <button
+                type="button"
+                onClick={() => onPreviewMocAsStudent(selectedMocId, draft)}
+                className="btn-tactile btn-paper text-xs py-2 px-3"
+              >
+                <Eye className="w-4 h-4" /> Xem trước như học viên (TEST)
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Per-class error diagnostics quick-filter bar */}
+        {selectedClassId !== 'ALL' && (
+          <div className="p-3 rounded-xl bg-[#FFF9EB] border border-[#E0A93B] text-xs space-y-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-extrabold text-[#14284A]">
+                Chẩn đoán lỗi sai của lớp {selectedClassObj?.name ?? selectedClassId} (chạm mã lỗi để lọc câu hỏi khắc phục bên phải):
+              </span>
+              {bankErrorCode !== 'ALL' && (
+                <button
+                  type="button"
+                  onClick={() => setBankErrorCode('ALL')}
+                  className="text-[11px] font-bold text-[#99261B] hover:underline"
+                >
+                  × Bỏ lọc mã lỗi {bankErrorCode}
+                </button>
+              )}
+            </div>
+            {classErrorSummary.length === 0 ? (
+              <p className="text-[11px] text-[#5B6B82]">
+                Lớp này chưa có lượt làm sai có mã lỗi E01–E12. Thầy/cô vẫn có thể chủ động chọn và phân bổ câu hỏi phù hợp theo năng lực lớp.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {classErrorSummary.map((err) => {
+                  const active = bankErrorCode === err.code;
+                  return (
+                    <button
+                      key={err.code}
+                      type="button"
+                      onClick={() => {
+                        setBankErrorCode((prev) => (prev === err.code ? 'ALL' : err.code));
+                        setBankCluster('ALL');
+                      }}
+                      className={`px-2.5 py-1 rounded-lg font-bold border text-[11px] transition ${
+                        active
+                          ? 'bg-[#C8392B] text-white border-[#99261B]'
+                          : 'bg-white text-[#8A5108] border-[#E0A93B] hover:bg-[#FFF4D6]'
+                      }`}
+                    >
+                      {err.code} · {err.label} ({err.count} lượt sai)
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {statusMsg && (
@@ -688,34 +815,40 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
             <div className="flex flex-wrap gap-2 pt-1">
               <button
                 type="button"
+                disabled={publishing}
                 onClick={() => handleSaveDraft(false)}
                 className="btn-tactile btn-paper text-xs py-2 px-3"
               >
                 <Save className="w-3.5 h-3.5" /> Lưu nháp
               </button>
-              {!isAdmin ? (
+              {canPublishSelectedClass ? (
                 <button
                   type="button"
-                  disabled={!validation.valid}
+                  disabled={!validation.valid || publishing}
+                  onClick={() => void handlePublish()}
+                  className="btn-tactile btn-jade text-xs py-2 px-3.5"
+                >
+                  <ShieldCheck className="w-4 h-4" />{' '}
+                  {publishing
+                    ? 'Đang xuất bản...'
+                    : selectedClassId === 'ALL'
+                      ? `Xuất bản mặc định toàn hệ thống (v${(existingRecord?.version ?? 0) + 1})`
+                      : `Xuất bản ngay cho lớp ${selectedClassObj?.name ?? selectedClassId} (v${(existingRecord?.version ?? 0) + 1})`}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!validation.valid || publishing}
                   onClick={() => handleSaveDraft(true)}
                   className="btn-tactile btn-jade text-xs py-2 px-3.5"
                 >
                   <Send className="w-3.5 h-3.5" /> Gửi Admin duyệt &amp; xuất bản
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={!validation.valid}
-                  onClick={handlePublish}
-                  className="btn-tactile btn-jade text-xs py-2 px-3.5"
-                >
-                  <ShieldCheck className="w-4 h-4" /> Xuất bản bộ nhiệm vụ (v{(existingRecord?.version ?? 0) + 1})
-                </button>
               )}
             </div>
 
             {/* Version Rollback & Audit Log */}
-            {isAdmin && versions.length > 0 && (
+            {canPublishSelectedClass && versions.length > 0 && (
               <div className="pt-2 border-t border-[#E5D3A8] space-y-1.5 text-xs">
                 <p className="font-extrabold text-[#14284A] inline-flex items-center gap-1">
                   <History className="w-3.5 h-3.5 text-[#2E9C8A]" /> Lịch sử phiên bản đã xuất bản:
@@ -823,6 +956,8 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
             ) : (
               filteredBank.map((q) => {
                 const patId = inferPatternIdForQuestion(q);
+                const isClassTargeted =
+                  selectedClassId !== 'ALL' && Boolean(q.targetClassIds?.includes(selectedClassId));
                 return (
                   <div
                     key={q.id}
@@ -831,11 +966,20 @@ export const MissionSetTab: React.FC<MissionSetTabProps> = ({
                       setDraggedQuestionId(q.id);
                       e.dataTransfer.setData('text/plain', q.id);
                     }}
-                    className="p-2.5 rounded-xl bg-[#FFFBF0] border border-[#D9C293] hover:border-[#2E9C8A] space-y-1.5 cursor-grab active:cursor-grabbing"
+                    className={`p-2.5 rounded-xl border hover:border-[#2E9C8A] space-y-1.5 cursor-grab active:cursor-grabbing ${
+                      isClassTargeted
+                        ? 'bg-[#E6F6F3] border-[#2E9C8A]'
+                        : 'bg-[#FFFBF0] border-[#D9C293]'
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-1.5">
                       <span className="font-extrabold text-[#14284A]">
                         [{q.id}] · {patId} · Mức {q.level}
+                        {isClassTargeted && (
+                          <span className="ml-1 px-1.5 py-0.5 rounded bg-[#145B4F] text-white text-[10px]">
+                            Riêng lớp này
+                          </span>
+                        )}
                       </span>
                       <button
                         type="button"
